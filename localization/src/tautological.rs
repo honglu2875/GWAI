@@ -1,0 +1,308 @@
+use crate::algebra::Rational;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+pub trait TautologicalOracle: Send + Sync {
+    fn psi_integral(&self, genus: usize, powers: &[usize]) -> Rational;
+
+    fn hodge_integral(
+        &self,
+        _genus: usize,
+        _psi_powers: &[usize],
+        _lambda_powers: &[(usize, usize)],
+    ) -> Option<Rational> {
+        None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HodgeKey {
+    pub genus: usize,
+    pub psi_powers: Vec<usize>,
+    pub lambda_powers: Vec<(usize, usize)>,
+}
+
+impl HodgeKey {
+    pub fn symmetric(genus: usize, psi_powers: &[usize], lambda_powers: &[(usize, usize)]) -> Self {
+        let mut psi_powers = psi_powers.to_vec();
+        psi_powers.sort_unstable();
+        let mut lambda_powers = lambda_powers.to_vec();
+        lambda_powers.sort_unstable();
+        Self {
+            genus,
+            psi_powers,
+            lambda_powers,
+        }
+    }
+
+    pub fn labelled(genus: usize, psi_powers: &[usize], lambda_powers: &[(usize, usize)]) -> Self {
+        let mut lambda_powers = lambda_powers.to_vec();
+        lambda_powers.sort_unstable();
+        Self {
+            genus,
+            psi_powers: psi_powers.to_vec(),
+            lambda_powers,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct TableTautologicalOracle {
+    psi: WittenKontsevich,
+    hodge: Mutex<HashMap<HodgeKey, Rational>>,
+}
+
+impl TableTautologicalOracle {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn insert_symmetric_hodge_integral(
+        &self,
+        genus: usize,
+        psi_powers: &[usize],
+        lambda_powers: &[(usize, usize)],
+        value: Rational,
+    ) {
+        self.hodge
+            .lock()
+            .unwrap()
+            .insert(HodgeKey::symmetric(genus, psi_powers, lambda_powers), value);
+    }
+
+    pub fn insert_labelled_hodge_integral(
+        &self,
+        genus: usize,
+        psi_powers: &[usize],
+        lambda_powers: &[(usize, usize)],
+        value: Rational,
+    ) {
+        self.hodge
+            .lock()
+            .unwrap()
+            .insert(HodgeKey::labelled(genus, psi_powers, lambda_powers), value);
+    }
+}
+
+impl TautologicalOracle for TableTautologicalOracle {
+    fn psi_integral(&self, genus: usize, powers: &[usize]) -> Rational {
+        self.psi.psi_integral(genus, powers)
+    }
+
+    fn hodge_integral(
+        &self,
+        genus: usize,
+        psi_powers: &[usize],
+        lambda_powers: &[(usize, usize)],
+    ) -> Option<Rational> {
+        if lambda_powers.is_empty() {
+            return Some(self.psi_integral(genus, psi_powers));
+        }
+        let labelled = HodgeKey::labelled(genus, psi_powers, lambda_powers);
+        if let Some(value) = self.hodge.lock().unwrap().get(&labelled).cloned() {
+            return Some(value);
+        }
+        let symmetric = HodgeKey::symmetric(genus, psi_powers, lambda_powers);
+        self.hodge.lock().unwrap().get(&symmetric).cloned()
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct WittenKontsevich {
+    cache: Mutex<HashMap<(usize, Vec<usize>), Rational>>,
+}
+
+impl WittenKontsevich {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn psi_sorted(&self, genus: usize, powers: Vec<usize>) -> Rational {
+        let mut powers = powers;
+        powers.sort_unstable();
+        let key = (genus, powers.clone());
+        if let Some(value) = self.cache.lock().unwrap().get(&key).cloned() {
+            return value;
+        }
+
+        let value = self.psi_uncached(genus, &powers);
+        self.cache.lock().unwrap().insert(key, value.clone());
+        value
+    }
+
+    fn psi_uncached(&self, genus: usize, powers: &[usize]) -> Rational {
+        let n = powers.len();
+        let dimension = 3isize * genus as isize - 3 + n as isize;
+        if dimension < 0 {
+            return Rational::zero();
+        }
+        let degree: usize = powers.iter().sum();
+        if degree as isize != dimension {
+            return Rational::zero();
+        }
+
+        if genus == 0 && powers == [0, 0, 0] {
+            return Rational::one();
+        }
+        if genus == 1 && powers == [1] {
+            return Rational::new(1, 24);
+        }
+
+        if let Some(pos) = powers.iter().position(|&p| p == 0) {
+            return self.apply_string_equation(genus, powers, pos);
+        }
+        if let Some(pos) = powers.iter().position(|&p| p == 1) {
+            return self.apply_dilaton_equation(genus, powers, pos);
+        }
+
+        self.apply_dvv(genus, powers)
+    }
+
+    fn apply_string_equation(&self, genus: usize, powers: &[usize], zero_pos: usize) -> Rational {
+        let mut rest = powers.to_vec();
+        rest.remove(zero_pos);
+        let mut total = Rational::zero();
+        for idx in 0..rest.len() {
+            if rest[idx] == 0 {
+                continue;
+            }
+            let mut next = rest.clone();
+            next[idx] -= 1;
+            total += self.psi_sorted(genus, next);
+        }
+        total
+    }
+
+    fn apply_dilaton_equation(&self, genus: usize, powers: &[usize], one_pos: usize) -> Rational {
+        let mut rest = powers.to_vec();
+        rest.remove(one_pos);
+        let factor = 2isize * genus as isize - 2 + rest.len() as isize;
+        if factor == 0 {
+            Rational::zero()
+        } else {
+            Rational::from(factor as i128) * self.psi_sorted(genus, rest)
+        }
+    }
+
+    fn apply_dvv(&self, genus: usize, powers: &[usize]) -> Rational {
+        debug_assert!(powers.iter().all(|&p| p >= 2));
+        let mut rest = powers.to_vec();
+        let d0 = rest.pop().expect("DVV requires at least one insertion");
+
+        let mut total = Rational::zero();
+
+        for j in 0..rest.len() {
+            let dj = rest[j];
+            let coeff = Rational::from(double_factorial_odd(2 * (d0 + dj) - 1))
+                / Rational::from(double_factorial_odd(2 * dj - 1));
+            let mut next = rest.clone();
+            next.remove(j);
+            next.push(d0 + dj - 1);
+            total += coeff * self.psi_sorted(genus, next);
+        }
+
+        if d0 >= 2 {
+            for a in 0..=(d0 - 2) {
+                let b = d0 - 2 - a;
+                let coeff = Rational::from(double_factorial_odd(2 * a + 1))
+                    * Rational::from(double_factorial_odd(2 * b + 1));
+                let mut bracket = Rational::zero();
+
+                if genus > 0 {
+                    let mut lower = vec![a, b];
+                    lower.extend(rest.iter().copied());
+                    bracket += self.psi_sorted(genus - 1, lower);
+                }
+
+                for genus_left in 0..=genus {
+                    for mask in 0..(1usize << rest.len()) {
+                        let mut left = vec![a];
+                        let mut right = vec![b];
+                        for (idx, power) in rest.iter().copied().enumerate() {
+                            if (mask & (1usize << idx)) == 0 {
+                                left.push(power);
+                            } else {
+                                right.push(power);
+                            }
+                        }
+                        bracket += self.psi_sorted(genus_left, left)
+                            * self.psi_sorted(genus - genus_left, right);
+                    }
+                }
+
+                total += Rational::new(1, 2) * coeff * bracket;
+            }
+        }
+
+        total / Rational::from(double_factorial_odd(2 * d0 + 1))
+    }
+}
+
+impl TautologicalOracle for WittenKontsevich {
+    fn psi_integral(&self, genus: usize, powers: &[usize]) -> Rational {
+        self.psi_sorted(genus, powers.to_vec())
+    }
+}
+
+fn double_factorial_odd(n: usize) -> i128 {
+    debug_assert!(n % 2 == 1);
+    let mut out = 1i128;
+    let mut k = n;
+    while k > 1 {
+        out *= k as i128;
+        k -= 2;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_intersections() {
+        let wk = WittenKontsevich::new();
+        assert_eq!(wk.psi_integral(0, &[0, 0, 0]), Rational::one());
+        assert_eq!(wk.psi_integral(1, &[1]), Rational::new(1, 24));
+    }
+
+    #[test]
+    fn genus_zero_formula_examples() {
+        let wk = WittenKontsevich::new();
+        assert_eq!(wk.psi_integral(0, &[1, 0, 0, 0]), Rational::one());
+        assert_eq!(wk.psi_integral(0, &[2, 0, 0, 0, 0]), Rational::one());
+        assert_eq!(wk.psi_integral(0, &[1, 1, 0, 0, 0]), Rational::from(2));
+    }
+
+    #[test]
+    fn one_point_high_genus() {
+        let wk = WittenKontsevich::new();
+        assert_eq!(wk.psi_integral(2, &[4]), Rational::new(1, 1152));
+        assert_eq!(wk.psi_integral(3, &[7]), Rational::new(1, 82944));
+    }
+
+    #[test]
+    fn dimension_mismatch_is_zero() {
+        let wk = WittenKontsevich::new();
+        assert_eq!(wk.psi_integral(1, &[0]), Rational::zero());
+    }
+
+    #[test]
+    fn table_oracle_delegates_pure_psi_integrals() {
+        let oracle = TableTautologicalOracle::new();
+        assert_eq!(
+            oracle.hodge_integral(1, &[1], &[]),
+            Some(Rational::new(1, 24))
+        );
+    }
+
+    #[test]
+    fn table_oracle_returns_inserted_hodge_values() {
+        let oracle = TableTautologicalOracle::new();
+        oracle.insert_symmetric_hodge_integral(1, &[0, 2], &[(1, 1)], Rational::new(7, 5));
+        assert_eq!(
+            oracle.hodge_integral(1, &[2, 0], &[(1, 1)]),
+            Some(Rational::new(7, 5))
+        );
+    }
+}

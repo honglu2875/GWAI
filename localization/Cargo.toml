@@ -1,0 +1,23 @@
+[package]
+name = "gw-pn"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Experimental exact computations for Gromov-Witten invariants of projective space."
+
+[lib]
+name = "gw_pn"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gw-pn"
+path = "src/bin/gw-pn.rs"
+
+[dependencies]
+num-bigint = "0.4"
+num-rational = "0.4"
+num-traits = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
