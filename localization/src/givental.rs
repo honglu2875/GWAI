@@ -2,13 +2,17 @@ use crate::algebra::{lambda, RatFun, Rational};
 use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
-use crate::graphs::stable_graphs;
+use crate::graphs::{stable_graphs, StableGraph};
 use crate::series::{QSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
-use crate::{Insertion, InvariantRequest, InvariantResult};
-use std::collections::HashMap;
+use crate::{
+    ComputeMode, Insertion, InvariantRequest, InvariantResult, SeriesCoefficient, SeriesRequest,
+    SeriesResult, Truncation,
+};
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1359,14 +1363,11 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
     profile.stable_graphs = graphs.len();
     let oracle = WittenKontsevich::new();
     let mut vertex_cache = kernel.vertex_cache.lock().unwrap();
-    let mut coloring_cache = HashMap::<usize, Vec<Vec<usize>>>::new();
 
     let graphs_started = Instant::now();
     for graph in &graphs {
         let automorphism_factor = &RatFun::one() / &RatFun::from(graph.automorphism_order());
-        let colorings = coloring_cache
-            .entry(graph.vertices.len())
-            .or_insert_with(|| vertex_colorings(graph.vertices.len(), req.n + 1));
+        let colorings = vertex_coloring_orbits(graph, req.n + 1);
         profile.colorings += colorings.len();
         let vertex_power_caps = graph
             .vertices
@@ -1374,7 +1375,9 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
             .enumerate()
             .map(|(vertex, stable_vertex)| 3 * stable_vertex.genus + graph.valence(vertex) - 3)
             .collect::<Vec<_>>();
-        for colors in colorings.iter() {
+        for coloring in colorings.iter() {
+            let colors = &coloring.colors;
+            let coloring_factor = &automorphism_factor * &RatFun::from(coloring.multiplicity);
             let mut graph_total = QSeries::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
@@ -1399,7 +1402,7 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
                 &mut profile,
             );
 
-            total = total.add(&graph_total.scale(&automorphism_factor));
+            total = total.add(&graph_total.scale(&coloring_factor));
         }
     }
     profile.add_graph_elapsed(graphs_started.elapsed());
@@ -1440,6 +1443,850 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
                 .to_string(),
         ],
     })
+}
+
+const MASTER_SHARED_KERNEL_MAX_MARKINGS: usize = 2;
+const MASTER_DEFAULT_MAX_WORKERS: usize = 8;
+const MASTER_MIN_SHARED_KERNEL_TASKS: usize = 8;
+
+pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>, GwError> {
+    if req.mode != ComputeMode::Givental {
+        return Ok(None);
+    }
+
+    let mut prepared_coefficients = Vec::new();
+    let mut contraction_tasks = Vec::new();
+    let mut notes = vec![
+        "series enumerates a bounded sparse descendant potential; unsupported dimension-valid coefficients are skipped"
+            .to_string(),
+    ];
+    let basis = crate::insertion_basis(req.n, req.max_descendant_power);
+    let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
+
+    for markings in 0..=req.max_markings {
+        for insertions in crate::insertion_monomials(&basis, markings) {
+            let probe_req = req.coefficient_request(0, insertions.clone());
+            if probe_req.insertion_degree().is_some() {
+                if let Some(expected_degree) = probe_req.expected_degree_from_dimension() {
+                    if expected_degree <= req.degree_max {
+                        candidates_by_degree[expected_degree].push(insertions);
+                    }
+                }
+            } else {
+                for bucket in &mut candidates_by_degree {
+                    bucket.push(insertions.clone());
+                }
+            }
+        }
+    }
+
+    let shared_kernel_task_counts = shared_kernel_task_counts(req, &candidates_by_degree);
+    let mut evaluator = GiventalMasterEvaluator::new(req);
+    evaluator.set_shared_kernel_task_counts(shared_kernel_task_counts.clone());
+    for (markings, count) in shared_kernel_task_counts.iter().copied().enumerate() {
+        if count > 0 && count < MASTER_MIN_SHARED_KERNEL_TASKS {
+            notes.push(format!(
+                "using scalar S/R graph evaluation for {count} coefficient(s) with {markings} marking(s); shared kernel threshold is {MASTER_MIN_SHARED_KERNEL_TASKS}"
+            ));
+        }
+    }
+
+    let mut ordinal = 0usize;
+    for (degree, candidates) in candidates_by_degree.into_iter().enumerate() {
+        let mut candidates = candidates;
+        candidates.sort_by_key(|insertions| {
+            std::cmp::Reverse(
+                insertions
+                    .iter()
+                    .map(|insertion| insertion.descendant_power)
+                    .max()
+                    .unwrap_or(0),
+            )
+        });
+
+        for insertions in candidates {
+            let current_ordinal = ordinal;
+            ordinal += 1;
+            let coefficient_req = req.coefficient_request(degree, insertions.clone());
+            if coefficient_req
+                .insertion_degree()
+                .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
+            {
+                continue;
+            }
+
+            if evaluator.can_use_external_leg_kernel(&insertions) {
+                match evaluator.prepare_contraction_task(current_ordinal, degree, &insertions) {
+                    Ok(task) => contraction_tasks.push(task),
+                    Err(GwError::UnsupportedInvariant(msg)) => {
+                        notes.push(format!(
+                            "skipped q^{degree} {}: {msg}",
+                            crate::insertion_monomial_label(&insertions)
+                        ));
+                    }
+                    Err(err) => return Err(err),
+                }
+                continue;
+            }
+
+            match evaluator.compute_coefficient(degree, &insertions) {
+                Ok(value) => {
+                    if req.include_zero || !value.is_zero() {
+                        prepared_coefficients.push(OrderedSeriesCoefficient {
+                            ordinal: current_ordinal,
+                            coefficient: SeriesCoefficient {
+                                degree,
+                                insertions,
+                                value,
+                            },
+                        });
+                    }
+                }
+                Err(GwError::UnsupportedInvariant(msg)) => {
+                    notes.push(format!(
+                        "skipped q^{degree} {}: {msg}",
+                        crate::insertion_monomial_label(&insertions)
+                    ));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    prepared_coefficients
+        .extend(evaluator.contract_tasks_parallel(&contraction_tasks, req.include_zero));
+    prepared_coefficients.sort_by_key(|entry| entry.ordinal);
+    let coefficients = prepared_coefficients
+        .into_iter()
+        .map(|entry| entry.coefficient)
+        .collect();
+
+    Ok(Some(SeriesResult {
+        coefficients,
+        engine: "givental-master-series",
+        notes,
+    }))
+}
+
+fn shared_kernel_task_counts(
+    req: &SeriesRequest,
+    candidates_by_degree: &[Vec<Vec<Insertion>>],
+) -> Vec<usize> {
+    let mut counts = vec![0usize; req.max_markings + 1];
+    for (degree, candidates) in candidates_by_degree.iter().enumerate() {
+        for insertions in candidates {
+            let coefficient_req = req.coefficient_request(degree, insertions.clone());
+            if coefficient_req
+                .insertion_degree()
+                .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
+            {
+                continue;
+            }
+            let markings = insertions.len();
+            if markings > 0
+                && markings <= MASTER_SHARED_KERNEL_MAX_MARKINGS
+                && is_stable_cohft_range(req.genus, markings)
+            {
+                counts[markings] += 1;
+            }
+        }
+    }
+    counts
+}
+
+#[derive(Debug)]
+struct GiventalMasterEvaluator {
+    n: usize,
+    genus: usize,
+    degree_max: usize,
+    max_descendant_power: usize,
+    equivariant: bool,
+    truncation: Option<Truncation>,
+    weights: Vec<Rational>,
+    descendant_s_cache: HashMap<usize, SeriesSMatrix>,
+    external_kernel_cache: HashMap<usize, ExternalLegKernel>,
+    leg_options_cache: HashMap<MasterLegOptionsKey, Vec<Vec<LegFactorOption>>>,
+    shared_kernel_task_counts: Option<Vec<usize>>,
+}
+
+impl GiventalMasterEvaluator {
+    fn new(req: &SeriesRequest) -> Self {
+        Self {
+            n: req.n,
+            genus: req.genus,
+            degree_max: req.degree_max,
+            max_descendant_power: req.max_descendant_power,
+            equivariant: req.equivariant,
+            truncation: req.truncation.clone(),
+            weights: (1..=req.n + 1).map(Rational::from).collect(),
+            descendant_s_cache: HashMap::new(),
+            external_kernel_cache: HashMap::new(),
+            leg_options_cache: HashMap::new(),
+            shared_kernel_task_counts: None,
+        }
+    }
+
+    fn set_shared_kernel_task_counts(&mut self, counts: Vec<usize>) {
+        self.shared_kernel_task_counts = Some(counts);
+    }
+
+    fn compute_coefficient(
+        &mut self,
+        degree: usize,
+        insertions: &[Insertion],
+    ) -> Result<RatFun, GwError> {
+        let coefficient_req = self.coefficient_request(degree, insertions.to_vec());
+        if coefficient_req
+            .insertion_degree()
+            .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
+        {
+            return Ok(RatFun::zero());
+        }
+
+        let markings = insertions.len();
+        if markings == 0
+            || markings > MASTER_SHARED_KERNEL_MAX_MARKINGS
+            || !is_stable_cohft_range(self.genus, markings)
+        {
+            return Ok(crate::compute(coefficient_req)?.value);
+        }
+
+        self.validate_truncation(markings, insertions)?;
+        let mut leg_options = Vec::with_capacity(markings);
+        for insertion in insertions {
+            leg_options.push(self.leg_options_for_insertion(markings, insertion)?);
+        }
+        let kernel = self.external_leg_kernel(markings)?;
+        let contracted = contract_external_leg_kernel(kernel, &leg_options);
+        Ok(contracted
+            .coeff(degree)
+            .cloned()
+            .unwrap_or_else(RatFun::zero))
+    }
+
+    fn can_use_external_leg_kernel(&self, insertions: &[Insertion]) -> bool {
+        let markings = insertions.len();
+        if !(markings > 0
+            && markings <= MASTER_SHARED_KERNEL_MAX_MARKINGS
+            && is_stable_cohft_range(self.genus, markings))
+        {
+            return false;
+        }
+        self.shared_kernel_task_counts
+            .as_ref()
+            .and_then(|counts| counts.get(markings))
+            .is_none_or(|count| *count >= MASTER_MIN_SHARED_KERNEL_TASKS)
+    }
+
+    fn prepare_contraction_task(
+        &mut self,
+        ordinal: usize,
+        degree: usize,
+        insertions: &[Insertion],
+    ) -> Result<MasterContractionTask, GwError> {
+        if !self.can_use_external_leg_kernel(insertions) {
+            return Err(GwError::UnsupportedInvariant(
+                "external-leg master kernel is not available for this marking count".to_string(),
+            ));
+        }
+
+        let markings = insertions.len();
+        self.validate_truncation(markings, insertions)?;
+        let mut leg_options = Vec::with_capacity(markings);
+        for insertion in insertions {
+            leg_options.push(self.leg_options_for_insertion(markings, insertion)?);
+        }
+        self.external_leg_kernel(markings)?;
+        Ok(MasterContractionTask {
+            ordinal,
+            degree,
+            insertions: insertions.to_vec(),
+            markings,
+            leg_options,
+        })
+    }
+
+    fn contract_tasks_parallel(
+        &self,
+        tasks: &[MasterContractionTask],
+        include_zero: bool,
+    ) -> Vec<OrderedSeriesCoefficient> {
+        let worker_count = master_worker_count(tasks.len());
+        if worker_count <= 1 {
+            return contract_task_chunk(&self.external_kernel_cache, tasks, include_zero);
+        }
+
+        let chunk_size = tasks.len().div_ceil(worker_count);
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in tasks.chunks(chunk_size) {
+                let kernels = &self.external_kernel_cache;
+                handles
+                    .push(scope.spawn(move || contract_task_chunk(kernels, chunk, include_zero)));
+            }
+
+            let mut out = Vec::new();
+            for handle in handles {
+                out.extend(
+                    handle
+                        .join()
+                        .expect("master series contraction worker panicked"),
+                );
+            }
+            out
+        })
+    }
+
+    fn coefficient_request(&self, degree: usize, insertions: Vec<Insertion>) -> InvariantRequest {
+        InvariantRequest {
+            n: self.n,
+            genus: self.genus,
+            degree,
+            insertions,
+            equivariant: self.equivariant,
+            mode: ComputeMode::Givental,
+            truncation: self.truncation.clone(),
+        }
+    }
+
+    fn validate_truncation(
+        &self,
+        markings: usize,
+        insertions: &[Insertion],
+    ) -> Result<(), GwError> {
+        let graph_dimension = self.graph_dimension(markings);
+        let needed_r_order = graph_dimension + 1;
+        let needed_s_order = insertions
+            .iter()
+            .map(|insertion| insertion.descendant_power)
+            .max()
+            .unwrap_or(0);
+        let needed_z_order = needed_r_order.max(needed_s_order);
+        if self
+            .truncation
+            .as_ref()
+            .is_some_and(|truncation| truncation.z_order < needed_z_order)
+        {
+            return Err(GwError::TruncationTooLow);
+        }
+        Ok(())
+    }
+
+    fn graph_dimension(&self, markings: usize) -> usize {
+        3 * self.genus + markings - 3
+    }
+
+    fn descendant_s(&mut self, z_order: usize) -> Result<&SeriesSMatrix, GwError> {
+        if !self.descendant_s_cache.contains_key(&z_order) {
+            let descendant_s = if self.equivariant {
+                projective_space_descendant_s_matrix(self.n, self.degree_max, z_order)?
+            } else {
+                projective_space_descendant_s_matrix_at_lambda_weights(
+                    self.n,
+                    self.degree_max,
+                    z_order,
+                    &self.weights,
+                )?
+            };
+            self.descendant_s_cache.insert(z_order, descendant_s);
+        }
+        Ok(self
+            .descendant_s_cache
+            .get(&z_order)
+            .expect("descendant S-matrix cache populated before access"))
+    }
+
+    fn graph_kernel_for_markings(&self, markings: usize) -> Result<Arc<GraphKernel>, GwError> {
+        let graph_dimension = self.graph_dimension(markings);
+        projective_space_graph_kernel(
+            self.n,
+            self.degree_max,
+            graph_dimension + 1,
+            graph_dimension,
+            self.equivariant,
+            &self.weights,
+        )
+    }
+
+    fn external_leg_kernel(&mut self, markings: usize) -> Result<&ExternalLegKernel, GwError> {
+        if !self.external_kernel_cache.contains_key(&markings) {
+            let kernel = self.build_external_leg_kernel(markings)?;
+            self.external_kernel_cache.insert(markings, kernel);
+        }
+        Ok(self
+            .external_kernel_cache
+            .get(&markings)
+            .expect("external leg kernel cache populated before access"))
+    }
+
+    fn build_external_leg_kernel(&self, markings: usize) -> Result<ExternalLegKernel, GwError> {
+        let graph_dimension = self.graph_dimension(markings);
+        let graph_kernel = self.graph_kernel_for_markings(markings)?;
+        let mut total =
+            ExternalLegKernel::zero(markings, self.n + 1, graph_dimension, self.degree_max);
+        let graphs = stable_graphs(self.genus, markings);
+        let oracle = WittenKontsevich::new();
+        let mut vertex_cache = graph_kernel.vertex_cache.lock().unwrap();
+        let mut profile = GraphEvalProfile::new();
+        profile.stable_graphs = graphs.len();
+        profile.edge_options = graph_kernel
+            .edge_options
+            .iter()
+            .flat_map(|row| row.iter())
+            .map(Vec::len)
+            .sum();
+
+        let graphs_started = Instant::now();
+        for graph in &graphs {
+            let automorphism_factor = &RatFun::one() / &RatFun::from(graph.automorphism_order());
+            let colorings = vertex_coloring_orbits(graph, self.n + 1);
+            profile.colorings += colorings.len();
+            let vertex_power_caps = graph
+                .vertices
+                .iter()
+                .enumerate()
+                .map(|(vertex, stable_vertex)| 3 * stable_vertex.genus + graph.valence(vertex) - 3)
+                .collect::<Vec<_>>();
+
+            for coloring in colorings.iter() {
+                let colors = &coloring.colors;
+                let coloring_factor = &automorphism_factor * &RatFun::from(coloring.multiplicity);
+                let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+                let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+                let mut external_states = Vec::with_capacity(markings);
+                accumulate_external_leg_graph_factors(
+                    graph,
+                    colors,
+                    &graph_kernel.edge_options,
+                    &graph_kernel.calibration,
+                    &graph_kernel.translation,
+                    &oracle,
+                    &mut vertex_cache,
+                    self.degree_max,
+                    graph_dimension,
+                    0,
+                    0,
+                    QSeries::one(self.degree_max).scale(&coloring_factor),
+                    &mut base_powers,
+                    &mut vertex_power_sums,
+                    &vertex_power_caps,
+                    &mut external_states,
+                    &mut total,
+                    &mut profile,
+                );
+            }
+        }
+        profile.add_graph_elapsed(graphs_started.elapsed());
+        profile.finish();
+
+        Ok(total)
+    }
+
+    fn leg_options_for_insertion(
+        &mut self,
+        markings: usize,
+        insertion: &Insertion,
+    ) -> Result<Vec<Vec<LegFactorOption>>, GwError> {
+        let cache_key = insertion
+            .class
+            .pure_power()
+            .map(|class_power| MasterLegOptionsKey {
+                markings,
+                descendant_power: insertion.descendant_power,
+                class_power,
+            });
+        if let Some(key) = cache_key {
+            if let Some(cached) = self.leg_options_cache.get(&key) {
+                return Ok(cached.clone());
+            }
+        }
+
+        let graph_dimension = self.graph_dimension(markings);
+        let s_order = self.max_descendant_power.max(insertion.descendant_power);
+        let graph_kernel = self.graph_kernel_for_markings(markings)?;
+        let n = self.n;
+        let q_degree = self.degree_max;
+        let colors = self.n + 1;
+        let psi_inverse = graph_kernel.calibration.psi_inverse.clone();
+        let inverse_r = graph_kernel.inverse_r.clone();
+        let insertion_terms = {
+            let descendant_s = self.descendant_s(s_order)?;
+            ancestor_insertion_terms(
+                n,
+                std::slice::from_ref(insertion),
+                descendant_s,
+                &psi_inverse,
+                q_degree,
+                graph_dimension,
+            )
+        };
+        let mut options = leg_options_by_marking_color(
+            &insertion_terms,
+            &inverse_r,
+            q_degree,
+            graph_dimension,
+            colors,
+        );
+        let by_color = options.pop().unwrap_or_else(|| vec![Vec::new(); colors]);
+        if let Some(key) = cache_key {
+            self.leg_options_cache.insert(key, by_color.clone());
+        }
+        Ok(by_color)
+    }
+}
+
+#[derive(Debug)]
+struct MasterContractionTask {
+    ordinal: usize,
+    degree: usize,
+    insertions: Vec<Insertion>,
+    markings: usize,
+    leg_options: Vec<Vec<Vec<LegFactorOption>>>,
+}
+
+#[derive(Debug)]
+struct OrderedSeriesCoefficient {
+    ordinal: usize,
+    coefficient: SeriesCoefficient,
+}
+
+fn master_worker_count(work_items: usize) -> usize {
+    if work_items < 8 {
+        return 1;
+    }
+    let available = thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let requested = std::env::var("GW_THREADS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or_else(|| available.min(MASTER_DEFAULT_MAX_WORKERS));
+    requested.min(work_items).max(1)
+}
+
+fn contract_task_chunk(
+    kernels: &HashMap<usize, ExternalLegKernel>,
+    tasks: &[MasterContractionTask],
+    include_zero: bool,
+) -> Vec<OrderedSeriesCoefficient> {
+    let mut out = Vec::new();
+    for task in tasks {
+        let kernel = kernels
+            .get(&task.markings)
+            .expect("prepared master task must have a cached external-leg kernel");
+        let contracted = contract_external_leg_kernel(kernel, &task.leg_options);
+        let value = contracted
+            .coeff(task.degree)
+            .cloned()
+            .unwrap_or_else(RatFun::zero);
+        if include_zero || !value.is_zero() {
+            out.push(OrderedSeriesCoefficient {
+                ordinal: task.ordinal,
+                coefficient: SeriesCoefficient {
+                    degree: task.degree,
+                    insertions: task.insertions.clone(),
+                    value,
+                },
+            });
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct MasterLegOptionsKey {
+    markings: usize,
+    descendant_power: usize,
+    class_power: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExternalLegState {
+    color: usize,
+    power: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalLegKernel {
+    markings: usize,
+    colors: usize,
+    max_power: usize,
+    q_degree: usize,
+    state_count: usize,
+    entries: Vec<QSeries>,
+}
+
+impl ExternalLegKernel {
+    fn zero(markings: usize, colors: usize, max_power: usize, q_degree: usize) -> Self {
+        let state_count = colors * (max_power + 1);
+        let entries = vec![QSeries::zero(q_degree); state_count.pow(markings as u32)];
+        Self {
+            markings,
+            colors,
+            max_power,
+            q_degree,
+            state_count,
+            entries,
+        }
+    }
+
+    fn state_index(&self, color: usize, power: usize) -> usize {
+        debug_assert!(color < self.colors);
+        debug_assert!(power <= self.max_power);
+        color * (self.max_power + 1) + power
+    }
+
+    fn tensor_index(&self, states: &[ExternalLegState]) -> usize {
+        debug_assert_eq!(states.len(), self.markings);
+        let mut index = 0usize;
+        for state in states {
+            index = index * self.state_count + self.state_index(state.color, state.power);
+        }
+        index
+    }
+
+    fn tensor_index_from_state_indices(&self, state_indices: &[usize]) -> usize {
+        debug_assert_eq!(state_indices.len(), self.markings);
+        let mut index = 0usize;
+        for state_index in state_indices {
+            index = index * self.state_count + state_index;
+        }
+        index
+    }
+
+    fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries) {
+        if value.is_zero() {
+            return;
+        }
+        let index = self.tensor_index(states);
+        self.entries[index] = self.entries[index].add(value);
+    }
+}
+
+fn contract_external_leg_kernel(
+    kernel: &ExternalLegKernel,
+    leg_options: &[Vec<Vec<LegFactorOption>>],
+) -> QSeries {
+    debug_assert_eq!(kernel.markings, leg_options.len());
+    let mut total = QSeries::zero(kernel.q_degree);
+    let mut state_indices = vec![0usize; kernel.markings];
+    contract_external_leg_kernel_rec(
+        kernel,
+        leg_options,
+        0,
+        QSeries::one(kernel.q_degree),
+        &mut state_indices,
+        &mut total,
+    );
+    total
+}
+
+fn contract_external_leg_kernel_rec(
+    kernel: &ExternalLegKernel,
+    leg_options: &[Vec<Vec<LegFactorOption>>],
+    marking: usize,
+    coefficient: QSeries,
+    state_indices: &mut [usize],
+    total: &mut QSeries,
+) {
+    if coefficient.is_zero() {
+        return;
+    }
+    if marking == kernel.markings {
+        let index = kernel.tensor_index_from_state_indices(state_indices);
+        if kernel.entries[index].is_zero() {
+            return;
+        }
+        let term = coefficient.mul(&kernel.entries[index]);
+        *total = total.add(&term);
+        return;
+    }
+
+    for color in 0..kernel.colors {
+        for option in &leg_options[marking][color] {
+            if option.power > kernel.max_power {
+                continue;
+            }
+            let next_coefficient = coefficient.mul(&option.coefficient);
+            if next_coefficient.is_zero() {
+                continue;
+            }
+            state_indices[marking] = kernel.state_index(color, option.power);
+            contract_external_leg_kernel_rec(
+                kernel,
+                leg_options,
+                marking + 1,
+                next_coefficient,
+                state_indices,
+                total,
+            );
+        }
+    }
+}
+
+fn accumulate_external_leg_graph_factors(
+    graph: &crate::graphs::StableGraph,
+    colors: &[usize],
+    edge_options: &[Vec<Vec<EdgeFactorOption>>],
+    calibration: &ProjectiveSpaceJCalibration,
+    translation: &[Vec<QSeries>],
+    oracle: &WittenKontsevich,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    q_degree: usize,
+    max_power: usize,
+    factor_index: usize,
+    current_power_sum: usize,
+    coefficient: QSeries,
+    base_powers: &mut [Vec<usize>],
+    vertex_power_sums: &mut [usize],
+    vertex_power_caps: &[usize],
+    external_states: &mut Vec<ExternalLegState>,
+    total: &mut ExternalLegKernel,
+    profile: &mut GraphEvalProfile,
+) {
+    if profile.enabled {
+        profile.recursion_calls += 1;
+    }
+    if coefficient.is_zero() || current_power_sum > max_power {
+        return;
+    }
+
+    let leg_count = graph.legs.len();
+    let edge_count = graph.edges.len();
+    if factor_index < leg_count {
+        let marking = factor_index;
+        let vertex = graph.legs[marking];
+        let color = colors[vertex];
+        for power in 0..=max_power - current_power_sum {
+            let next_vertex_power = vertex_power_sums[vertex] + power;
+            if next_vertex_power > vertex_power_caps[vertex] {
+                continue;
+            }
+            vertex_power_sums[vertex] = next_vertex_power;
+            base_powers[vertex].push(power);
+            external_states.push(ExternalLegState { color, power });
+            accumulate_external_leg_graph_factors(
+                graph,
+                colors,
+                edge_options,
+                calibration,
+                translation,
+                oracle,
+                vertex_cache,
+                q_degree,
+                max_power,
+                factor_index + 1,
+                current_power_sum + power,
+                coefficient.clone(),
+                base_powers,
+                vertex_power_sums,
+                vertex_power_caps,
+                external_states,
+                total,
+                profile,
+            );
+            external_states.pop();
+            base_powers[vertex].pop();
+            vertex_power_sums[vertex] -= power;
+        }
+        return;
+    }
+
+    if factor_index < leg_count + edge_count {
+        let edge_index = factor_index - leg_count;
+        let edge = &graph.edges[edge_index];
+        let left_color = colors[edge.a];
+        let right_color = colors[edge.b];
+        for option in &edge_options[left_color][right_color] {
+            let next_power_sum = current_power_sum + option.left_power + option.right_power;
+            if next_power_sum > max_power {
+                continue;
+            }
+            if edge.a == edge.b {
+                let next_vertex_power =
+                    vertex_power_sums[edge.a] + option.left_power + option.right_power;
+                if next_vertex_power > vertex_power_caps[edge.a] {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_vertex_power;
+            } else {
+                let next_left_power = vertex_power_sums[edge.a] + option.left_power;
+                let next_right_power = vertex_power_sums[edge.b] + option.right_power;
+                if next_left_power > vertex_power_caps[edge.a]
+                    || next_right_power > vertex_power_caps[edge.b]
+                {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_left_power;
+                vertex_power_sums[edge.b] = next_right_power;
+            }
+            let next_coefficient = coefficient.mul(&option.coefficient);
+            if next_coefficient.is_zero() {
+                if edge.a == edge.b {
+                    vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+                } else {
+                    vertex_power_sums[edge.b] -= option.right_power;
+                    vertex_power_sums[edge.a] -= option.left_power;
+                }
+                continue;
+            }
+            base_powers[edge.a].push(option.left_power);
+            base_powers[edge.b].push(option.right_power);
+            accumulate_external_leg_graph_factors(
+                graph,
+                colors,
+                edge_options,
+                calibration,
+                translation,
+                oracle,
+                vertex_cache,
+                q_degree,
+                max_power,
+                factor_index + 1,
+                next_power_sum,
+                next_coefficient,
+                base_powers,
+                vertex_power_sums,
+                vertex_power_caps,
+                external_states,
+                total,
+                profile,
+            );
+            base_powers[edge.b].pop();
+            base_powers[edge.a].pop();
+            if edge.a == edge.b {
+                vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+            } else {
+                vertex_power_sums[edge.b] -= option.right_power;
+                vertex_power_sums[edge.a] -= option.left_power;
+            }
+        }
+        return;
+    }
+
+    let mut vertex_product = QSeries::one(q_degree);
+    for (vertex, powers) in base_powers.iter().enumerate() {
+        let vertex_sum = vertex_contribution_with_translations(
+            graph.vertices[vertex].genus,
+            colors[vertex],
+            powers,
+            calibration,
+            translation,
+            oracle,
+            vertex_cache,
+            q_degree,
+            profile,
+        );
+        vertex_product = vertex_product.mul(&vertex_sum);
+        if vertex_product.is_zero() {
+            return;
+        }
+    }
+    if profile.enabled {
+        profile.leaves += 1;
+    }
+    total.add_term(external_states, &coefficient.mul(&vertex_product));
 }
 
 fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
@@ -2032,6 +2879,62 @@ fn vertex_colorings(vertices: usize, colors: usize) -> Vec<Vec<usize>> {
     out
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ColoringOrbit {
+    colors: Vec<usize>,
+    multiplicity: usize,
+}
+
+fn vertex_coloring_orbits(graph: &StableGraph, colors: usize) -> Arc<Vec<ColoringOrbit>> {
+    static CACHE: OnceLock<Mutex<HashMap<(StableGraph, usize), Arc<Vec<ColoringOrbit>>>>> =
+        OnceLock::new();
+    let key = (graph.clone(), colors);
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
+        return cached;
+    }
+
+    let automorphisms = graph.vertex_automorphism_permutations();
+    let all_colorings = vertex_colorings(graph.vertices.len(), colors);
+    let orbits = if automorphisms.len() <= 1 {
+        all_colorings
+            .into_iter()
+            .map(|colors| ColoringOrbit {
+                colors,
+                multiplicity: 1,
+            })
+            .collect()
+    } else {
+        let mut visited = HashSet::<Vec<usize>>::new();
+        let mut out = Vec::new();
+        for coloring in all_colorings {
+            if visited.contains(&coloring) {
+                continue;
+            }
+            let mut orbit = HashSet::<Vec<usize>>::new();
+            for permutation in &automorphisms {
+                orbit.insert(permute_coloring(&coloring, permutation));
+            }
+            for member in &orbit {
+                visited.insert(member.clone());
+            }
+            out.push(ColoringOrbit {
+                colors: coloring,
+                multiplicity: orbit.len(),
+            });
+        }
+        out
+    };
+
+    let orbits = Arc::new(orbits);
+    cache.lock().unwrap().insert(key, orbits.clone());
+    orbits
+}
+
+fn permute_coloring(coloring: &[usize], permutation: &[usize]) -> Vec<usize> {
+    permutation.iter().map(|&old| coloring[old]).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2347,6 +3250,59 @@ mod tests {
             result.value,
             RatFun::from_rational(crate::algebra::Rational::new(1, 36))
         );
+    }
+
+    #[test]
+    fn master_evaluator_matches_scalar_one_point_graph() {
+        let series_req = crate::SeriesRequest {
+            n: 1,
+            genus: 1,
+            degree_max: 1,
+            max_markings: 1,
+            max_descendant_power: 2,
+            include_zero: true,
+            equivariant: false,
+            mode: ComputeMode::Givental,
+            truncation: None,
+        };
+        let insertions = vec![tau(2, CohomologyClass::h_power(1, 1))];
+        let mut evaluator = GiventalMasterEvaluator::new(&series_req);
+        let master = evaluator.compute_coefficient(1, &insertions).unwrap();
+        let scalar = compute_by_givental_graphs(&InvariantRequest {
+            mode: ComputeMode::Givental,
+            ..InvariantRequest::new(1, 1, 1, insertions)
+        })
+        .unwrap()
+        .value;
+        assert_eq!(master, scalar);
+    }
+
+    #[test]
+    fn master_evaluator_matches_scalar_two_point_graph() {
+        let series_req = crate::SeriesRequest {
+            n: 1,
+            genus: 1,
+            degree_max: 1,
+            max_markings: 2,
+            max_descendant_power: 1,
+            include_zero: true,
+            equivariant: false,
+            mode: ComputeMode::Givental,
+            truncation: None,
+        };
+        let insertions = vec![
+            tau(1, CohomologyClass::h_power(1, 1)),
+            tau(1, CohomologyClass::h_power(1, 1)),
+        ];
+        let mut evaluator = GiventalMasterEvaluator::new(&series_req);
+        let master = evaluator.compute_coefficient(1, &insertions).unwrap();
+        let scalar = compute_by_givental_graphs(&InvariantRequest {
+            mode: ComputeMode::Givental,
+            ..InvariantRequest::new(1, 1, 1, insertions)
+        })
+        .unwrap()
+        .value;
+        assert_eq!(master, scalar);
     }
 
     fn assert_r_matrix_unitary_after_lambda_eval(

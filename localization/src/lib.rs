@@ -228,6 +228,12 @@ pub fn compute(req: InvariantRequest) -> Result<InvariantResult, GwError> {
 }
 
 pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
+    if req.mode == ComputeMode::Givental {
+        if let Some(result) = givental::compute_series_master(&req)? {
+            return Ok(result);
+        }
+    }
+
     let mut coefficients = Vec::new();
     let mut notes = vec![
         "series enumerates a bounded sparse descendant potential; unsupported dimension-valid coefficients are skipped"
@@ -302,7 +308,7 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
     })
 }
 
-fn insertion_basis(n: usize, max_descendant_power: usize) -> Vec<Insertion> {
+pub(crate) fn insertion_basis(n: usize, max_descendant_power: usize) -> Vec<Insertion> {
     let mut basis = Vec::new();
     for descendant_power in 0..=max_descendant_power {
         for h_power in 0..=n {
@@ -312,7 +318,7 @@ fn insertion_basis(n: usize, max_descendant_power: usize) -> Vec<Insertion> {
     basis
 }
 
-fn insertion_monomials(basis: &[Insertion], markings: usize) -> Vec<Vec<Insertion>> {
+pub(crate) fn insertion_monomials(basis: &[Insertion], markings: usize) -> Vec<Vec<Insertion>> {
     fn rec(
         basis: &[Insertion],
         markings: usize,
@@ -336,7 +342,7 @@ fn insertion_monomials(basis: &[Insertion], markings: usize) -> Vec<Vec<Insertio
     out
 }
 
-fn insertion_monomial_label(insertions: &[Insertion]) -> String {
+pub(crate) fn insertion_monomial_label(insertions: &[Insertion]) -> String {
     if insertions.is_empty() {
         "1".to_string()
     } else {

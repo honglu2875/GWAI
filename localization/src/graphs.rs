@@ -113,6 +113,15 @@ impl StableGraph {
         total
     }
 
+    pub fn vertex_automorphism_permutations(&self) -> Vec<Vec<usize>> {
+        let vertex_count = self.vertices.len();
+        let base_label = self.label_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
+        permutations(vertex_count)
+            .into_iter()
+            .filter(|permutation| self.label_with_permutation(permutation) == base_label)
+            .collect()
+    }
+
     fn label_with_permutation(&self, permutation: &[usize]) -> String {
         let mut inverse = vec![0usize; permutation.len()];
         for (new, &old) in permutation.iter().enumerate() {
