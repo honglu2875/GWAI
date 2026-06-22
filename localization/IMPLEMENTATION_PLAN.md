@@ -130,6 +130,23 @@ separate layers with explicit convention metadata.
   generating-function extraction, and the explicitly stated 4-point primary
   degree-one/degree-two projective-space consequences.  It does not call the
   Givental `S/R` evaluator and is used for cross-check tests.
+- Negative split-bundle twist scaffold for local Calabi-Yau targets such as
+  `O(-1)+O(-1)->P^1` and `O(-3)->P^2`.  The implemented part includes target
+  dimension logic, degree-candidate selection, table-backed local GW/GV oracle
+  constants for validation only, raw non-equivariant hypergeometric
+  `I`-function coefficients, a separate genus-zero QRR/Lefschetz operator that
+  applies the concave Euler factor to the untwisted projective `I` coefficient,
+  bounded line-specialized equivariant `I` coefficients with separate base and
+  fiber weights, mirror-map and inverse mirror-map series, the mirror-normalized
+  `J` coefficients, derivative-generated fundamental solution columns, and a
+  formal q-degree-by-q-degree Birkhoff split extracting the descendant
+  `S`-factor.  The direct hypergeometric and QRR-factorized inputs are
+  cross-checked against each other.  A line-specialized semisimple skeleton from
+  the twisted principal relation now supplies canonical roots, idempotents,
+  q=0-tested twisted metric norms, `Psi`, and `Psi^{-1}`.  The principal
+  relation is still diagnostic for graph purposes; it is not used as the
+  complete twisted calibration until the all-genus QRR diagonal gauge supplies
+  the actual twisted `R`-matrix.
 - Table-backed Hodge integral oracle boundary, with native psi integrals and
   externally supplied lambda/Hodge values.
 - Public `compute` API with explicit `Localization`, `Givental`, and
@@ -174,3 +191,11 @@ full Hodge localization or a nontrivial `R`-matrix.
    instead of calling the individual-invariant API per coefficient.
 9. Build comparison tests on `P^1` and `P^2` for `g <= 2`, `d <= 3` before
    optimizing for higher genus.
+10. Complete the twisted-theory calibration path:
+   lift the current line-specialized equivariant hypergeometric/QRR coefficients
+   into a calibrated semisimple solution, run mirror transformation and
+   Birkhoff factorization before taking the non-equivariant limit, derive
+   canonical coordinates, normalized idempotents, metric norms, and the twisted
+   `R`-matrix from that calibrated solution, implement the all-genus quantized
+   QRR loop operator as an independent calibration producer, and only then wire
+   negative split-bundle theories into the full Givental graph evaluator.
