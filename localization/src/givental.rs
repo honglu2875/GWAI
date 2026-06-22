@@ -1644,10 +1644,7 @@ impl GiventalMasterEvaluator {
         }
 
         let markings = insertions.len();
-        if markings == 0
-            || markings > MASTER_SHARED_KERNEL_MAX_MARKINGS
-            || !is_stable_cohft_range(self.genus, markings)
-        {
+        if !self.can_use_external_leg_kernel(insertions) {
             return Ok(crate::compute(coefficient_req)?.value);
         }
 
@@ -3303,6 +3300,24 @@ mod tests {
         .unwrap()
         .value;
         assert_eq!(master, scalar);
+    }
+
+    #[test]
+    fn coloring_orbits_reduce_vertex_automorphism_symmetry() {
+        let graph = crate::graphs::StableGraph {
+            vertices: vec![
+                crate::graphs::StableVertex { genus: 1 },
+                crate::graphs::StableVertex { genus: 1 },
+            ],
+            edges: vec![crate::graphs::StableEdge::new(0, 1)],
+            legs: Vec::new(),
+        };
+        let orbits = vertex_coloring_orbits(&graph, 3);
+        assert_eq!(orbits.len(), 6);
+        assert_eq!(
+            orbits.iter().map(|orbit| orbit.multiplicity).sum::<usize>(),
+            9
+        );
     }
 
     fn assert_r_matrix_unitary_after_lambda_eval(
