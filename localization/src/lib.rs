@@ -255,6 +255,16 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
     }
 
     for (degree, candidates) in candidates_by_degree.into_iter().enumerate() {
+        let mut candidates = candidates;
+        candidates.sort_by_key(|insertions| {
+            std::cmp::Reverse(
+                insertions
+                    .iter()
+                    .map(|insertion| insertion.descendant_power)
+                    .max()
+                    .unwrap_or(0),
+            )
+        });
         for insertions in candidates {
             let coefficient_req = req.coefficient_request(degree, insertions.clone());
             if coefficient_req

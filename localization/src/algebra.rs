@@ -718,6 +718,9 @@ impl<'a, 'b> Add<&'b RatFun> for &'a RatFun {
     type Output = RatFun;
 
     fn add(self, rhs: &'b RatFun) -> Self::Output {
+        if let (Some(left), Some(right)) = (self.as_rational(), rhs.as_rational()) {
+            return RatFun::from_rational(left + right);
+        }
         let left = &self.num * &rhs.den;
         let right = &rhs.num * &self.den;
         RatFun {
@@ -732,6 +735,9 @@ impl<'a, 'b> Sub<&'b RatFun> for &'a RatFun {
     type Output = RatFun;
 
     fn sub(self, rhs: &'b RatFun) -> Self::Output {
+        if let (Some(left), Some(right)) = (self.as_rational(), rhs.as_rational()) {
+            return RatFun::from_rational(left - right);
+        }
         let left = &self.num * &rhs.den;
         let right = &rhs.num * &self.den;
         RatFun {
@@ -746,6 +752,9 @@ impl<'a, 'b> Mul<&'b RatFun> for &'a RatFun {
     type Output = RatFun;
 
     fn mul(self, rhs: &'b RatFun) -> Self::Output {
+        if let (Some(left), Some(right)) = (self.as_rational(), rhs.as_rational()) {
+            return RatFun::from_rational(left * right);
+        }
         RatFun {
             num: &self.num * &rhs.num,
             den: &self.den * &rhs.den,
@@ -759,6 +768,9 @@ impl<'a, 'b> Div<&'b RatFun> for &'a RatFun {
 
     fn div(self, rhs: &'b RatFun) -> Self::Output {
         assert!(!rhs.num.is_zero(), "division by zero rational function");
+        if let (Some(left), Some(right)) = (self.as_rational(), rhs.as_rational()) {
+            return RatFun::from_rational(left / right);
+        }
         RatFun {
             num: &self.num * &rhs.den,
             den: &self.den * &rhs.num,

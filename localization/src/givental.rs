@@ -8,7 +8,8 @@ use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
 use crate::{Insertion, InvariantRequest, InvariantResult};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaConvention {
@@ -264,6 +265,17 @@ impl SeriesSMatrix {
 
     pub fn coefficients(&self) -> &[SeriesMatrix] {
         &self.coefficients
+    }
+
+    fn truncated(&self, z_order: usize) -> Self {
+        debug_assert!(z_order <= self.z_order);
+        Self {
+            size: self.size,
+            q_degree: self.q_degree,
+            z_order,
+            coefficients: self.coefficients[..=z_order].to_vec(),
+            calibration: self.calibration.clone(),
+        }
     }
 }
 
@@ -605,8 +617,22 @@ pub fn projective_space_descendant_s_matrix(
         z_order,
     };
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(descendant_s) = cache.lock().unwrap().get(&key).cloned() {
-        return Ok(descendant_s);
+    {
+        let cache = cache.lock().unwrap();
+        if let Some(descendant_s) = cache.get(&key).cloned() {
+            return Ok(descendant_s);
+        }
+        if let Some(descendant_s) = cache
+            .iter()
+            .find(|(cached_key, _)| {
+                cached_key.n == n
+                    && cached_key.q_degree == q_degree
+                    && cached_key.z_order >= z_order
+            })
+            .map(|(_, descendant_s)| descendant_s.truncated(z_order))
+        {
+            return Ok(descendant_s);
+        }
     }
 
     let size = n + 1;
@@ -647,8 +673,23 @@ fn projective_space_descendant_s_matrix_at_lambda_weights(
         weights: weights.to_vec(),
     };
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(descendant_s) = cache.lock().unwrap().get(&key).cloned() {
-        return Ok(descendant_s);
+    {
+        let cache = cache.lock().unwrap();
+        if let Some(descendant_s) = cache.get(&key).cloned() {
+            return Ok(descendant_s);
+        }
+        if let Some(descendant_s) = cache
+            .iter()
+            .find(|(cached_key, _)| {
+                cached_key.n == n
+                    && cached_key.q_degree == q_degree
+                    && cached_key.weights == weights
+                    && cached_key.z_order >= z_order
+            })
+            .map(|(_, descendant_s)| descendant_s.truncated(z_order))
+        {
+            return Ok(descendant_s);
+        }
     }
 
     let size = n + 1;
@@ -1077,7 +1118,149 @@ struct VertexContributionKey {
     powers: Vec<usize>,
 }
 
+#[derive(Debug)]
+struct GraphEvalProfile {
+    enabled: bool,
+    started: Instant,
+    calibration_elapsed: Duration,
+    option_elapsed: Duration,
+    graph_elapsed: Duration,
+    stable_graphs: usize,
+    colorings: usize,
+    recursion_calls: usize,
+    leaves: usize,
+    vertex_cache_hits: usize,
+    vertex_cache_misses: usize,
+    translation_terms: usize,
+    leg_options: usize,
+    edge_options: usize,
+}
+
+impl GraphEvalProfile {
+    fn new() -> Self {
+        Self {
+            enabled: std::env::var_os("GW_PROFILE").is_some(),
+            started: Instant::now(),
+            calibration_elapsed: Duration::ZERO,
+            option_elapsed: Duration::ZERO,
+            graph_elapsed: Duration::ZERO,
+            stable_graphs: 0,
+            colorings: 0,
+            recursion_calls: 0,
+            leaves: 0,
+            vertex_cache_hits: 0,
+            vertex_cache_misses: 0,
+            translation_terms: 0,
+            leg_options: 0,
+            edge_options: 0,
+        }
+    }
+
+    fn add_calibration_elapsed(&mut self, elapsed: Duration) {
+        if self.enabled {
+            self.calibration_elapsed += elapsed;
+        }
+    }
+
+    fn add_option_elapsed(&mut self, elapsed: Duration) {
+        if self.enabled {
+            self.option_elapsed += elapsed;
+        }
+    }
+
+    fn add_graph_elapsed(&mut self, elapsed: Duration) {
+        if self.enabled {
+            self.graph_elapsed += elapsed;
+        }
+    }
+
+    fn finish(&self) {
+        if !self.enabled {
+            return;
+        }
+        eprintln!(
+            "GW_PROFILE total={:.3}s calibration={:.3}s options={:.3}s graphs={:.3}s stable_graphs={} colorings={} recursion_calls={} leaves={} vertex_cache_hits={} vertex_cache_misses={} translation_terms={} leg_options={} edge_options={}",
+            self.started.elapsed().as_secs_f64(),
+            self.calibration_elapsed.as_secs_f64(),
+            self.option_elapsed.as_secs_f64(),
+            self.graph_elapsed.as_secs_f64(),
+            self.stable_graphs,
+            self.colorings,
+            self.recursion_calls,
+            self.leaves,
+            self.vertex_cache_hits,
+            self.vertex_cache_misses,
+            self.translation_terms,
+            self.leg_options,
+            self.edge_options,
+        );
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GraphKernelCacheKey {
+    n: usize,
+    q_degree: usize,
+    r_order: usize,
+    graph_dimension: usize,
+    equivariant: bool,
+}
+
+#[derive(Debug)]
+struct GraphKernel {
+    calibration: ProjectiveSpaceJCalibration,
+    inverse_r: Vec<SeriesMatrix>,
+    translation: Vec<Vec<QSeries>>,
+    edge_options: Vec<Vec<Vec<EdgeFactorOption>>>,
+    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries>>,
+}
+
+fn projective_space_graph_kernel(
+    n: usize,
+    q_degree: usize,
+    r_order: usize,
+    graph_dimension: usize,
+    equivariant: bool,
+    weights: &[Rational],
+) -> Result<Arc<GraphKernel>, GwError> {
+    static CACHE: OnceLock<Mutex<HashMap<GraphKernelCacheKey, Arc<GraphKernel>>>> = OnceLock::new();
+    let key = GraphKernelCacheKey {
+        n,
+        q_degree,
+        r_order,
+        graph_dimension,
+        equivariant,
+    };
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
+        return Ok(kernel);
+    }
+
+    let calibration = if equivariant {
+        projective_space_j_calibration(n, q_degree, r_order)?
+    } else {
+        projective_space_j_calibration_at_lambda_weights(n, q_degree, r_order, weights)?
+    };
+    let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
+    let unit = calibration.relative_sqrt_delta_inverse.clone();
+    let translation = translation_coefficients(&inverse_r, &unit, q_degree);
+    let edge_coefficients =
+        edge_propagator_coefficients(&inverse_r, &calibration.metric, graph_dimension, q_degree)?;
+    let edge_options = edge_options_by_color(&edge_coefficients);
+
+    let kernel = Arc::new(GraphKernel {
+        calibration,
+        inverse_r,
+        translation,
+        edge_options,
+        vertex_cache: Mutex::new(HashMap::new()),
+    });
+    cache.lock().unwrap().insert(key, kernel.clone());
+    Ok(kernel)
+}
+
 pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
+    let mut profile = GraphEvalProfile::new();
     let max_descendant_power = req
         .insertions
         .iter()
@@ -1120,72 +1303,88 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
     }
 
     let weights = (1..=req.n + 1).map(Rational::from).collect::<Vec<_>>();
-    let (calibration, descendant_s, specialized_nonequivariant) = if req.equivariant {
-        (
-            projective_space_j_calibration(req.n, q_degree, needed_r_order)?,
-            projective_space_descendant_s_matrix(req.n, q_degree, needed_s_order)?,
-            false,
-        )
+    let calibration_started = Instant::now();
+    let descendant_s = if req.equivariant {
+        projective_space_descendant_s_matrix(req.n, q_degree, needed_s_order)?
     } else {
-        (
-            projective_space_j_calibration_at_lambda_weights(
-                req.n,
-                q_degree,
-                needed_r_order,
-                &weights,
-            )?,
-            projective_space_descendant_s_matrix_at_lambda_weights(
-                req.n,
-                q_degree,
-                needed_s_order,
-                &weights,
-            )?,
-            true,
-        )
+        projective_space_descendant_s_matrix_at_lambda_weights(
+            req.n,
+            q_degree,
+            needed_s_order,
+            &weights,
+        )?
     };
-    let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
-    let unit = calibration.relative_sqrt_delta_inverse.clone();
-    let translation = translation_coefficients(&inverse_r, &unit, q_degree);
-    let edge_coefficients =
-        edge_propagator_coefficients(&inverse_r, &calibration.metric, graph_dimension, q_degree)?;
+    let kernel = projective_space_graph_kernel(
+        req.n,
+        q_degree,
+        needed_r_order,
+        graph_dimension,
+        req.equivariant,
+        &weights,
+    )?;
+    let specialized_nonequivariant = !req.equivariant;
+    profile.add_calibration_elapsed(calibration_started.elapsed());
+
+    let options_started = Instant::now();
     let insertion_terms = ancestor_insertion_terms(
         req.n,
         &req.insertions,
         &descendant_s,
-        &calibration.psi_inverse,
+        &kernel.calibration.psi_inverse,
         q_degree,
         graph_dimension,
     );
     let leg_options = leg_options_by_marking_color(
         &insertion_terms,
-        &inverse_r,
+        &kernel.inverse_r,
         q_degree,
         graph_dimension,
         req.n + 1,
     );
-    let edge_options = edge_options_by_color(&edge_coefficients);
+    profile.leg_options = leg_options
+        .iter()
+        .flat_map(|by_color| by_color.iter())
+        .map(Vec::len)
+        .sum();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    profile.add_option_elapsed(options_started.elapsed());
 
     let mut total = QSeries::zero(q_degree);
     let graphs = stable_graphs(req.genus, req.insertions.len());
+    profile.stable_graphs = graphs.len();
     let oracle = WittenKontsevich::new();
-    let mut vertex_cache = HashMap::<VertexContributionKey, QSeries>::new();
+    let mut vertex_cache = kernel.vertex_cache.lock().unwrap();
     let mut coloring_cache = HashMap::<usize, Vec<Vec<usize>>>::new();
 
+    let graphs_started = Instant::now();
     for graph in &graphs {
         let automorphism_factor = &RatFun::one() / &RatFun::from(graph.automorphism_order());
         let colorings = coloring_cache
             .entry(graph.vertices.len())
             .or_insert_with(|| vertex_colorings(graph.vertices.len(), req.n + 1));
+        profile.colorings += colorings.len();
+        let vertex_power_caps = graph
+            .vertices
+            .iter()
+            .enumerate()
+            .map(|(vertex, stable_vertex)| 3 * stable_vertex.genus + graph.valence(vertex) - 3)
+            .collect::<Vec<_>>();
         for colors in colorings.iter() {
             let mut graph_total = QSeries::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+            let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             accumulate_graph_factors(
                 graph,
                 &colors,
                 &leg_options,
-                &edge_options,
-                &calibration,
-                &translation,
+                &kernel.edge_options,
+                &kernel.calibration,
+                &kernel.translation,
                 &oracle,
                 &mut vertex_cache,
                 q_degree,
@@ -1194,17 +1393,22 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
                 0,
                 QSeries::one(q_degree),
                 &mut base_powers,
+                &mut vertex_power_sums,
+                &vertex_power_caps,
                 &mut graph_total,
+                &mut profile,
             );
 
             total = total.add(&graph_total.scale(&automorphism_factor));
         }
     }
+    profile.add_graph_elapsed(graphs_started.elapsed());
 
     let value = total
         .coeff(req.degree)
         .cloned()
         .unwrap_or_else(RatFun::zero);
+    profile.finish();
     if req.equivariant {
         return Ok(InvariantResult {
             value,
@@ -1434,8 +1638,14 @@ fn accumulate_graph_factors(
     current_power_sum: usize,
     coefficient: QSeries,
     base_powers: &mut [Vec<usize>],
+    vertex_power_sums: &mut [usize],
+    vertex_power_caps: &[usize],
     total: &mut QSeries,
+    profile: &mut GraphEvalProfile,
 ) {
+    if profile.enabled {
+        profile.recursion_calls += 1;
+    }
     if coefficient.is_zero() || current_power_sum > max_power {
         return;
     }
@@ -1451,10 +1661,15 @@ fn accumulate_graph_factors(
             if next_power_sum > max_power {
                 continue;
             }
+            let next_vertex_power = vertex_power_sums[vertex] + option.power;
+            if next_vertex_power > vertex_power_caps[vertex] {
+                continue;
+            }
             let next_coefficient = coefficient.mul(&option.coefficient);
             if next_coefficient.is_zero() {
                 continue;
             }
+            vertex_power_sums[vertex] = next_vertex_power;
             base_powers[vertex].push(option.power);
             accumulate_graph_factors(
                 graph,
@@ -1471,9 +1686,13 @@ fn accumulate_graph_factors(
                 next_power_sum,
                 next_coefficient,
                 base_powers,
+                vertex_power_sums,
+                vertex_power_caps,
                 total,
+                profile,
             );
             base_powers[vertex].pop();
+            vertex_power_sums[vertex] -= option.power;
         }
         return;
     }
@@ -1488,8 +1707,32 @@ fn accumulate_graph_factors(
             if next_power_sum > max_power {
                 continue;
             }
+            if edge.a == edge.b {
+                let next_vertex_power =
+                    vertex_power_sums[edge.a] + option.left_power + option.right_power;
+                if next_vertex_power > vertex_power_caps[edge.a] {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_vertex_power;
+            } else {
+                let next_left_power = vertex_power_sums[edge.a] + option.left_power;
+                let next_right_power = vertex_power_sums[edge.b] + option.right_power;
+                if next_left_power > vertex_power_caps[edge.a]
+                    || next_right_power > vertex_power_caps[edge.b]
+                {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_left_power;
+                vertex_power_sums[edge.b] = next_right_power;
+            }
             let next_coefficient = coefficient.mul(&option.coefficient);
             if next_coefficient.is_zero() {
+                if edge.a == edge.b {
+                    vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+                } else {
+                    vertex_power_sums[edge.b] -= option.right_power;
+                    vertex_power_sums[edge.a] -= option.left_power;
+                }
                 continue;
             }
             base_powers[edge.a].push(option.left_power);
@@ -1509,10 +1752,19 @@ fn accumulate_graph_factors(
                 next_power_sum,
                 next_coefficient,
                 base_powers,
+                vertex_power_sums,
+                vertex_power_caps,
                 total,
+                profile,
             );
             base_powers[edge.b].pop();
             base_powers[edge.a].pop();
+            if edge.a == edge.b {
+                vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+            } else {
+                vertex_power_sums[edge.b] -= option.right_power;
+                vertex_power_sums[edge.a] -= option.left_power;
+            }
         }
         return;
     }
@@ -1528,11 +1780,15 @@ fn accumulate_graph_factors(
             oracle,
             vertex_cache,
             q_degree,
+            profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
         if vertex_product.is_zero() {
             return;
         }
+    }
+    if profile.enabled {
+        profile.leaves += 1;
     }
     *total = total.add(&coefficient.mul(&vertex_product));
 }
@@ -1561,7 +1817,7 @@ fn leg_options_for_color(
     q_degree: usize,
     max_power: usize,
 ) -> Vec<LegFactorOption> {
-    let mut out = Vec::new();
+    let mut by_power = vec![QSeries::zero(q_degree); max_power + 1];
     for term in insertion_terms {
         for (order, matrix) in inverse_r.iter().enumerate() {
             let power = term.base_power + order;
@@ -1573,11 +1829,17 @@ fn leg_options_for_color(
                 coefficient = coefficient.add(&matrix.entry(color, source).mul(source_coeff));
             }
             if !coefficient.is_zero() {
-                out.push(LegFactorOption { power, coefficient });
+                by_power[power] = by_power[power].add(&coefficient);
             }
         }
     }
-    out
+    by_power
+        .into_iter()
+        .enumerate()
+        .filter_map(|(power, coefficient)| {
+            (!coefficient.is_zero()).then_some(LegFactorOption { power, coefficient })
+        })
+        .collect()
 }
 
 fn edge_options_by_color(
@@ -1632,6 +1894,7 @@ fn vertex_contribution_with_translations(
     oracle: &WittenKontsevich,
     vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
     q_degree: usize,
+    profile: &mut GraphEvalProfile,
 ) -> QSeries {
     let mut sorted_powers = base_powers.to_vec();
     sorted_powers.sort_unstable();
@@ -1641,7 +1904,13 @@ fn vertex_contribution_with_translations(
         powers: sorted_powers,
     };
     if let Some(cached) = vertex_cache.get(&key) {
+        if profile.enabled {
+            profile.vertex_cache_hits += 1;
+        }
         return cached.clone();
+    }
+    if profile.enabled {
+        profile.vertex_cache_misses += 1;
     }
 
     let base_dimension = 3isize * genus as isize - 3 + base_powers.len() as isize;
@@ -1667,6 +1936,9 @@ fn vertex_contribution_with_translations(
         }
 
         for composition in positive_compositions(translation_excess as usize, translation_count) {
+            if profile.enabled {
+                profile.translation_terms += 1;
+            }
             let mut powers = base_powers.to_vec();
             let mut coefficient = QSeries::one(q_degree);
             for excess in composition {
