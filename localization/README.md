@@ -225,6 +225,11 @@ not a full stable-map fixed-locus evaluator for arbitrary genus, descendants,
 Hodge factors, and unstable vertices. The production path for positive-genus
 ordinary `P^n` computations is the Givental `S/R` graph expansion.
 
+Validation-only implementations and oracle tables, including the Zinger
+cross-check path, Growi rows, and local Calabi-Yau tables, live under
+`src/validation_backends/`. They are used by tests and diagnostics rather than
+as production computation shortcuts.
+
 ## TODO
 
 - Enable full symbolic equivariant output for negative split-bundle twisted

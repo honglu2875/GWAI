@@ -5,13 +5,15 @@ use crate::givental::{
     compute_by_givental_graphs, projective_space_descendant_s_matrix,
     projective_space_j_calibration, CanonicalFrameConvention, SeriesRMatrix,
 };
-use crate::growi_oracle::{
-    disputed_p2_genus_two_descendants, fast_positive_genus_cases, oracle_cases,
-};
-use crate::local_oracle::{local_p2_gw, local_p2_gw_from_gv, resolved_conifold_gw};
 use crate::localization::genus_zero_localization_graphs;
 use crate::series::{QSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
+use crate::validation_backends::growi::{
+    disputed_p2_genus_two_descendants, fast_positive_genus_cases, oracle_cases,
+};
+use crate::validation_backends::local_cy::{
+    local_p2_gw, local_p2_gw_from_gv, resolved_conifold_gw,
+};
 use crate::{compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -503,7 +505,8 @@ fn test_zinger_projective_cross_checks() -> Result<(), String> {
     ];
 
     for req in requests {
-        let zinger = crate::zinger::compute(&req).map_err(|err| err.to_string())?;
+        let zinger =
+            crate::validation_backends::zinger::compute(&req).map_err(|err| err.to_string())?;
         let givental = compute_by_givental_graphs(&req).map_err(|err| err.to_string())?;
         expect_eq(zinger.value, givental.value)?;
     }

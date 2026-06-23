@@ -1,7 +1,7 @@
 use gw_pn::algebra::{RatFun, Rational};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::givental::compute_semisimple_graph_value;
-use gw_pn::local_oracle::local_p2_gw;
+use gw_pn::validation_backends::local_cy::local_p2_gw;
 use gw_pn::tau;
 use gw_pn::twisted::{
     compute_negative_split_twisted, negative_split_inverse_mirror_map_coefficients,

@@ -5389,7 +5389,8 @@ mod tests {
             assert_eq!(
                 result.value,
                 RatFun::from_rational(
-                    crate::local_oracle::resolved_conifold_gw(genus, degree).unwrap()
+                    crate::validation_backends::local_cy::resolved_conifold_gw(genus, degree)
+                        .unwrap()
                 ),
                 "resolved conifold g={genus} d={degree}"
             );
@@ -5405,8 +5406,9 @@ mod tests {
         let provider = TwistedProjectiveSpaceProvider::new(1, vec![1, 1], false).unwrap();
         let raw =
             crate::givental::compute_semisimple_graph_value(&provider, 2, 1, &[], None).unwrap();
-        let oracle =
-            RatFun::from_rational(crate::local_oracle::resolved_conifold_gw(2, 1).unwrap());
+        let oracle = RatFun::from_rational(
+            crate::validation_backends::local_cy::resolved_conifold_gw(2, 1).unwrap(),
+        );
 
         assert_eq!(raw, oracle);
     }
@@ -5417,8 +5419,9 @@ mod tests {
             TwistedProjectiveSpaceProvider::symbolic_lambda_line(1, vec![1, 1], false).unwrap();
         let raw =
             crate::givental::compute_semisimple_graph_value(&provider, 2, 1, &[], None).unwrap();
-        let oracle =
-            RatFun::from_rational(crate::local_oracle::resolved_conifold_gw(2, 1).unwrap());
+        let oracle = RatFun::from_rational(
+            crate::validation_backends::local_cy::resolved_conifold_gw(2, 1).unwrap(),
+        );
         let limit = RatFun::from_rational(
             raw.nonequivariant_limit_line(0, &[Rational::one()])
                 .unwrap(),
@@ -5434,7 +5437,7 @@ mod tests {
         let result = compute_negative_split_twisted(&req).unwrap();
         assert_eq!(
             result.value,
-            RatFun::from_rational(crate::local_oracle::local_p2_gw(2, 1).unwrap())
+            RatFun::from_rational(crate::validation_backends::local_cy::local_p2_gw(2, 1).unwrap(),)
         );
     }
 

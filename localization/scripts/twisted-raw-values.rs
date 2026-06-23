@@ -1,6 +1,6 @@
 use gw_pn::algebra::RatFun;
 use gw_pn::givental::compute_semisimple_graph_value;
-use gw_pn::local_oracle::{local_p2_gw, resolved_conifold_gw};
+use gw_pn::validation_backends::local_cy::{local_p2_gw, resolved_conifold_gw};
 use gw_pn::twisted::TwistedProjectiveSpaceProvider;
 use std::env;
 use std::io::{self, Write};
