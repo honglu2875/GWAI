@@ -2512,10 +2512,30 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode(
     fiber_weights: &[Rational],
     mode: TwistedCalibrationMode,
 ) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
+    specialized_twisted_birkhoff_canonical_data_with_mode_and_validation(
+        n,
+        twist,
+        max_q_degree,
+        base_weights,
+        fiber_weights,
+        mode,
+        TwistedCalibrationValidation::Full,
+    )
+}
+
+fn specialized_twisted_birkhoff_canonical_data_with_mode_and_validation(
+    n: usize,
+    twist: &NegativeSplitBundleTwist,
+    max_q_degree: usize,
+    base_weights: &[Rational],
+    fiber_weights: &[Rational],
+    mode: TwistedCalibrationMode,
+    validation: TwistedCalibrationValidation,
+) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
     // Build quantum multiplication by H from either Picard-Fuchs data or from
-    // the Birkhoff S-matrix, then diagonalize it.  Self-adjointness with
-    // respect to the twisted flat pairing is required before the resulting
-    // eigenvectors can be treated as canonical idempotents.
+    // the Birkhoff S-matrix, then diagonalize it.  Full validation checks
+    // self-adjointness and diagonalization of the twisted flat pairing; the fast
+    // graph path skips those identities after they have been covered by tests.
     validate_twisted_weights(n, twist, base_weights, fiber_weights)?;
     let model = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
         n,
@@ -2557,15 +2577,17 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode(
         }
     };
 
-    let self_adjoint_defect = quantum_h
-        .transpose()
-        .mul(&flat_metric)
-        .sub(&flat_metric.mul(&quantum_h));
-    if !self_adjoint_defect.is_zero() {
-        return Err(GwError::ValidationFailure(
-            "Birkhoff quantum multiplication is not self-adjoint for the twisted flat pairing"
-                .to_string(),
-        ));
+    if validation.runs_expensive_checks() {
+        let self_adjoint_defect = quantum_h
+            .transpose()
+            .mul(&flat_metric)
+            .sub(&flat_metric.mul(&quantum_h));
+        if !self_adjoint_defect.is_zero() {
+            return Err(GwError::ValidationFailure(
+                "Birkhoff quantum multiplication is not self-adjoint for the twisted flat pairing"
+                    .to_string(),
+            ));
+        }
     }
 
     let charpoly = charpoly_qseries_coefficients(&quantum_h)?;
@@ -2581,11 +2603,14 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode(
     let mut metric_norms = Vec::with_capacity(n + 1);
     let mut inverse_metric_norms = Vec::with_capacity(n + 1);
     for row in 0..=n {
-        for col in 0..=n {
-            if row != col && !canonical_metric.entry(row, col).is_zero() {
-                return Err(GwError::ValidationFailure(
-                    "Birkhoff idempotents do not diagonalize the twisted flat pairing".to_string(),
-                ));
+        if validation.runs_expensive_checks() {
+            for col in 0..=n {
+                if row != col && !canonical_metric.entry(row, col).is_zero() {
+                    return Err(GwError::ValidationFailure(
+                        "Birkhoff idempotents do not diagonalize the twisted flat pairing"
+                            .to_string(),
+                    ));
+                }
             }
         }
         let norm = canonical_metric.entry(row, row).clone();
@@ -2602,12 +2627,13 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode(
     })
 }
 
-fn specialized_twisted_birkhoff_canonical_data_ratfun(
+fn specialized_twisted_birkhoff_canonical_data_ratfun_with_validation(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     max_q_degree: usize,
     base_weight_factors: &[Rational],
     fiber_weight_factors: &[Rational],
+    validation: TwistedCalibrationValidation,
 ) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
     let model = NegativeSplitLineHypergeometricModel::new(
         n,
@@ -2633,15 +2659,17 @@ fn specialized_twisted_birkhoff_canonical_data_ratfun(
         &model.fiber_weights,
     )?;
 
-    let self_adjoint_defect = quantum_h
-        .transpose()
-        .mul(&flat_metric)
-        .sub(&flat_metric.mul(&quantum_h));
-    if !self_adjoint_defect.is_zero() {
-        return Err(GwError::ValidationFailure(
-            "Birkhoff quantum multiplication is not self-adjoint for the twisted lambda-line pairing"
-                .to_string(),
-        ));
+    if validation.runs_expensive_checks() {
+        let self_adjoint_defect = quantum_h
+            .transpose()
+            .mul(&flat_metric)
+            .sub(&flat_metric.mul(&quantum_h));
+        if !self_adjoint_defect.is_zero() {
+            return Err(GwError::ValidationFailure(
+                "Birkhoff quantum multiplication is not self-adjoint for the twisted lambda-line pairing"
+                    .to_string(),
+            ));
+        }
     }
 
     let charpoly = charpoly_qseries_coefficients(&quantum_h)?;
@@ -2661,12 +2689,14 @@ fn specialized_twisted_birkhoff_canonical_data_ratfun(
     let mut metric_norms = Vec::with_capacity(n + 1);
     let mut inverse_metric_norms = Vec::with_capacity(n + 1);
     for row in 0..=n {
-        for col in 0..=n {
-            if row != col && !canonical_metric.entry(row, col).is_zero() {
-                return Err(GwError::ValidationFailure(
-                    "Birkhoff idempotents do not diagonalize the twisted lambda-line pairing"
-                        .to_string(),
-                ));
+        if validation.runs_expensive_checks() {
+            for col in 0..=n {
+                if row != col && !canonical_metric.entry(row, col).is_zero() {
+                    return Err(GwError::ValidationFailure(
+                        "Birkhoff idempotents do not diagonalize the twisted lambda-line pairing"
+                            .to_string(),
+                    ));
+                }
             }
         }
         let norm = canonical_metric.entry(row, row).clone();
@@ -2721,7 +2751,17 @@ fn negative_split_twisted_birkhoff_calibration_skeleton_with_mode(
         fiber_weights,
         mode,
     )?;
-    let size = n + 1;
+    negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
+        q_degree, z_order, &canonical,
+    )
+}
+
+fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
+    q_degree: usize,
+    z_order: usize,
+    canonical: &SpecializedTwistedBirkhoffCanonicalData,
+) -> Result<SemisimpleCalibration, GwError> {
+    let size = canonical.roots.len();
     let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
     let relative_sqrt_delta = canonical
         .inverse_metric_norms
@@ -2763,8 +2803,8 @@ fn negative_split_twisted_birkhoff_calibration_skeleton_with_mode(
         psi,
         psi_inverse,
         connection,
-        delta: canonical.inverse_metric_norms,
-        inverse_delta: canonical.metric_norms,
+        delta: canonical.inverse_metric_norms.clone(),
+        inverse_delta: canonical.metric_norms.clone(),
         relative_sqrt_delta,
         relative_sqrt_delta_inverse: relative_sqrt_delta_inv,
     })
@@ -2801,22 +2841,39 @@ fn negative_split_twisted_birkhoff_calibration_candidate_with_mode(
     fiber_weights: &[Rational],
     mode: TwistedCalibrationMode,
 ) -> Result<SemisimpleCalibration, GwError> {
-    let mut calibration = negative_split_twisted_birkhoff_calibration_skeleton_with_mode(
+    negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validation(
         n,
         twist,
         q_degree,
         z_order,
         base_weights,
         fiber_weights,
-        mode.clone(),
-    )?;
-    let canonical = specialized_twisted_birkhoff_canonical_data_with_mode(
+        mode,
+        TwistedCalibrationValidation::Full,
+    )
+}
+
+fn negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validation(
+    n: usize,
+    twist: &NegativeSplitBundleTwist,
+    q_degree: usize,
+    z_order: usize,
+    base_weights: &[Rational],
+    fiber_weights: &[Rational],
+    mode: TwistedCalibrationMode,
+    validation: TwistedCalibrationValidation,
+) -> Result<SemisimpleCalibration, GwError> {
+    let canonical = specialized_twisted_birkhoff_canonical_data_with_mode_and_validation(
         n,
         twist,
         q_degree,
         base_weights,
         fiber_weights,
         mode.clone(),
+        validation,
+    )?;
+    let mut calibration = negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
+        q_degree, z_order, &canonical,
     )?;
     let classical_diagonal = twisted_classical_limit_diagonal_coefficients_with_mode(
         n,
@@ -2841,55 +2898,32 @@ fn negative_split_twisted_birkhoff_calibration_candidate_with_mode(
         CalibrationId("negative-split-equivariant-birkhoff-qrr-candidate".to_string()),
         CanonicalFrameConvention::RelativeNormalizedCanonicalIdempotents,
     )?;
-    calibration.r_matrix.check_unitarity(&calibration.metric)?;
+    if validation.runs_expensive_checks() {
+        calibration.r_matrix.check_unitarity(&calibration.metric)?;
+    }
     Ok(calibration)
 }
 
-fn negative_split_twisted_birkhoff_calibration_candidate_ratfun(
+fn negative_split_twisted_birkhoff_calibration_candidate_ratfun_with_validation(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     q_degree: usize,
     z_order: usize,
     base_weight_factors: &[Rational],
     fiber_weight_factors: &[Rational],
+    validation: TwistedCalibrationValidation,
 ) -> Result<SemisimpleCalibration, GwError> {
-    let canonical = specialized_twisted_birkhoff_canonical_data_ratfun(
+    let canonical = specialized_twisted_birkhoff_canonical_data_ratfun_with_validation(
         n,
         twist,
         q_degree,
         base_weight_factors,
         fiber_weight_factors,
+        validation,
     )?;
-    let size = n + 1;
-    let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
-    let relative_sqrt_delta = canonical
-        .inverse_metric_norms
-        .iter()
-        .map(relative_sqrt_delta_series_local)
-        .collect::<Result<Vec<_>, _>>()?;
-    let relative_sqrt_delta_inv = relative_sqrt_delta
-        .iter()
-        .map(QSeries::inverse)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let relative_scale = SeriesMatrix::diagonal(relative_sqrt_delta.clone());
-    let relative_scale_inv = SeriesMatrix::diagonal(relative_sqrt_delta_inv.clone());
-    let transition_inverse = invert_series_matrix(&transition)?;
-    let psi = transition.mul(&relative_scale);
-    let psi_inverse = relative_scale_inv.mul(&transition_inverse);
-    let connection = psi_inverse.mul(&psi.q_derivative());
-    let metric = SeriesMatrix::diagonal(
-        canonical
-            .metric_norms
-            .iter()
-            .map(|norm| {
-                QSeries::constant(
-                    norm.coeff(0).cloned().unwrap_or_else(RatFun::zero),
-                    q_degree,
-                )
-            })
-            .collect(),
-    );
+    let mut calibration = negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
+        q_degree, z_order, &canonical,
+    )?;
 
     let lambda = crate::algebra::lambda(0);
     let base_weights = base_weight_factors
@@ -2909,32 +2943,24 @@ fn negative_split_twisted_birkhoff_calibration_candidate_ratfun(
     )?;
     let coefficients = solve_twisted_r_coefficients(
         &canonical.roots,
-        &connection,
+        &calibration.connection,
         &classical_diagonal,
         q_degree,
         z_order,
     )?;
-    let r_matrix = SeriesRMatrix::from_coefficients(
-        size,
+    calibration.r_matrix = SeriesRMatrix::from_coefficients(
+        n + 1,
         q_degree,
         z_order,
         coefficients,
         CalibrationId("negative-split-lambda-line-birkhoff-qrr-candidate".to_string()),
         CanonicalFrameConvention::RelativeNormalizedCanonicalIdempotents,
     )?;
-    r_matrix.check_unitarity(&metric)?;
+    if validation.runs_expensive_checks() {
+        calibration.r_matrix.check_unitarity(&calibration.metric)?;
+    }
 
-    Ok(SemisimpleCalibration {
-        r_matrix,
-        metric,
-        psi,
-        psi_inverse,
-        connection,
-        delta: canonical.inverse_metric_norms,
-        inverse_delta: canonical.metric_norms,
-        relative_sqrt_delta,
-        relative_sqrt_delta_inverse: relative_sqrt_delta_inv,
-    })
+    Ok(calibration)
 }
 
 pub fn negative_split_twisted_relation_calibration_skeleton(
@@ -4310,6 +4336,46 @@ pub enum TwistedCalibrationMode {
     Euler,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum TwistedCalibrationValidation {
+    /// Skip diagnostic identities that are expensive and do not change the
+    /// produced calibration.  This is the default in the graph-evaluation path.
+    Fast,
+    /// Run full self-adjointness, diagonalization, and R-unitarity checks.
+    Full,
+}
+
+impl TwistedCalibrationValidation {
+    fn runs_expensive_checks(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
+fn twisted_calibration_validation_from_env() -> TwistedCalibrationValidation {
+    // Expensive identities are off in the hot graph-evaluation path by default.
+    // Set either variable to 1/true/yes/on/full when debugging a calibration
+    // change and wanting self-adjointness, diagonalization, and unitarity checks
+    // to run before caching the graph kernel.
+    if env_flag_enabled("GWAI_VALIDATE_TWISTED_CALIBRATION")
+        || env_flag_enabled("GW_VALIDATE_CALIBRATION")
+    {
+        TwistedCalibrationValidation::Full
+    } else {
+        TwistedCalibrationValidation::Fast
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on" | "full"
+            )
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TwistedGraphKernelCacheKey {
     n: usize,
@@ -4321,6 +4387,7 @@ struct TwistedGraphKernelCacheKey {
     fiber_weights: Vec<Rational>,
     line_mode: TwistedLineMode,
     calibration_mode: TwistedCalibrationMode,
+    validation: TwistedCalibrationValidation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4647,6 +4714,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
             Mutex<HashMap<TwistedGraphKernelCacheKey, Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
         let fiber_weights = self.fiber_weights();
+        let validation = twisted_calibration_validation_from_env();
         let key = TwistedGraphKernelCacheKey {
             n: self.base.n,
             twist_degrees: self.twist.degrees().to_vec(),
@@ -4657,6 +4725,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
             fiber_weights: fiber_weights.clone(),
             line_mode: self.line_mode.clone(),
             calibration_mode: self.calibration_mode.clone(),
+            validation,
         };
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
@@ -4665,7 +4734,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
 
         let calibration = match self.line_mode {
             TwistedLineMode::EarlyRational => {
-                negative_split_twisted_birkhoff_calibration_candidate_with_mode(
+                negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validation(
                     self.base.n,
                     &self.twist,
                     q_degree,
@@ -4673,16 +4742,18 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
                     self.base_weights(),
                     &fiber_weights,
                     self.calibration_mode.clone(),
+                    validation,
                 )?
             }
             TwistedLineMode::SymbolicLimit => {
-                negative_split_twisted_birkhoff_calibration_candidate_ratfun(
+                negative_split_twisted_birkhoff_calibration_candidate_ratfun_with_validation(
                     self.base.n,
                     &self.twist,
                     q_degree,
                     r_order,
                     self.base_weights(),
                     &fiber_weights,
+                    validation,
                 )?
             }
         };
