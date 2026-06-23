@@ -8,6 +8,7 @@ use crate::givental::{
 use crate::growi_oracle::{
     disputed_p2_genus_two_descendants, fast_positive_genus_cases, oracle_cases,
 };
+use crate::local_oracle::{local_p2_gw, local_p2_gw_from_gv, resolved_conifold_gw};
 use crate::localization::genus_zero_localization_graphs;
 use crate::series::{QSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
@@ -103,6 +104,7 @@ pub fn run_builtin_tests() -> BuiltinTestReport {
             test_zinger_projective_cross_checks,
         ),
         ("Growi oracle constants", test_growi_oracle_constants),
+        ("local CY oracle constants", test_local_cy_oracle_constants),
         (
             "S/R positive-genus Growi cross-checks",
             test_sr_positive_genus_growi_cross_checks,
@@ -520,6 +522,13 @@ fn test_growi_oracle_constants() -> Result<(), String> {
         disputed[2].expected.clone(),
         RatFun::from_rational(Rational::new(11, 17280)),
     )
+}
+
+fn test_local_cy_oracle_constants() -> Result<(), String> {
+    expect_eq(resolved_conifold_gw(2, 3), Some(Rational::new(1, 80)))?;
+    expect_eq(local_p2_gw(0, 2), Some(Rational::new(-45, 8)))?;
+    expect_eq(local_p2_gw(1, 3), Some(Rational::new(-23, 3)))?;
+    expect_eq(local_p2_gw(3, 15), local_p2_gw_from_gv(3, 15))
 }
 
 fn test_sr_positive_genus_growi_cross_checks() -> Result<(), String> {

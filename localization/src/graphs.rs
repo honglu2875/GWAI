@@ -199,19 +199,18 @@ pub fn stable_graphs_with_bounds(
         let pair_types = edge_pair_types(vertex_count);
         let leg_assignments = labelled_leg_assignments(legs, vertex_count);
         for edge_count in 0..=max_edges {
-            let edge_multisets = edge_multisets(&pair_types, edge_count);
-            for edges in &edge_multisets {
-                if edge_count + 1 < vertex_count {
-                    continue;
-                }
-                let h1 = edge_count + 1 - vertex_count;
-                if h1 > genus {
-                    continue;
-                }
+            if edge_count + 1 < vertex_count {
+                continue;
+            }
+            let h1 = edge_count + 1 - vertex_count;
+            if h1 > genus {
+                continue;
+            }
+            for_each_edge_multiset(&pair_types, edge_count, |edges| {
                 for leg_assignment in &leg_assignments {
                     let base = StableGraph {
                         vertices: vec![StableVertex { genus: 0 }; vertex_count],
-                        edges: edges.clone(),
+                        edges: edges.to_vec(),
                         legs: leg_assignment.clone(),
                     };
                     if !base.is_connected() {
@@ -231,7 +230,7 @@ pub fn stable_graphs_with_bounds(
                         }
                     }
                 }
-            }
+            });
         }
     }
 
@@ -248,28 +247,30 @@ fn edge_pair_types(vertex_count: usize) -> Vec<StableEdge> {
     pairs
 }
 
-fn edge_multisets(pair_types: &[StableEdge], edge_count: usize) -> Vec<Vec<StableEdge>> {
+fn for_each_edge_multiset(
+    pair_types: &[StableEdge],
+    edge_count: usize,
+    mut visit: impl FnMut(&[StableEdge]),
+) {
     fn rec(
         pair_types: &[StableEdge],
         edge_count: usize,
         start: usize,
         current: &mut Vec<StableEdge>,
-        out: &mut Vec<Vec<StableEdge>>,
+        visit: &mut impl FnMut(&[StableEdge]),
     ) {
         if current.len() == edge_count {
-            out.push(current.clone());
+            visit(current);
             return;
         }
         for idx in start..pair_types.len() {
             current.push(pair_types[idx].clone());
-            rec(pair_types, edge_count, idx, current, out);
+            rec(pair_types, edge_count, idx, current, visit);
             current.pop();
         }
     }
 
-    let mut out = Vec::new();
-    rec(pair_types, edge_count, 0, &mut Vec::new(), &mut out);
-    out
+    rec(pair_types, edge_count, 0, &mut Vec::new(), &mut visit);
 }
 
 fn labelled_leg_assignments(legs: usize, vertex_count: usize) -> Vec<Vec<usize>> {

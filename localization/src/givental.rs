@@ -100,6 +100,41 @@ pub struct SeriesRMatrix {
 }
 
 impl SeriesRMatrix {
+    pub fn from_coefficients(
+        size: usize,
+        q_degree: usize,
+        z_order: usize,
+        coefficients: Vec<SeriesMatrix>,
+        calibration: CalibrationId,
+        convention: CanonicalFrameConvention,
+    ) -> Result<Self, GwError> {
+        if coefficients.len() != z_order + 1 {
+            return Err(GwError::ConventionMismatch(format!(
+                "R-matrix has {} coefficient(s), expected {}",
+                coefficients.len(),
+                z_order + 1
+            )));
+        }
+        for coefficient in &coefficients {
+            if coefficient.rows() != size
+                || coefficient.cols() != size
+                || coefficient.max_degree() != q_degree
+            {
+                return Err(GwError::ConventionMismatch(
+                    "R-matrix coefficient shape/truncation mismatch".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            size,
+            q_degree,
+            z_order,
+            coefficients,
+            calibration,
+            convention,
+        })
+    }
+
     pub fn identity(
         size: usize,
         q_degree: usize,
@@ -232,6 +267,39 @@ pub struct SeriesSMatrix {
 }
 
 impl SeriesSMatrix {
+    pub fn from_coefficients(
+        size: usize,
+        q_degree: usize,
+        z_order: usize,
+        coefficients: Vec<SeriesMatrix>,
+        calibration: CalibrationId,
+    ) -> Result<Self, GwError> {
+        if coefficients.len() != z_order + 1 {
+            return Err(GwError::ConventionMismatch(format!(
+                "S-matrix has {} coefficient(s), expected {}",
+                coefficients.len(),
+                z_order + 1
+            )));
+        }
+        for coefficient in &coefficients {
+            if coefficient.rows() != size
+                || coefficient.cols() != size
+                || coefficient.max_degree() != q_degree
+            {
+                return Err(GwError::ConventionMismatch(
+                    "S-matrix coefficient shape/truncation mismatch".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            size,
+            q_degree,
+            z_order,
+            coefficients,
+            calibration,
+        })
+    }
+
     pub fn identity(size: usize, q_degree: usize, z_order: usize) -> Self {
         let mut coefficients = Vec::with_capacity(z_order + 1);
         coefficients.push(SeriesMatrix::identity(size, q_degree));
@@ -283,8 +351,14 @@ impl SeriesSMatrix {
     }
 }
 
+/// Semisimple calibration data in a canonical idempotent frame.
+///
+/// The graph evaluator below only depends on this package of data, not on how
+/// it was produced.  For projective space it comes from the small J-function;
+/// for twisted theories, equivariant theories, r-spin, or other semisimple
+/// CohFTs a provider can supply a different calibration with the same shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectiveSpaceJCalibration {
+pub struct SemisimpleCalibration {
     pub r_matrix: SeriesRMatrix,
     pub metric: SeriesMatrix,
     pub psi: SeriesMatrix,
@@ -294,6 +368,249 @@ pub struct ProjectiveSpaceJCalibration {
     pub inverse_delta: Vec<QSeries>,
     pub relative_sqrt_delta: Vec<QSeries>,
     pub relative_sqrt_delta_inverse: Vec<QSeries>,
+}
+
+pub type ProjectiveSpaceJCalibration = SemisimpleCalibration;
+
+/// Source of the semisimple data needed by the Givental-Teleman graph engine.
+///
+/// The current coefficient ring is `RatFun` over one Novikov variable through
+/// `QSeries`.  That is enough for projective space and split-bundle twists over
+/// projective space; genuinely multi-parameter theories should eventually
+/// replace `QSeries` behind this boundary rather than modifying graph
+/// contraction.
+pub trait SemisimpleCohftProvider {
+    type Insertion;
+
+    fn colors(&self) -> usize;
+
+    fn descendant_power(&self, insertion: &Self::Insertion) -> usize;
+
+    fn insertion_degree(&self, _insertions: &[Self::Insertion]) -> Option<usize> {
+        None
+    }
+
+    fn virtual_dimension(&self, _genus: usize, _degree: usize, _markings: usize) -> Option<isize> {
+        None
+    }
+
+    fn expected_degree_from_dimension(
+        &self,
+        _genus: usize,
+        _insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        None
+    }
+
+    fn candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        if self.insertion_degree(insertions).is_some() {
+            self.expected_degree_from_dimension(genus, insertions)
+                .filter(|degree| *degree <= degree_max)
+                .into_iter()
+                .collect()
+        } else {
+            (0..=degree_max).collect()
+        }
+    }
+
+    fn descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix, GwError>;
+
+    fn graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel>, GwError>;
+
+    fn insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries>, GwError>;
+
+    fn scalar_fallback_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        Ok(None)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectiveSpaceProvider {
+    pub n: usize,
+    /// `true` keeps the symbolic equivariant lambda parameters.  `false` uses
+    /// the current fast non-equivariant path, namely early specialization to a
+    /// generic lambda line.
+    pub equivariant: bool,
+    pub weights: Vec<Rational>,
+}
+
+impl ProjectiveSpaceProvider {
+    pub fn new(n: usize, equivariant: bool) -> Self {
+        Self {
+            n,
+            equivariant,
+            weights: (1..=n + 1).map(Rational::from).collect(),
+        }
+    }
+
+    pub fn symbolic_equivariant(n: usize) -> Self {
+        Self::new(n, true)
+    }
+
+    pub fn lambda_line_nonequivariant(n: usize) -> Self {
+        Self::new(n, false)
+    }
+
+    fn specialized_nonequivariant(&self) -> bool {
+        !self.equivariant
+    }
+}
+
+impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
+    type Insertion = Insertion;
+
+    fn colors(&self) -> usize {
+        self.n + 1
+    }
+
+    fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        insertion.descendant_power
+    }
+
+    fn insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        let mut total = 0usize;
+        for insertion in insertions {
+            total = total.checked_add(insertion.descendant_power)?;
+            total = total.checked_add(insertion.class.pure_power()?)?;
+        }
+        Some(total)
+    }
+
+    fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
+        Some(
+            (1 - genus as isize) * (self.n as isize - 3)
+                + (self.n + 1) as isize * degree as isize
+                + markings as isize,
+        )
+    }
+
+    fn expected_degree_from_dimension(
+        &self,
+        genus: usize,
+        insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        let insertion_degree = self.insertion_degree(insertions)? as isize;
+        let dimension_without_degree =
+            (1 - genus as isize) * (self.n as isize - 3) + insertions.len() as isize;
+        let numerator = insertion_degree - dimension_without_degree;
+        let denominator = (self.n + 1) as isize;
+        if numerator < 0 || numerator % denominator != 0 {
+            return None;
+        }
+        Some((numerator / denominator) as usize)
+    }
+
+    fn candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        self.expected_degree_from_dimension(genus, insertions)
+            .filter(|degree| *degree <= degree_max)
+            .into_iter()
+            .collect()
+    }
+
+    fn descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix, GwError> {
+        if self.equivariant {
+            projective_space_descendant_s_matrix(self.n, q_degree, z_order)
+        } else {
+            projective_space_descendant_s_matrix_at_lambda_weights(
+                self.n,
+                q_degree,
+                z_order,
+                &self.weights,
+            )
+        }
+    }
+
+    fn graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
+        projective_space_graph_kernel(
+            self.n,
+            q_degree,
+            r_order,
+            graph_dimension,
+            self.equivariant,
+            &self.weights,
+        )
+    }
+
+    fn insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries>, GwError> {
+        let coeffs = insertion.class.coeffs();
+        if coeffs.len() != self.colors() {
+            return Err(GwError::ConventionMismatch(format!(
+                "P^{} insertion has {} coefficients, expected {}",
+                self.n,
+                coeffs.len(),
+                self.colors()
+            )));
+        }
+        Ok(coeffs
+            .iter()
+            .map(|coeff| QSeries::constant(coeff.clone(), q_degree))
+            .collect())
+    }
+
+    fn scalar_fallback_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        let req = InvariantRequest {
+            n: self.n,
+            genus,
+            degree,
+            insertions: insertions.to_vec(),
+            equivariant: self.equivariant,
+            mode: ComputeMode::Givental,
+            truncation: truncation.cloned(),
+        };
+        match validation::seed_compute(&req, "givental-seed") {
+            Ok(result) => Ok(Some(result.value)),
+            Err(GwError::UnsupportedInvariant(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1217,15 +1534,64 @@ struct GraphKernelCacheKey {
     r_order: usize,
     graph_dimension: usize,
     equivariant: bool,
+    weights: Vec<Rational>,
 }
 
 #[derive(Debug)]
-struct GraphKernel {
-    calibration: ProjectiveSpaceJCalibration,
+pub struct GiventalGraphKernel {
+    calibration: SemisimpleCalibration,
     inverse_r: Vec<SeriesMatrix>,
     translation: Vec<Vec<QSeries>>,
     edge_options: Vec<Vec<Vec<EdgeFactorOption>>>,
     vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries>>,
+}
+
+impl GiventalGraphKernel {
+    pub fn from_calibration(
+        calibration: SemisimpleCalibration,
+        graph_dimension: usize,
+    ) -> Result<Self, GwError> {
+        let q_degree = calibration.r_matrix.q_degree();
+        let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
+        let unit = calibration.relative_sqrt_delta_inverse.clone();
+        let translation = translation_coefficients(&inverse_r, &unit, q_degree);
+        Self::from_parts(calibration, inverse_r, translation, graph_dimension)
+    }
+
+    pub fn from_parts(
+        calibration: SemisimpleCalibration,
+        inverse_r: Vec<SeriesMatrix>,
+        translation: Vec<Vec<QSeries>>,
+        graph_dimension: usize,
+    ) -> Result<Self, GwError> {
+        let q_degree = calibration.r_matrix.q_degree();
+        let edge_coefficients = edge_propagator_coefficients(
+            &inverse_r,
+            &calibration.metric,
+            graph_dimension,
+            q_degree,
+        )?;
+        let edge_options = edge_options_by_color(&edge_coefficients);
+        Ok(Self {
+            calibration,
+            inverse_r,
+            translation,
+            edge_options,
+            vertex_cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    pub fn calibration(&self) -> &SemisimpleCalibration {
+        &self.calibration
+    }
+
+    pub fn inverse_r(&self) -> &[SeriesMatrix] {
+        &self.inverse_r
+    }
+
+    pub fn translation(&self) -> &[Vec<QSeries>] {
+        &self.translation
+    }
 }
 
 fn projective_space_graph_kernel(
@@ -1235,14 +1601,20 @@ fn projective_space_graph_kernel(
     graph_dimension: usize,
     equivariant: bool,
     weights: &[Rational],
-) -> Result<Arc<GraphKernel>, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<GraphKernelCacheKey, Arc<GraphKernel>>>> = OnceLock::new();
+) -> Result<Arc<GiventalGraphKernel>, GwError> {
+    static CACHE: OnceLock<Mutex<HashMap<GraphKernelCacheKey, Arc<GiventalGraphKernel>>>> =
+        OnceLock::new();
     let key = GraphKernelCacheKey {
         n,
         q_degree,
         r_order,
         graph_dimension,
         equivariant,
+        weights: if equivariant {
+            Vec::new()
+        } else {
+            weights.to_vec()
+        },
     };
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
@@ -1254,32 +1626,16 @@ fn projective_space_graph_kernel(
     } else {
         projective_space_j_calibration_at_lambda_weights(n, q_degree, r_order, weights)?
     };
-    let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
-    let unit = calibration.relative_sqrt_delta_inverse.clone();
-    let translation = translation_coefficients(&inverse_r, &unit, q_degree);
-    let edge_coefficients =
-        edge_propagator_coefficients(&inverse_r, &calibration.metric, graph_dimension, q_degree)?;
-    let edge_options = edge_options_by_color(&edge_coefficients);
-
-    let kernel = Arc::new(GraphKernel {
+    let kernel = Arc::new(GiventalGraphKernel::from_calibration(
         calibration,
-        inverse_r,
-        translation,
-        edge_options,
-        vertex_cache: Mutex::new(HashMap::new()),
-    });
+        graph_dimension,
+    )?);
     cache.lock().unwrap().insert(key, kernel.clone());
     Ok(kernel)
 }
 
 pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
-    let mut profile = GraphEvalProfile::new();
-    let max_descendant_power = req
-        .insertions
-        .iter()
-        .map(|insertion| insertion.descendant_power)
-        .max()
-        .unwrap_or(0);
+    let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
 
     if !is_stable_cohft_range(req.genus, req.insertions.len()) {
         return Err(GwError::UnsupportedInvariant(
@@ -1288,72 +1644,156 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
         ));
     }
 
-    if let Some(total_degree) = req.insertion_degree() {
-        let virtual_dimension = req.virtual_dimension();
-        if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
-            return Ok(InvariantResult {
-                value: RatFun::zero(),
-                engine: "givental-r-graph",
-                notes: vec![format!(
-                    "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
-                )],
-            });
-        }
+    if let Some((virtual_dimension, total_degree)) =
+        dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
+    {
+        return Ok(InvariantResult {
+            value: RatFun::zero(),
+            engine: "givental-r-graph",
+            notes: vec![format!(
+                "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
+            )],
+        });
     }
 
-    let graph_dimension = 3 * req.genus + req.insertions.len() - 3;
+    let value = compute_semisimple_graph_value(
+        &provider,
+        req.genus,
+        req.degree,
+        &req.insertions,
+        req.truncation.as_ref(),
+    )?;
+    if req.equivariant {
+        return Ok(InvariantResult {
+            value,
+            engine: "givental-r-graph",
+            notes: vec![
+                "computed by truncated J-calibrated R-matrix stable-graph expansion; result remains equivariant"
+                    .to_string(),
+            ],
+        });
+    }
+
+    if provider.specialized_nonequivariant() {
+        return Ok(InvariantResult {
+            value,
+            engine: "givental-r-graph-lambda-line",
+            notes: vec![
+                "computed by J-calibrated S/R stable-graph expansion after early generic lambda-line specialization"
+                    .to_string(),
+            ],
+        });
+    }
+
+    let limit = value.nonequivariant_limit_line(req.n, &provider.weights)?;
+    Ok(InvariantResult {
+        value: RatFun::from_rational(limit),
+        engine: "givental-r-graph-limit",
+        notes: vec![
+            "computed by truncated J-calibrated R-matrix stable-graph expansion and lambda-line nonequivariant limit"
+                .to_string(),
+        ],
+    })
+}
+
+fn dimension_mismatch<P>(
+    provider: &P,
+    genus: usize,
+    degree: usize,
+    insertions: &[P::Insertion],
+) -> Option<(isize, usize)>
+where
+    P: SemisimpleCohftProvider,
+{
+    let total_degree = provider.insertion_degree(insertions)?;
+    let virtual_dimension = provider.virtual_dimension(genus, degree, insertions.len())?;
+    (virtual_dimension >= 0 && total_degree as isize != virtual_dimension)
+        .then_some((virtual_dimension, total_degree))
+}
+
+/// Computes a single coefficient using the generic semisimple Givental graph
+/// engine.
+///
+/// Public `P^n` requests still go through `compute_by_givental_graphs` for
+/// projective-space dimension checks and result labeling.  Extension providers
+/// can call this directly once they can supply S/R calibration data and flat
+/// insertion vectors.
+pub fn compute_semisimple_graph_value<P>(
+    provider: &P,
+    genus: usize,
+    degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<RatFun, GwError>
+where
+    P: SemisimpleCohftProvider,
+{
+    let total = compute_semisimple_graph_series(provider, genus, degree, insertions, truncation)?;
+    Ok(total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
+}
+
+/// Computes the full truncated q-series produced by the generic semisimple
+/// Givental graph engine for the given insertions.
+pub fn compute_semisimple_graph_series<P>(
+    provider: &P,
+    genus: usize,
+    q_degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<QSeries, GwError>
+where
+    P: SemisimpleCohftProvider,
+{
+    let mut profile = GraphEvalProfile::new();
+    let max_descendant_power = insertions
+        .iter()
+        .map(|insertion| provider.descendant_power(insertion))
+        .max()
+        .unwrap_or(0);
+
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        return Err(GwError::UnsupportedInvariant(
+            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let graph_dimension = 3 * genus + insertions.len() - 3;
     let needed_r_order = graph_dimension + 1;
     let needed_s_order = max_descendant_power;
     let needed_z_order = needed_r_order.max(needed_s_order);
-    let q_degree = req.degree;
-    let z_order = req
-        .truncation
-        .as_ref()
+    let z_order = truncation
         .map(|truncation| truncation.z_order)
         .unwrap_or(needed_z_order);
     if z_order < needed_z_order {
         return Err(GwError::TruncationTooLow);
     }
 
-    let weights = (1..=req.n + 1).map(Rational::from).collect::<Vec<_>>();
     let calibration_started = Instant::now();
-    let descendant_s = if req.equivariant {
-        projective_space_descendant_s_matrix(req.n, q_degree, needed_s_order)?
-    } else {
-        projective_space_descendant_s_matrix_at_lambda_weights(
-            req.n,
-            q_degree,
-            needed_s_order,
-            &weights,
-        )?
-    };
-    let kernel = projective_space_graph_kernel(
-        req.n,
-        q_degree,
-        needed_r_order,
-        graph_dimension,
-        req.equivariant,
-        &weights,
-    )?;
-    let specialized_nonequivariant = !req.equivariant;
+    let kernel = provider.graph_kernel(q_degree, needed_r_order, graph_dimension)?;
     profile.add_calibration_elapsed(calibration_started.elapsed());
 
     let options_started = Instant::now();
-    let insertion_terms = ancestor_insertion_terms(
-        req.n,
-        &req.insertions,
-        &descendant_s,
-        &kernel.calibration.psi_inverse,
-        q_degree,
-        graph_dimension,
-    );
-    let leg_options = leg_options_by_marking_color(
-        &insertion_terms,
-        &kernel.inverse_r,
-        q_degree,
-        graph_dimension,
-        req.n + 1,
-    );
+    let leg_options = if insertions.is_empty() {
+        Vec::new()
+    } else {
+        let descendant_s = provider.descendant_s_matrix(q_degree, needed_s_order)?;
+        let insertion_terms = ancestor_insertion_terms_from_provider(
+            provider,
+            insertions,
+            &descendant_s,
+            &kernel.calibration.psi_inverse,
+            q_degree,
+            graph_dimension,
+        )?;
+        leg_options_by_marking_color(
+            &insertion_terms,
+            &kernel.inverse_r,
+            q_degree,
+            graph_dimension,
+            provider.colors(),
+        )
+    };
     profile.leg_options = leg_options
         .iter()
         .flat_map(|by_color| by_color.iter())
@@ -1367,7 +1807,7 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
         .sum();
     profile.add_option_elapsed(options_started.elapsed());
 
-    let graphs = prepared_stable_graphs(req.genus, req.insertions.len(), req.n + 1);
+    let graphs = prepared_stable_graphs(genus, insertions.len(), provider.colors());
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -1380,43 +1820,8 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
         &mut profile,
     );
     profile.add_graph_elapsed(graphs_started.elapsed());
-
-    let value = total
-        .coeff(req.degree)
-        .cloned()
-        .unwrap_or_else(RatFun::zero);
     profile.finish();
-    if req.equivariant {
-        return Ok(InvariantResult {
-            value,
-            engine: "givental-r-graph",
-            notes: vec![
-                "computed by truncated J-calibrated R-matrix stable-graph expansion; result remains equivariant"
-                    .to_string(),
-            ],
-        });
-    }
-
-    if specialized_nonequivariant {
-        return Ok(InvariantResult {
-            value,
-            engine: "givental-r-graph-lambda-line",
-            notes: vec![
-                "computed by J-calibrated S/R stable-graph expansion after early generic lambda-line specialization"
-                    .to_string(),
-            ],
-        });
-    }
-
-    let limit = value.nonequivariant_limit_line(req.n, &weights)?;
-    Ok(InvariantResult {
-        value: RatFun::from_rational(limit),
-        engine: "givental-r-graph-limit",
-        notes: vec![
-            "computed by truncated J-calibrated R-matrix stable-graph expansion and lambda-line nonequivariant limit"
-                .to_string(),
-        ],
-    })
+    Ok(total)
 }
 
 const MASTER_SHARED_KERNEL_MAX_MARKINGS: usize = 2;
@@ -1425,6 +1830,21 @@ const MASTER_MIN_SHARED_KERNEL_TASKS: usize = 8;
 const MASTER_MIN_RESTRICTED_KERNEL_TASKS: usize = 2;
 
 pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>, GwError> {
+    if req.mode != ComputeMode::Givental {
+        return Ok(None);
+    }
+
+    let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
+    compute_series_master_with_provider(req, provider)
+}
+
+pub fn compute_series_master_with_provider<P>(
+    req: &SeriesRequest,
+    provider: P,
+) -> Result<Option<SeriesResult>, GwError>
+where
+    P: SemisimpleCohftProvider<Insertion = Insertion>,
+{
     if req.mode != ComputeMode::Givental {
         return Ok(None);
     }
@@ -1447,23 +1867,17 @@ pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>
 
     for markings in 0..=req.max_markings {
         for insertions in crate::insertion_monomials(&basis, markings) {
-            let probe_req = req.coefficient_request(0, insertions.clone());
-            if probe_req.insertion_degree().is_some() {
-                if let Some(expected_degree) = probe_req.expected_degree_from_dimension() {
-                    if expected_degree <= req.degree_max {
-                        candidates_by_degree[expected_degree].push(insertions);
-                    }
-                }
-            } else {
-                for bucket in &mut candidates_by_degree {
-                    bucket.push(insertions.clone());
-                }
+            for degree in
+                provider.candidate_degrees_from_dimension(req.genus, req.degree_max, &insertions)
+            {
+                candidates_by_degree[degree].push(insertions.clone());
             }
         }
     }
 
-    let shared_kernel_task_counts = shared_kernel_task_counts(req, &candidates_by_degree);
-    let mut evaluator = GiventalMasterEvaluator::new(req);
+    let shared_kernel_task_counts =
+        shared_kernel_task_counts(req, &provider, &candidates_by_degree);
+    let mut evaluator = GiventalMasterEvaluator::with_provider(req, provider);
     evaluator.set_shared_kernel_task_counts(shared_kernel_task_counts.clone());
     for (markings, count) in shared_kernel_task_counts.iter().copied().enumerate() {
         if count >= MASTER_MIN_RESTRICTED_KERNEL_TASKS && count < MASTER_MIN_SHARED_KERNEL_TASKS {
@@ -1493,11 +1907,7 @@ pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>
         for insertions in candidates {
             let current_ordinal = ordinal;
             ordinal += 1;
-            let coefficient_req = req.coefficient_request(degree, insertions.clone());
-            if coefficient_req
-                .insertion_degree()
-                .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
-            {
+            if evaluator.is_dimension_mismatch(degree, &insertions) {
                 continue;
             }
 
@@ -1587,16 +1997,13 @@ pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>
 
 fn shared_kernel_task_counts(
     req: &SeriesRequest,
+    provider: &impl SemisimpleCohftProvider<Insertion = Insertion>,
     candidates_by_degree: &[Vec<Vec<Insertion>>],
 ) -> Vec<usize> {
     let mut counts = vec![0usize; req.max_markings + 1];
     for (degree, candidates) in candidates_by_degree.iter().enumerate() {
         for insertions in candidates {
-            let coefficient_req = req.coefficient_request(degree, insertions.clone());
-            if coefficient_req
-                .insertion_degree()
-                .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
-            {
+            if dimension_mismatch(provider, req.genus, degree, insertions).is_some() {
                 continue;
             }
             let markings = insertions.len();
@@ -1612,30 +2019,39 @@ fn shared_kernel_task_counts(
 }
 
 #[derive(Debug)]
-struct GiventalMasterEvaluator {
-    n: usize,
+struct GiventalMasterEvaluator<P>
+where
+    P: SemisimpleCohftProvider<Insertion = Insertion>,
+{
+    provider: P,
     genus: usize,
     degree_max: usize,
     max_descendant_power: usize,
-    equivariant: bool,
     truncation: Option<Truncation>,
-    weights: Vec<Rational>,
     descendant_s_cache: HashMap<(usize, usize), SeriesSMatrix>,
     external_kernel_cache: HashMap<usize, ExternalLegKernel>,
     leg_options_cache: HashMap<MasterLegOptionsKey, Vec<Vec<LegFactorOption>>>,
     shared_kernel_task_counts: Option<Vec<usize>>,
 }
 
-impl GiventalMasterEvaluator {
+#[cfg(test)]
+impl GiventalMasterEvaluator<ProjectiveSpaceProvider> {
     fn new(req: &SeriesRequest) -> Self {
+        Self::with_provider(req, ProjectiveSpaceProvider::new(req.n, req.equivariant))
+    }
+}
+
+impl<P> GiventalMasterEvaluator<P>
+where
+    P: SemisimpleCohftProvider<Insertion = Insertion>,
+{
+    fn with_provider(req: &SeriesRequest, provider: P) -> Self {
         Self {
-            n: req.n,
+            provider,
             genus: req.genus,
             degree_max: req.degree_max,
             max_descendant_power: req.max_descendant_power,
-            equivariant: req.equivariant,
             truncation: req.truncation.clone(),
-            weights: (1..=req.n + 1).map(Rational::from).collect(),
             descendant_s_cache: HashMap::new(),
             external_kernel_cache: HashMap::new(),
             leg_options_cache: HashMap::new(),
@@ -1647,22 +2063,47 @@ impl GiventalMasterEvaluator {
         self.shared_kernel_task_counts = Some(counts);
     }
 
+    fn colors(&self) -> usize {
+        self.provider.colors()
+    }
+
+    fn is_dimension_mismatch(&self, degree: usize, insertions: &[Insertion]) -> bool {
+        dimension_mismatch(&self.provider, self.genus, degree, insertions).is_some()
+    }
+
     fn compute_coefficient(
         &mut self,
         degree: usize,
         insertions: &[Insertion],
     ) -> Result<RatFun, GwError> {
-        let coefficient_req = self.coefficient_request(degree, insertions.to_vec());
-        if coefficient_req
-            .insertion_degree()
-            .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
-        {
+        if self.is_dimension_mismatch(degree, insertions) {
             return Ok(RatFun::zero());
         }
 
         let markings = insertions.len();
         if !self.can_use_external_leg_kernel(insertions) {
-            return Ok(crate::compute(coefficient_req)?.value);
+            return match compute_semisimple_graph_value(
+                &self.provider,
+                self.genus,
+                degree,
+                insertions,
+                self.truncation.as_ref(),
+            ) {
+                Ok(value) => Ok(value),
+                Err(GwError::UnsupportedInvariant(msg)) => {
+                    if let Some(value) = self.provider.scalar_fallback_value(
+                        self.genus,
+                        degree,
+                        insertions,
+                        self.truncation.as_ref(),
+                    )? {
+                        Ok(value)
+                    } else {
+                        Err(GwError::UnsupportedInvariant(msg))
+                    }
+                }
+                Err(err) => Err(err),
+            };
         }
 
         self.validate_truncation(markings, insertions)?;
@@ -1821,12 +2262,12 @@ impl GiventalMasterEvaluator {
         let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
         let template = RestrictedExternalLegKernel::from_tasks(
             markings,
-            self.n + 1,
+            self.colors(),
             graph_dimension,
             q_degree,
             tasks,
         );
-        let graphs = prepared_stable_graphs(self.genus, markings, self.n + 1);
+        let graphs = prepared_stable_graphs(self.genus, markings, self.colors());
         let mut profile = GraphEvalProfile::new();
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
@@ -1848,18 +2289,6 @@ impl GiventalMasterEvaluator {
         profile.add_graph_elapsed(graphs_started.elapsed());
         profile.finish();
         Ok(total)
-    }
-
-    fn coefficient_request(&self, degree: usize, insertions: Vec<Insertion>) -> InvariantRequest {
-        InvariantRequest {
-            n: self.n,
-            genus: self.genus,
-            degree,
-            insertions,
-            equivariant: self.equivariant,
-            mode: ComputeMode::Givental,
-            truncation: self.truncation.clone(),
-        }
     }
 
     fn validate_truncation(
@@ -1892,16 +2321,7 @@ impl GiventalMasterEvaluator {
     fn descendant_s(&mut self, q_degree: usize, z_order: usize) -> Result<&SeriesSMatrix, GwError> {
         let key = (q_degree, z_order);
         if !self.descendant_s_cache.contains_key(&key) {
-            let descendant_s = if self.equivariant {
-                projective_space_descendant_s_matrix(self.n, q_degree, z_order)?
-            } else {
-                projective_space_descendant_s_matrix_at_lambda_weights(
-                    self.n,
-                    q_degree,
-                    z_order,
-                    &self.weights,
-                )?
-            };
+            let descendant_s = self.provider.descendant_s_matrix(q_degree, z_order)?;
             self.descendant_s_cache.insert(key, descendant_s);
         }
         Ok(self
@@ -1910,7 +2330,10 @@ impl GiventalMasterEvaluator {
             .expect("descendant S-matrix cache populated before access"))
     }
 
-    fn graph_kernel_for_markings(&self, markings: usize) -> Result<Arc<GraphKernel>, GwError> {
+    fn graph_kernel_for_markings(
+        &self,
+        markings: usize,
+    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         self.graph_kernel_for_markings_at_q(markings, self.degree_max)
     }
 
@@ -1918,16 +2341,10 @@ impl GiventalMasterEvaluator {
         &self,
         markings: usize,
         q_degree: usize,
-    ) -> Result<Arc<GraphKernel>, GwError> {
+    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         let graph_dimension = self.graph_dimension(markings);
-        projective_space_graph_kernel(
-            self.n,
-            q_degree,
-            graph_dimension + 1,
-            graph_dimension,
-            self.equivariant,
-            &self.weights,
-        )
+        self.provider
+            .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
     }
 
     fn external_leg_kernel(&mut self, markings: usize) -> Result<&ExternalLegKernel, GwError> {
@@ -1944,7 +2361,7 @@ impl GiventalMasterEvaluator {
     fn build_external_leg_kernel(&self, markings: usize) -> Result<ExternalLegKernel, GwError> {
         let graph_dimension = self.graph_dimension(markings);
         let graph_kernel = self.graph_kernel_for_markings(markings)?;
-        let graphs = prepared_stable_graphs(self.genus, markings, self.n + 1);
+        let graphs = prepared_stable_graphs(self.genus, markings, self.colors());
         let mut profile = GraphEvalProfile::new();
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
@@ -1958,7 +2375,7 @@ impl GiventalMasterEvaluator {
         let total = evaluate_external_graphs_parallel(
             graphs.as_ref(),
             markings,
-            self.n + 1,
+            self.colors(),
             &graph_kernel,
             self.degree_max,
             graph_dimension,
@@ -2002,20 +2419,19 @@ impl GiventalMasterEvaluator {
         let graph_dimension = self.graph_dimension(markings);
         let s_order = self.max_descendant_power.max(insertion.descendant_power);
         let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
-        let n = self.n;
-        let colors = self.n + 1;
+        let colors = self.colors();
         let psi_inverse = graph_kernel.calibration.psi_inverse.clone();
         let inverse_r = graph_kernel.inverse_r.clone();
         let insertion_terms = {
-            let descendant_s = self.descendant_s(q_degree, s_order)?;
-            ancestor_insertion_terms(
-                n,
+            let descendant_s = self.descendant_s(q_degree, s_order)?.clone();
+            ancestor_insertion_terms_from_provider(
+                &self.provider,
                 std::slice::from_ref(insertion),
-                descendant_s,
+                &descendant_s,
                 &psi_inverse,
                 q_degree,
                 graph_dimension,
-            )
+            )?
         };
         let mut options = leg_options_by_marking_color(
             &insertion_terms,
@@ -2150,7 +2566,7 @@ struct ScalarGraphChunkResult {
 fn evaluate_scalar_graphs_parallel(
     graphs: &[PreparedStableGraph],
     leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &Arc<GraphKernel>,
+    kernel: &Arc<GiventalGraphKernel>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
@@ -2209,7 +2625,7 @@ fn evaluate_scalar_graphs_parallel(
 fn evaluate_scalar_graph_chunk(
     graphs: &[PreparedStableGraph],
     leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &GraphKernel,
+    kernel: &GiventalGraphKernel,
     q_degree: usize,
     graph_dimension: usize,
     mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
@@ -2265,7 +2681,7 @@ fn evaluate_external_graphs_parallel(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &Arc<GraphKernel>,
+    kernel: &Arc<GiventalGraphKernel>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
@@ -2327,7 +2743,7 @@ fn evaluate_external_graph_chunk(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &GraphKernel,
+    kernel: &GiventalGraphKernel,
     q_degree: usize,
     graph_dimension: usize,
     mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
@@ -2380,7 +2796,7 @@ struct RestrictedExternalGraphChunkResult {
 fn evaluate_restricted_external_graphs_parallel(
     graphs: &[PreparedStableGraph],
     template: &RestrictedExternalLegKernel,
-    kernel: &Arc<GraphKernel>,
+    kernel: &Arc<GiventalGraphKernel>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
@@ -2439,7 +2855,7 @@ fn evaluate_restricted_external_graphs_parallel(
 fn evaluate_restricted_external_graph_chunk(
     graphs: &[PreparedStableGraph],
     template: &RestrictedExternalLegKernel,
-    kernel: &GraphKernel,
+    kernel: &GiventalGraphKernel,
     q_degree: usize,
     graph_dimension: usize,
     mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
@@ -3186,28 +3602,36 @@ fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
     2 * genus + markings > 2
 }
 
-fn ancestor_insertion_terms(
-    n: usize,
-    insertions: &[Insertion],
+fn ancestor_insertion_terms_from_provider<P>(
+    provider: &P,
+    insertions: &[P::Insertion],
     descendant_s: &SeriesSMatrix,
     psi_inverse: &SeriesMatrix,
     q_degree: usize,
     max_power: usize,
-) -> Vec<Vec<AncestorLegTerm>> {
+) -> Result<Vec<Vec<AncestorLegTerm>>, GwError>
+where
+    P: SemisimpleCohftProvider,
+{
     insertions
         .iter()
         .map(|insertion| {
-            let max_order = insertion
-                .descendant_power
-                .min(descendant_s.coefficients().len().saturating_sub(1));
+            let descendant_power = provider.descendant_power(insertion);
+            let flat_class_vector = provider.insertion_vector(insertion, q_degree)?;
+            let max_order =
+                descendant_power.min(descendant_s.coefficients().len().saturating_sub(1));
             let mut terms = Vec::new();
             for s_order in 0..=max_order {
-                let base_power = insertion.descendant_power - s_order;
+                let base_power = descendant_power - s_order;
                 if base_power > max_power {
                     continue;
                 }
-                let flat_vector =
-                    apply_s_coefficient_to_insertion(n, descendant_s, s_order, insertion, q_degree);
+                let flat_vector = apply_s_coefficient_to_vector(
+                    descendant_s,
+                    s_order,
+                    &flat_class_vector,
+                    q_degree,
+                );
                 if flat_vector.iter().all(QSeries::is_zero) {
                     continue;
                 }
@@ -3220,29 +3644,21 @@ fn ancestor_insertion_terms(
                     vector: canonical_vector,
                 });
             }
-            terms
+            Ok(terms)
         })
         .collect()
 }
 
-fn apply_s_coefficient_to_insertion(
-    n: usize,
+fn apply_s_coefficient_to_vector(
     descendant_s: &SeriesSMatrix,
     s_order: usize,
-    insertion: &Insertion,
+    class_vector: &[QSeries],
     q_degree: usize,
 ) -> Vec<QSeries> {
     let matrix = descendant_s
         .coefficient(s_order)
         .expect("S coefficient order was bounded before access");
-    let class_vector = insertion
-        .class
-        .coeffs()
-        .iter()
-        .map(|coeff| QSeries::constant(coeff.clone(), q_degree))
-        .collect::<Vec<_>>();
-    debug_assert_eq!(class_vector.len(), n + 1);
-    apply_matrix_to_vector(matrix, &class_vector, q_degree)
+    apply_matrix_to_vector(matrix, class_vector, q_degree)
 }
 
 fn apply_matrix_to_vector(
@@ -4140,6 +4556,39 @@ mod tests {
     }
 
     #[test]
+    fn projective_provider_path_matches_public_graph_path() {
+        let insertions = vec![
+            tau(2, CohomologyClass::h_power(1, 1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+        ];
+        let req = InvariantRequest {
+            mode: ComputeMode::Givental,
+            ..InvariantRequest::new(1, 0, 2, insertions.clone())
+        };
+        let public = compute_by_givental_graphs(&req).unwrap().value;
+        let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
+        let generic = compute_semisimple_graph_value(&provider, 0, 2, &insertions, None).unwrap();
+        assert_eq!(generic, public);
+    }
+
+    #[test]
+    fn graph_kernel_constructor_matches_projective_kernel_builder() {
+        let weights = [
+            crate::algebra::Rational::from(2),
+            crate::algebra::Rational::from(5),
+        ];
+        let calibration =
+            projective_space_j_calibration_at_lambda_weights(1, 1, 2, &weights).unwrap();
+        let direct = GiventalGraphKernel::from_calibration(calibration.clone(), 2).unwrap();
+        let projective = projective_space_graph_kernel(1, 1, 2, 2, false, &weights).unwrap();
+
+        assert_eq!(direct.inverse_r(), projective.inverse_r());
+        assert_eq!(direct.translation(), projective.translation());
+        assert_eq!(direct.calibration(), projective.calibration());
+    }
+
+    #[test]
     fn givental_graph_reproduces_p1_degree_two_stationary_descendant() {
         let req = InvariantRequest {
             mode: ComputeMode::Givental,
@@ -4319,20 +4768,22 @@ mod tests {
             mode: ComputeMode::Givental,
             truncation: None,
         };
+        let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
         let basis = crate::insertion_basis(req.n, req.max_descendant_power);
         let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
         for markings in 0..=req.max_markings {
             for insertions in crate::insertion_monomials(&basis, markings) {
-                let probe_req = req.coefficient_request(0, insertions.clone());
-                if let Some(expected_degree) = probe_req.expected_degree_from_dimension() {
-                    if expected_degree <= req.degree_max {
-                        candidates_by_degree[expected_degree].push(insertions);
-                    }
+                for degree in provider.candidate_degrees_from_dimension(
+                    req.genus,
+                    req.degree_max,
+                    &insertions,
+                ) {
+                    candidates_by_degree[degree].push(insertions.clone());
                 }
             }
         }
 
-        let counts = shared_kernel_task_counts(&req, &candidates_by_degree);
+        let counts = shared_kernel_task_counts(&req, &provider, &candidates_by_degree);
         assert_eq!(counts[1], 5);
         assert!(counts[1] < MASTER_MIN_SHARED_KERNEL_TASKS);
         let mut evaluator = GiventalMasterEvaluator::new(&req);
@@ -4341,6 +4792,103 @@ mod tests {
         assert!(
             evaluator.can_use_restricted_external_leg_kernel(&[tau(3, CohomologyClass::one(2))])
         );
+    }
+
+    #[derive(Debug, Clone)]
+    struct ShiftedDimensionProvider;
+
+    impl SemisimpleCohftProvider for ShiftedDimensionProvider {
+        type Insertion = Insertion;
+
+        fn colors(&self) -> usize {
+            2
+        }
+
+        fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
+            insertion.descendant_power
+        }
+
+        fn insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+            insertions.iter().try_fold(0usize, |total, insertion| {
+                total
+                    .checked_add(insertion.descendant_power)?
+                    .checked_add(insertion.class.pure_power()?)
+            })
+        }
+
+        fn virtual_dimension(
+            &self,
+            _genus: usize,
+            degree: usize,
+            _markings: usize,
+        ) -> Option<isize> {
+            Some(if degree == 1 { 1 } else { 2 })
+        }
+
+        fn expected_degree_from_dimension(
+            &self,
+            _genus: usize,
+            _insertions: &[Self::Insertion],
+        ) -> Option<usize> {
+            Some(1)
+        }
+
+        fn descendant_s_matrix(
+            &self,
+            _q_degree: usize,
+            _z_order: usize,
+        ) -> Result<SeriesSMatrix, GwError> {
+            Err(GwError::UnsupportedInvariant(
+                "dimension-only test provider has no S-matrix".to_string(),
+            ))
+        }
+
+        fn graph_kernel(
+            &self,
+            _q_degree: usize,
+            _r_order: usize,
+            _graph_dimension: usize,
+        ) -> Result<Arc<GiventalGraphKernel>, GwError> {
+            Err(GwError::UnsupportedInvariant(
+                "dimension-only test provider has no graph kernel".to_string(),
+            ))
+        }
+
+        fn insertion_vector(
+            &self,
+            _insertion: &Self::Insertion,
+            _q_degree: usize,
+        ) -> Result<Vec<QSeries>, GwError> {
+            Err(GwError::UnsupportedInvariant(
+                "dimension-only test provider has no insertion vectors".to_string(),
+            ))
+        }
+    }
+
+    #[test]
+    fn series_planner_uses_provider_dimension_rule() {
+        let req = crate::SeriesRequest {
+            n: 1,
+            genus: 1,
+            degree_max: 1,
+            max_markings: 1,
+            max_descendant_power: 0,
+            include_zero: false,
+            equivariant: false,
+            mode: ComputeMode::Givental,
+            truncation: None,
+        };
+        let provider = ShiftedDimensionProvider;
+        let insertions = vec![tau(0, CohomologyClass::h_power(1, 1))];
+        let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
+        for degree in
+            provider.candidate_degrees_from_dimension(req.genus, req.degree_max, &insertions)
+        {
+            candidates_by_degree[degree].push(insertions.clone());
+        }
+
+        let counts = shared_kernel_task_counts(&req, &provider, &candidates_by_degree);
+        assert_eq!(counts[1], 1);
     }
 
     #[test]

@@ -13,10 +13,12 @@ pub mod geometry;
 pub mod givental;
 pub mod graphs;
 pub mod growi_oracle;
+pub mod local_oracle;
 pub mod localization;
 pub mod series;
 pub mod tautological;
 pub mod testsuite;
+pub mod twisted;
 pub mod validation;
 pub mod zinger;
 

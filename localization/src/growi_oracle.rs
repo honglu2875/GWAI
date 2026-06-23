@@ -159,7 +159,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "slow genus-two P2 graph regression"]
     fn sr_graph_matches_growi_disputed_descendants() {
         for case in disputed_p2_genus_two_descendants() {
             let actual = compute_by_givental_graphs(&case.request)
@@ -169,7 +168,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "slow genus-two P1 graph regression"]
     fn sr_graph_matches_p1_genus_two_degree_three_growi_cases() {
         for case in p1_genus_two_degree_three_descendants() {
             let actual = compute_by_givental_graphs(&case.request)
