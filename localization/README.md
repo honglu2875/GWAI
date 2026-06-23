@@ -69,7 +69,7 @@ cargo run --quiet -- psi --g 0 --powers 0,0,0
 
 ## `compute`
 
-Computes ordinary `P^n` invariants through the selected projective-space mode.
+Computes ordinary `P^n` invariants through the Givental/S/R path.
 
 Basic form:
 
@@ -82,8 +82,6 @@ cargo run --quiet -- compute --n <n> --g <genus> --d <degree> \
 Supported `--mode` values:
 
 - `givental`
-- `localization`
-- `compare`
 
 Examples:
 
@@ -92,18 +90,7 @@ cargo run --quiet -- compute --n 2 --g 0 --d 1 \
   --insert 'tau0(H^2)' \
   --insert 'tau0(H^2)' \
   --insert 'tau0(H)' \
-  --mode compare
-```
-
-Equivariant localization example:
-
-```bash
-cargo run --quiet -- compute --n 1 --g 0 --d 1 \
-  --insert 'tau0(H)' \
-  --insert 'tau0(H)' \
-  --mode localization \
-  --equivariant \
-  --nonequivariant-limit
+  --mode givental
 ```
 
 ## `twisted`
@@ -218,17 +205,11 @@ The stable-graph/Givental engine is implemented for stable CohFT ranges. Some
 unstable cases are handled by seed formulas or specialized paths; others report
 an unsupported-invariant error rather than returning a guessed value.
 
-The stable-map localization backend is intentionally limited at the moment. It
-has graph data structures and a genus-zero primary tree evaluator that are useful
-for low-degree cross-checks, plus seed formulas for elementary cases, but it is
-not a full stable-map fixed-locus evaluator for arbitrary genus, descendants,
-Hodge factors, and unstable vertices. The production path for positive-genus
-ordinary `P^n` computations is the Givental `S/R` graph expansion.
-
-Validation-only implementations and oracle tables, including the Zinger
-cross-check path, Growi rows, and local Calabi-Yau tables, live under
-`src/validation_backends/`. They are used by tests and diagnostics rather than
-as production computation shortcuts.
+Validation-only implementations and oracle tables live under
+`src/validation_backends/`. This includes the Zinger cross-check path, Growi
+rows, local Calabi-Yau tables, and the legacy direct stable-map localization
+code. They are used by tests and diagnostics rather than as production
+computation shortcuts.
 
 ## TODO
 

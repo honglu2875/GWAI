@@ -99,11 +99,9 @@ fn run_series(args: &[String]) -> Result<(), GwError> {
     let include_zero = has_flag(args, "--include-zero");
     let mode = match parse_string_flag(args, "--mode")?.as_deref() {
         None | Some("givental") => ComputeMode::Givental,
-        Some("localization") => ComputeMode::Localization,
-        Some("compare") => ComputeMode::CompareLocalizationAndGivental,
         Some(other) => {
             return Err(GwError::ParseError(format!(
-                "invalid --mode `{other}`; expected givental, localization, or compare"
+                "invalid --mode `{other}`; expected givental"
             )))
         }
     };
@@ -167,11 +165,9 @@ fn run_compute(args: &[String]) -> Result<(), GwError> {
         .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
     let mode = match parse_string_flag(args, "--mode")?.as_deref() {
         None | Some("givental") => ComputeMode::Givental,
-        Some("localization") => ComputeMode::Localization,
-        Some("compare") => ComputeMode::CompareLocalizationAndGivental,
         Some(other) => {
             return Err(GwError::ParseError(format!(
-                "invalid --mode `{other}`; expected givental, localization, or compare"
+                "invalid --mode `{other}`; expected givental"
             )))
         }
     };
@@ -365,11 +361,10 @@ fn print_help() {
 Commands:\n\
   gw-pn tests\n\
   gw-pn psi --g 2 --powers 4\n\
-  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode compare\n\
-  gw-pn compute --n 1 --g 0 --d 1 --insert 'tau0(H)' --insert 'tau0(H)' --mode localization --equivariant --nonequivariant-limit\n\
+  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
   gw-pn twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist 3 --g 2 --d 3\n\
-  gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode compare\n\
+  gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode givental\n\
 \n\
 Supported compute seed cases:\n\
   P^0 point-theory psi integrals, genus-zero degree-zero constants,\n\

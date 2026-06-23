@@ -5,5 +5,6 @@
 //! scripts used to keep the Givental/S/R implementation honest.
 
 pub mod growi;
+pub mod legacy_localization;
 pub mod local_cy;
 pub mod zinger;

@@ -1,10 +1,20 @@
+//! Tautological integrals over moduli spaces of stable curves.
+//!
+//! The Givental graph expansion reduces every vertex to point-theory psi
+//! intersections on `Mbar_{g,n}`.  This module supplies those integrals through
+//! Witten-Kontsevich recursion and leaves an explicit table boundary for Hodge
+//! integrals needed by direct localization-style checks.
+
 use crate::algebra::Rational;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub trait TautologicalOracle: Send + Sync {
+    /// Integral of `prod_i psi_i^{powers[i]}` over `Mbar_{g,n}`.
     fn psi_integral(&self, genus: usize, powers: &[usize]) -> Rational;
 
+    /// Optional integral with lambda classes.  Implementors may return `None`
+    /// when the table does not contain the requested Hodge monomial.
     fn hodge_integral(
         &self,
         _genus: usize,
@@ -23,6 +33,8 @@ pub struct HodgeKey {
 }
 
 impl HodgeKey {
+    /// Key for permutation-symmetric Hodge tables, where marked points are
+    /// indistinguishable and psi powers can be sorted.
     pub fn symmetric(genus: usize, psi_powers: &[usize], lambda_powers: &[(usize, usize)]) -> Self {
         let mut psi_powers = psi_powers.to_vec();
         psi_powers.sort_unstable();
@@ -35,6 +47,8 @@ impl HodgeKey {
         }
     }
 
+    /// Key for labelled-marking tables, where psi powers are tied to specific
+    /// markings and must not be sorted.
     pub fn labelled(genus: usize, psi_powers: &[usize], lambda_powers: &[(usize, usize)]) -> Self {
         let mut lambda_powers = lambda_powers.to_vec();
         lambda_powers.sort_unstable();
@@ -131,6 +145,9 @@ impl WittenKontsevich {
     }
 
     fn psi_uncached(&self, genus: usize, powers: &[usize]) -> Rational {
+        // Dimension check on Mbar_{g,n}: only total psi degree 3g-3+n can
+        // contribute.  The remaining cases are reduced by string, dilaton, and
+        // finally DVV/Virasoro recursion.
         let n = powers.len();
         let dimension = 3isize * genus as isize - 3 + n as isize;
         if dimension < 0 {
@@ -159,6 +176,7 @@ impl WittenKontsevich {
     }
 
     fn apply_string_equation(&self, genus: usize, powers: &[usize], zero_pos: usize) -> Rational {
+        // <tau_0 prod tau_d> = sum_j <tau_{d_j-1} prod_{i != j} tau_{d_i}>.
         let mut rest = powers.to_vec();
         rest.remove(zero_pos);
         let mut total = Rational::zero();
@@ -174,6 +192,7 @@ impl WittenKontsevich {
     }
 
     fn apply_dilaton_equation(&self, genus: usize, powers: &[usize], one_pos: usize) -> Rational {
+        // <tau_1 prod tau_d> = (2g-2+n) <prod tau_d>, after removing tau_1.
         let mut rest = powers.to_vec();
         rest.remove(one_pos);
         let factor = 2isize * genus as isize - 2 + rest.len() as isize;
@@ -185,6 +204,9 @@ impl WittenKontsevich {
     }
 
     fn apply_dvv(&self, genus: usize, powers: &[usize]) -> Rational {
+        // DVV recursion for the last insertion tau_{d0}.  The first sum merges
+        // tau_{d0} with another marking; the second sum is the boundary term:
+        // one irreducible genus reduction plus all separating splittings.
         debug_assert!(powers.iter().all(|&p| p >= 2));
         let mut rest = powers.to_vec();
         let d0 = rest.pop().expect("DVV requires at least one insertion");

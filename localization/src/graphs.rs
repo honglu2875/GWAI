@@ -1,3 +1,10 @@
+//! Stable graphs for the boundary strata of `Mbar_{g,n}`.
+//!
+//! These are the abstract stable-curve graphs used by the Givental graph
+//! expansion, not stable-map localization graphs.  Vertices carry genera, legs
+//! are labelled markings, and automorphism orders include both vertex
+//! symmetries and bijections of repeated edges.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -163,6 +170,8 @@ pub struct StableGraphBounds {
 }
 
 pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
+    // The universal Givental sum only needs stable graphs for fixed (g,n), so
+    // cache them independently of target, degree, and insertions.
     static CACHE: OnceLock<Mutex<BTreeMap<(usize, usize), Vec<StableGraph>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
     if let Some(graphs) = cache.lock().unwrap().get(&(genus, legs)).cloned() {
@@ -191,6 +200,9 @@ pub fn stable_graphs_with_bounds(
     legs: usize,
     bounds: StableGraphBounds,
 ) -> Vec<StableGraph> {
+    // Generate connected multigraphs, assign legs and vertex genera, then
+    // canonicalize to quotient by graph isomorphism.  This is exact and simple;
+    // performance-sensitive callers cache the result or precompute color orbits.
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
 

@@ -1,3 +1,10 @@
+//! Small closed-form and oracle-style formulas used for validation and seeds.
+//!
+//! These are not a replacement for the Givental graph evaluator.  They cover
+//! low-complexity cases where the answer follows from point theory, classical
+//! intersections, the small quantum product, the divisor equation, or
+//! Kontsevich's recursion for plane rational curves.
+
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
 use crate::geometry::CohomologyClass;
@@ -16,6 +23,9 @@ pub fn seed_compute(
     req: &InvariantRequest,
     engine: &'static str,
 ) -> Result<InvariantResult, GwError> {
+    // These seed cases are mathematically closed and cheap.  The Givental
+    // evaluator uses them only as scalar fallbacks for unsupported unstable
+    // ranges; validation tests may call them explicitly.
     if let Some(total_degree) = req.insertion_degree() {
         let virtual_dimension = req.virtual_dimension();
         if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
@@ -121,6 +131,8 @@ fn compute_genus_zero_constant_maps(
     req: &InvariantRequest,
     engine: &'static str,
 ) -> Result<InvariantResult, GwError> {
+    // Degree-zero genus-zero maps factor as an ordinary P^n intersection times
+    // the psi integral on Mbar_{0,n}.
     let classes = req
         .insertions
         .iter()
@@ -148,6 +160,9 @@ pub fn genus_one_degree_zero_one_point_obstruction(
     req: &InvariantRequest,
     engine: &'static str,
 ) -> Result<InvariantResult, GwError> {
+    // For one marked point in degree zero, the obstruction bundle is
+    // E^vee \otimes T P^n.  This computes the resulting first Chern/euler
+    // contribution against a single H^c insertion.
     let insertion = &req.insertions[0];
     let Some(h_power) = insertion.class.pure_power() else {
         return Err(GwError::UnsupportedInvariant(
@@ -204,6 +219,9 @@ fn compute_genus_zero_three_point_primary(
 }
 
 fn p1_stationary_one_descendant_divisor_family(req: &InvariantRequest) -> Option<Rational> {
+    // From the P^1 J-function one-point stationary term plus repeated divisor
+    // equation:
+    // <tau_{2d-2}(H), H,...,H>_{0,d} = d^m/(d!)^2.
     if req.equivariant
         || req.n != 1
         || req.genus != 0
@@ -276,6 +294,7 @@ pub fn small_quantum_three_point(n: usize, degree: usize, classes: &[&Cohomology
 }
 
 pub fn plane_rational_curve_count(degree: usize) -> Rational {
+    // Kontsevich recursion for N_d = <pt^{3d-1}>_{0,d}^{P^2}.
     if degree == 0 {
         return Rational::zero();
     }

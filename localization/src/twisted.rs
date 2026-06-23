@@ -32,6 +32,11 @@ pub struct NegativeSplitBundleTwist {
 }
 
 impl NegativeSplitBundleTwist {
+    /// Split bundle `O(-a_1) + ... + O(-a_r)` over `P^n`.
+    ///
+    /// The stored degrees are the positive integers `a_i`; the signs are part
+    /// of the type convention.  Negativity is what gives the concave Euler
+    /// factors in the hypergeometric `I`-function below.
     pub fn new(degrees: Vec<usize>) -> Result<Self, GwError> {
         if degrees.iter().any(|degree| *degree == 0) {
             return Err(GwError::ParseError(
@@ -68,6 +73,8 @@ impl NegativeSplitBundleTwist {
         degree: usize,
         markings: usize,
     ) -> isize {
+        // Virtual dimension of maps to the total space of the split bundle:
+        // (1-g)(dim total - 3) + c1(total).d + markings.
         let total_dimension = self.total_space_dimension(base_n) as isize;
         let degree_slope = base_n as isize + 1 - self.degree_sum() as isize;
         (1 - genus as isize) * (total_dimension - 3)
@@ -637,6 +644,9 @@ pub fn negative_split_i_function_coefficient(
     twist: &NegativeSplitBundleTwist,
     degree: usize,
 ) -> HLaurentSeries {
+    // Non-equivariant hypergeometric coefficient for local P^n.  The numerator
+    // is the concave Euler factor for H^1(C,f^*O(-a)); the denominator is the
+    // usual projective-space I-function denominator.
     let mut out = HLaurentSeries::one(n);
     for bundle_degree in twist.degrees() {
         for m in (-(bundle_degree.saturating_mul(degree) as isize) + 1)..=0 {
@@ -666,6 +676,9 @@ pub fn projective_equivariant_i_function_coefficient(
     base_weights: &[Rational],
     min_z_power: i32,
 ) -> Result<HLaurentSeries, GwError> {
+    // Equivariant projective I_d:
+    // product_{m=1}^d product_i (H-lambda_i+mz)^{-1},
+    // reduced in H_T(P^n) along the chosen lambda specialization.
     if base_weights.len() != n + 1 {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",
@@ -709,6 +722,8 @@ pub fn negative_split_equivariant_qrr_euler_factor(
     base_weights: &[Rational],
     fiber_weights: &[Rational],
 ) -> Result<HLaurentSeries, GwError> {
+    // Equivariant inverse-Euler/QRR factor for the negative fibers:
+    // product_{bundle a} product_{m=-ad+1}^0 (-aH + fiber_lambda + mz).
     if fiber_weights.len() != twist.rank() {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} fiber weights, got {}",
@@ -753,6 +768,7 @@ pub fn negative_split_equivariant_i_function_coefficient(
     fiber_weights: &[Rational],
     min_z_power: i32,
 ) -> Result<HLaurentSeries, GwError> {
+    // Twisted I_d = projective I_d times the concave fiber Euler factor.
     let h_power_relation = base_h_power_relation(n, base_weights)?;
     let factor =
         negative_split_equivariant_qrr_euler_factor(n, twist, degree, base_weights, fiber_weights)?;
@@ -973,6 +989,7 @@ pub fn negative_split_mirror_map_coefficients(
     twist: &NegativeSplitBundleTwist,
     q_degree: usize,
 ) -> Vec<Rational> {
+    // The scalar mirror map is read from the H/z coefficient of the I-function.
     mirror_map_coefficients_from_i_function(
         &negative_split_i_function_coefficients(n, twist, q_degree),
         q_degree,
@@ -1016,6 +1033,7 @@ impl NegativeSplitHypergeometricModel {
     }
 
     pub fn mirror_transformed_j_coefficients(&self) -> Vec<HLaurentSeries> {
+        // J(q) = exp(-H t(q)/z) I(Q(q)), with Q(q) the inverse mirror map.
         mirror_transformed_j_coefficients_from_i_function(
             self.n,
             &self.i_coefficients(),
@@ -1026,6 +1044,9 @@ impl NegativeSplitHypergeometricModel {
     }
 
     pub fn fundamental_solution_matrix(&self) -> BTreeMap<i32, SeriesMatrix> {
+        // The columns are J, z q dJ/dq, ..., (z q d/dq)^n J, written in the
+        // hyperplane basis.  This is the fundamental solution before Birkhoff
+        // factorization.
         fundamental_solution_matrix_from_j_coefficients(
             self.n,
             self.q_degree,
@@ -1034,6 +1055,8 @@ impl NegativeSplitHypergeometricModel {
     }
 
     pub fn birkhoff_descendant_s_matrix(&self, z_order: usize) -> Result<SeriesSMatrix, GwError> {
+        // Extract the negative z-power factor from the fundamental solution;
+        // that factor is the descendant S-calibration used on insertions.
         birkhoff_descendant_s_matrix_from_fundamental(
             self.n + 1,
             self.q_degree,
@@ -1284,6 +1307,9 @@ fn mirror_map_coefficients_from_i_function(
     i_coefficients: &[HLaurentSeries],
     q_degree: usize,
 ) -> Vec<Rational> {
+    // In the one-parameter local models here, the mirror coordinate is the
+    // coefficient of H z^{-1} in I/I_0.  The implemented examples have I_0=1
+    // after the chosen normalization.
     let mut out = vec![Rational::zero(); q_degree + 1];
     let Some(first) = i_coefficients.first() else {
         return out;
@@ -1327,6 +1353,8 @@ fn mirror_transformed_j_coefficients_from_i_function(
     inverse_mirror: &[Rational],
     q_degree: usize,
 ) -> Vec<HLaurentSeries> {
+    // Applies the usual mirror transform: remove the H/z term by the exponential
+    // gauge, then re-expand in the flat coordinate using the inverse mirror map.
     let gauge = exp_minus_h_mirror_over_z_coefficients(n, mirror, q_degree);
     let gauged = multiply_h_laurent_q_series(&gauge, i_coefficients, q_degree);
     compose_h_laurent_q_series(&gauged, inverse_mirror, q_degree)
@@ -1375,6 +1403,9 @@ fn fundamental_solution_matrix_from_j_coefficients(
     q_degree: usize,
     j_coefficients: &[HLaurentSeries],
 ) -> BTreeMap<i32, SeriesMatrix> {
+    // The quantum connection fundamental solution is generated from J by
+    // repeated application of z q d/dq.  Each derivative gives one flat-basis
+    // column.
     let mut columns = Vec::with_capacity(n + 1);
     let mut current = j_coefficients.to_vec();
     for _ in 0..=n {
@@ -1422,6 +1453,9 @@ fn birkhoff_descendant_s_matrix_from_fundamental(
     fundamental: &BTreeMap<i32, SeriesMatrix>,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix, GwError> {
+    // Birkhoff factorization splits the Laurent fundamental solution into
+    // S(z^{-1})^{-1} * P(z).  We keep the negative factor and convert its
+    // z^{-k} terms into the descendant S-matrix coefficients.
     let (_, s_factor) = birkhoff_factor_by_q_degree(size, q_degree, fundamental)?;
     let coefficients = negative_factor_to_s_coefficients(size, q_degree, z_order, &s_factor);
     SeriesSMatrix::from_coefficients(size, q_degree, z_order, coefficients, calibration)
@@ -1971,6 +2005,9 @@ fn birkhoff_factor_by_q_degree(
     q_degree: usize,
     matrix: &BTreeMap<i32, SeriesMatrix>,
 ) -> Result<(QDegreeLaurentFactor, QDegreeLaurentFactor), GwError> {
+    // Recursive Birkhoff split in Novikov degree.  At each q^d, all lower-degree
+    // products are known; the remaining Laurent matrix is uniquely split into
+    // nonnegative and negative z-powers.
     validate_identity_at_q_zero(size, matrix)?;
     let mut positive = vec![BTreeMap::new(); q_degree + 1];
     let mut negative = vec![BTreeMap::new(); q_degree + 1];
@@ -2454,6 +2491,9 @@ pub fn specialized_twisted_birkhoff_canonical_data(
     base_weights: &[Rational],
     fiber_weights: &[Rational],
 ) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
+    // Semisimple data extracted from the Birkhoff-normalized quantum
+    // multiplication operator.  This is the twisted analogue of finding
+    // canonical roots/idempotents for ordinary P^n.
     specialized_twisted_birkhoff_canonical_data_with_mode(
         n,
         twist,
@@ -2472,6 +2512,10 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode(
     fiber_weights: &[Rational],
     mode: TwistedCalibrationMode,
 ) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
+    // Build quantum multiplication by H from either Picard-Fuchs data or from
+    // the Birkhoff S-matrix, then diagonalize it.  Self-adjointness with
+    // respect to the twisted flat pairing is required before the resulting
+    // eigenvectors can be treated as canonical idempotents.
     validate_twisted_weights(n, twist, base_weights, fiber_weights)?;
     let model = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
         n,
@@ -2647,6 +2691,8 @@ pub fn negative_split_twisted_birkhoff_calibration_skeleton(
     base_weights: &[Rational],
     fiber_weights: &[Rational],
 ) -> Result<SemisimpleCalibration, GwError> {
+    // Calibration without a nontrivial R-matrix.  This is useful for isolating
+    // whether an error is in the Birkhoff/Psi side or in the R-recursion.
     negative_split_twisted_birkhoff_calibration_skeleton_with_mode(
         n,
         twist,
@@ -2732,6 +2778,9 @@ pub fn negative_split_twisted_birkhoff_calibration_candidate(
     base_weights: &[Rational],
     fiber_weights: &[Rational],
 ) -> Result<SemisimpleCalibration, GwError> {
+    // Full candidate calibration: Birkhoff canonical data plus the QRR
+    // Bernoulli classical limit used to integrate the R-matrix flatness
+    // equation.
     negative_split_twisted_birkhoff_calibration_candidate_with_mode(
         n,
         twist,
@@ -4045,6 +4094,10 @@ fn solve_twisted_r_coefficients(
     q_degree: usize,
     z_order: usize,
 ) -> Result<Vec<SeriesMatrix>, GwError> {
+    // Flatness recursion in canonical coordinates.  Off-diagonal entries are
+    // determined by dividing by root differences u_j-u_i; diagonal entries are
+    // integrated from the diagonal flatness equation with the classical
+    // Bernoulli/QRR value as the q^0 constant.
     let size = roots.len();
     let mut coefficients = Vec::with_capacity(z_order + 1);
     coefficients.push(SeriesMatrix::identity(size, q_degree));
@@ -4090,6 +4143,9 @@ fn solve_twisted_r_diagonal_from_flatness(
     constant: RatFun,
     q_degree: usize,
 ) -> QSeries {
+    // Solves (q d/dq + A_ii) R_k,ii = known one q-coefficient at a time.
+    // This is the piece that prevents the diagonal gauge from being silently
+    // frozen at its q^0 value.
     let mut known = QSeries::zero(q_degree);
     for (source, row) in entries.iter().enumerate() {
         if source == branch {
@@ -4301,6 +4357,10 @@ impl TwistedInvariantRequest {
 pub fn compute_negative_split_twisted(
     req: &TwistedInvariantRequest,
 ) -> Result<InvariantResult, GwError> {
+    // Public local/twisted path: construct a semisimple provider from the
+    // hypergeometric/Birkhoff/QRR calibration, run the generic Givental graph
+    // evaluator, and finally take the one-parameter lambda-line limit if a
+    // residual rational function remains.
     if req.equivariant {
         return Err(GwError::UnsupportedInvariant(
             "symbolic equivariant negative split-bundle output is not implemented yet; the current twisted calibration uses a generic rational lambda line"
@@ -4516,6 +4576,9 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError> {
+        // The Birkhoff factor produces the fundamental-solution convention.
+        // The graph evaluator expects the descendant insertion operator, which
+        // is the adjoint with respect to the twisted flat metric.
         let fiber_weights = self.fiber_weights();
         let (s_matrix, flat_metric) = match self.line_mode {
             TwistedLineMode::EarlyRational => {
@@ -4577,6 +4640,9 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         r_order: usize,
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
+        // This is where the twisted target becomes a generic semisimple CohFT:
+        // Birkhoff canonical data + QRR R-recursion are packaged into the same
+        // kernel interface used by ordinary P^n.
         static CACHE: OnceLock<
             Mutex<HashMap<TwistedGraphKernelCacheKey, Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
@@ -4651,6 +4717,9 @@ fn metric_adjoint_descendant_s_matrix(
     s_matrix: SeriesSMatrix,
     flat_metric: &SeriesMatrix,
 ) -> Result<SeriesSMatrix, GwError> {
+    // Converts S to its metric adjoint: S^* = eta^{-1} S^T eta.  This is the
+    // correct action on covector insertions in the graph formula, and is
+    // especially important after inverse-Euler twisting changes the pairing.
     let metric_inverse = invert_series_matrix(flat_metric)?;
     let coefficients = s_matrix
         .coefficients()

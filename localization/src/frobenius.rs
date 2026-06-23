@@ -1,3 +1,11 @@
+//! Frobenius algebra data for equivariant quantum cohomology of `P^n`.
+//!
+//! This module implements the target-specific input used by the projective
+//! Givental calibration.  The core algebra is
+//! `QH_T(P^n) = Q(lambda)[[q]][H] / (prod_i(H-lambda_i)-q)`.
+//! Canonical coordinates are the roots of `prod_i(x-lambda_i)=q`; idempotents
+//! are the corresponding Lagrange interpolation projectors.
+
 use crate::algebra::{lambda, RatFun};
 use crate::error::GwError;
 use crate::geometry::{CohomologyClass, EquivariantProjectiveSpace};
@@ -9,6 +17,7 @@ pub enum ProductKind {
     QuantumEquivariant,
 }
 
+/// Classical or small-quantum Frobenius algebra of equivariant `P^n`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrobeniusData {
     pub target: EquivariantProjectiveSpace,
@@ -24,6 +33,8 @@ pub struct ClassicalCanonicalData {
     pub transition_to_flat: Vec<Vec<RatFun>>,
 }
 
+/// A cohomology class with each hyperplane-basis coefficient expanded as a
+/// truncated Novikov `q`-series.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesCohomologyClass {
     pub n: usize,
@@ -58,6 +69,8 @@ impl SeriesCohomologyClass {
     }
 
     pub fn multiply_quantum(&self, rhs: &Self) -> Self {
+        // Multiply in Q[H][[q]] and reduce by the quantum relation
+        // prod_i(H-lambda_i)=q.
         assert_eq!(self.n, rhs.n);
         let max_q_degree = self.max_q_degree();
         let mut product = vec![QSeries::zero(max_q_degree); 2 * self.n + 1];
@@ -118,6 +131,8 @@ impl FrobeniusData {
     }
 
     pub fn multiplication_by_h_matrix(&self) -> Vec<Vec<RatFun>> {
+        // Companion matrix for multiplication by H in the hyperplane basis.
+        // The last column is exactly the reduction of H^{n+1}.
         let n = self.target.n;
         let mut matrix = vec![vec![RatFun::zero(); n + 1]; n + 1];
         for col in 0..n {
@@ -191,6 +206,9 @@ impl FrobeniusData {
         &self,
         max_q_degree: usize,
     ) -> Result<QuantumCanonicalData, GwError> {
+        // For each branch u_i(q), build the idempotent
+        // prod_{j != i} (H-u_j)/(u_i-u_j).  The denominator is P'(u_i), which
+        // is also the inverse metric norm in the unnormalized canonical frame.
         let roots = self.canonical_root_series(max_q_degree)?;
         let mut idempotents = Vec::with_capacity(self.target.n + 1);
         let mut inverse_metric_norms = Vec::with_capacity(self.target.n + 1);
@@ -270,6 +288,8 @@ fn multiply_series_polynomial_by_linear(
 }
 
 fn reduce_series_h_polynomial(n: usize, mut coeffs: Vec<QSeries>) -> Vec<QSeries> {
+    // Reduces a polynomial in H to the basis 1,H,...,H^n using the quantum
+    // relation.  This is the series analogue of geometry::reduce_h_polynomial.
     let max_q_degree = coeffs.first().map(QSeries::max_degree).unwrap_or_default();
     let relation = series_h_power_relation_rhs(n, max_q_degree);
     while coeffs.len() > n + 1 {
@@ -321,6 +341,8 @@ pub fn canonical_root_series(
     branch: usize,
     max_q_degree: usize,
 ) -> Result<QSeries, GwError> {
+    // Newton iteration in the complete local ring at the classical root
+    // lambda_branch.  The roots are formal series u_i(q) satisfying P(u_i)=q.
     if branch > n {
         return Err(GwError::AlgebraFailure(format!(
             "root branch {branch} out of range for P^{n}"

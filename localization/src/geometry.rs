@@ -1,3 +1,10 @@
+//! Equivariant cohomology of projective space in the hyperplane basis.
+//!
+//! Classes are stored as coefficients of `1,H,...,H^n`.  Multiplication is
+//! reduction modulo either the classical relation `prod_i(H-lambda_i)=0` or the
+//! small quantum relation `prod_i(H-lambda_i)=q`.  Fixed-point restrictions and
+//! Atiyah-Bott pairings are used throughout the Frobenius and calibration code.
+
 use crate::algebra::{lambda, q, RatFun, Rational};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +63,8 @@ impl CohomologyClass {
     }
 
     pub fn restrict_to_fixed_point(&self, fixed_point: usize) -> RatFun {
+        // Localization restriction: H evaluates to lambda_i at the i-th
+        // torus-fixed point.
         assert!(fixed_point <= self.n, "fixed point index out of range");
         let l = lambda(fixed_point);
         let mut total = RatFun::zero();
@@ -94,6 +103,8 @@ impl CohomologyClass {
     }
 
     fn multiply_with_relation(&self, rhs: &Self, quantum: bool) -> Self {
+        // Multiply polynomials in H, then reduce the high powers by the chosen
+        // projective-space relation.
         assert_eq!(self.n, rhs.n, "cohomology classes have different targets");
         let mut product = vec![RatFun::zero(); 2 * self.n + 1];
         for (left_power, left_coeff) in self.coeffs.iter().enumerate() {
@@ -127,6 +138,7 @@ impl EquivariantProjectiveSpace {
     }
 
     pub fn fixed_point_euler(&self, fixed_point: usize) -> RatFun {
+        // e_T(T_{p_i} P^n) = prod_{j != i} (lambda_i - lambda_j).
         assert!(fixed_point <= self.n, "fixed point index out of range");
         let li = lambda(fixed_point);
         let mut product = RatFun::one();
@@ -141,6 +153,8 @@ impl EquivariantProjectiveSpace {
     }
 
     pub fn fixed_point_idempotent(&self, fixed_point: usize) -> CohomologyClass {
+        // Lagrange idempotent supported at p_i:
+        // prod_{j != i}(H-lambda_j) / prod_{j != i}(lambda_i-lambda_j).
         assert!(fixed_point <= self.n, "fixed point index out of range");
         let mut coeffs = vec![RatFun::one()];
         for j in 0..=self.n {
@@ -161,6 +175,8 @@ impl EquivariantProjectiveSpace {
     }
 
     pub fn pairing(&self, a: &CohomologyClass, b: &CohomologyClass) -> RatFun {
+        // Atiyah-Bott integration formula:
+        // integral a b = sum_i a|_{p_i} b|_{p_i}/e_T(T_{p_i}P^n).
         assert_eq!(a.n(), self.n);
         assert_eq!(b.n(), self.n);
         let mut total = RatFun::zero();
@@ -213,6 +229,8 @@ pub fn elementary_symmetric_weights(n: usize) -> Vec<RatFun> {
 }
 
 pub fn h_power_relation_rhs(n: usize, quantum: bool) -> Vec<RatFun> {
+    // Rewrites H^{n+1} as a linear combination of lower powers from
+    // prod_i(H-lambda_i) = q (or 0 in the classical case).
     let elementary = elementary_symmetric_weights(n);
     let mut rhs = vec![RatFun::zero(); n + 1];
     for k in 1..=n + 1 {

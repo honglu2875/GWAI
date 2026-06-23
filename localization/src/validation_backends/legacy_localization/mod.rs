@@ -1,8 +1,14 @@
+//! Legacy direct stable-map localization validation backend.
+//!
+//! This module is intentionally not a production computation path. It preserves
+//! the old direct fixed-locus code for narrow tests and convention checks. It is
+//! not actively maintained for new features, and it deliberately does not fall
+//! back to seed formulas or the Givental backend.
+
 use crate::algebra::{lambda, LaurentSeries, RatFun, Rational};
 use crate::error::GwError;
 use crate::geometry::EquivariantProjectiveSpace;
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
-use crate::validation;
 use crate::{InvariantRequest, InvariantResult};
 use std::collections::BTreeSet;
 
@@ -29,11 +35,13 @@ pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
         });
     }
 
-    validation::seed_compute(req, "localization-seed").map(|result| {
-        result.with_note(
-            "full stable-map localization is scaffolded but not yet enabled for this invariant",
-        )
-    })
+    Err(GwError::UnsupportedInvariant(format!(
+        "legacy direct localization only implements degree-one genus-zero primary tree checks; requested n={}, g={}, d={}, markings={}",
+        req.n,
+        req.genus,
+        req.degree,
+        req.insertions.len()
+    )))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -722,7 +730,7 @@ impl DisjointSet {
 mod tests {
     use super::*;
     use crate::geometry::{CohomologyClass, EquivariantProjectiveSpace};
-    use crate::{compute, tau, ComputeMode};
+    use crate::{tau, ComputeMode};
 
     #[test]
     fn degree_zero_graphs_are_one_vertex_per_fixed_point() {
@@ -758,7 +766,7 @@ mod tests {
             degree: 1,
             insertions: vec![tau(0, CohomologyClass::one(1))],
             equivariant: true,
-            mode: ComputeMode::Localization,
+            mode: ComputeMode::Givental,
             truncation: None,
         };
         assert!(matches!(
@@ -778,7 +786,7 @@ mod tests {
             degree: 1,
             insertions: vec![tau(0, phi0), tau(0, phi1)],
             equivariant: true,
-            mode: ComputeMode::Localization,
+            mode: ComputeMode::Givental,
             truncation: None,
         };
         let value = genus_zero_primary_one_edge_localization(&req)
@@ -790,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn public_localization_uses_one_edge_evaluator_for_equivariant_request() {
+    fn legacy_compute_uses_one_edge_evaluator_for_equivariant_request() {
         let target = EquivariantProjectiveSpace::new(1);
         let req = InvariantRequest {
             n: 1,
@@ -801,10 +809,19 @@ mod tests {
                 tau(0, target.fixed_point_idempotent(1)),
             ],
             equivariant: true,
-            mode: ComputeMode::Localization,
+            mode: ComputeMode::Givental,
             truncation: None,
         };
-        let result = compute(req).unwrap();
+        let result = compute(&req).unwrap();
         assert_eq!(result.engine, "localization-primary-tree");
+    }
+
+    #[test]
+    fn legacy_compute_does_not_fall_back_to_seed_formulas() {
+        let req = InvariantRequest::new(2, 0, 2, vec![tau(0, CohomologyClass::h_power(2, 2)); 5]);
+        assert!(matches!(
+            compute(&req),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
     }
 }

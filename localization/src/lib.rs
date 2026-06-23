@@ -1,10 +1,9 @@
 //! Experimental exact computations for Gromov-Witten invariants of projective
 //! space.
 //!
-//! The crate is intentionally staged.  The public API already reflects the
-//! localization/Givental pipeline, while the implemented kernel covers exact
-//! algebra, projective-space cohomology, psi intersections, stable-graph data,
-//! and seed invariant computations used to validate later engines.
+//! The crate is intentionally staged.  The public computation path is the
+//! Givental/S/R graph pipeline, while validation-only backends preserve older
+//! convention checks and independent oracle comparisons.
 
 pub mod algebra;
 pub mod error;
@@ -12,7 +11,6 @@ pub mod frobenius;
 pub mod geometry;
 pub mod givental;
 pub mod graphs;
-pub mod localization;
 pub mod series;
 pub mod tautological;
 pub mod testsuite;
@@ -27,9 +25,7 @@ use geometry::CohomologyClass;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeMode {
-    Localization,
     Givental,
-    CompareLocalizationAndGivental,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,14 +213,7 @@ pub fn tau(descendant_power: usize, class: CohomologyClass) -> Insertion {
 
 pub fn compute(req: InvariantRequest) -> Result<InvariantResult, GwError> {
     match req.mode {
-        ComputeMode::Localization => localization::compute(&req),
         ComputeMode::Givental => givental::compute(&req),
-        ComputeMode::CompareLocalizationAndGivental => {
-            let loc = localization::compute(&req)?;
-            let giv = givental::compute(&req)?;
-            validation::assert_same_value(&loc.value, &giv.value)?;
-            Ok(loc.with_note(format!("matched Givental seed engine value {}", giv.value)))
-        }
     }
 }
 
@@ -376,10 +365,7 @@ mod tests {
             tau(0, CohomologyClass::h_power(2, 2)),
             tau(0, CohomologyClass::h_power(2, 1)),
         ];
-        let req = InvariantRequest {
-            mode: ComputeMode::CompareLocalizationAndGivental,
-            ..InvariantRequest::new(2, 0, 1, insertions)
-        };
+        let req = InvariantRequest::new(2, 0, 1, insertions);
         let result = compute(req).unwrap();
         assert_eq!(result.value, RatFun::one());
     }

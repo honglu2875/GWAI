@@ -1,3 +1,25 @@
+//! Givental-Teleman reconstruction and graph contraction.
+//!
+//! This module implements the universal semisimple CohFT part of the package.
+//! Target-specific geometry enters through `SemisimpleCohftProvider`: the
+//! provider supplies flat insertions, descendant-to-ancestor `S`, canonical
+//! transition data, and an `R`-matrix.  The code here then performs the common
+//! Givental graph sum over stable curves.
+//!
+//! The main mathematical transformations are:
+//!
+//! - descendents -> ancestors by the `S`-matrix;
+//! - flat basis -> canonical idempotent basis by `Psi^{-1}`;
+//! - ancestor legs -> graph legs by `R^{-1}`;
+//! - internal edges -> the symplectic propagator built from `R^{-1}` and the
+//!   canonical metric;
+//! - unstable translations -> insertions of `T(psi) = psi(1 - R^{-1})1`;
+//! - vertices -> products of point-theory psi integrals and the diagonal TFT.
+//!
+//! The graph code is intentionally target-agnostic.  Projective-space and
+//! twisted-projective-space code only differ in how they construct the
+//! calibration package.
+
 use crate::algebra::{lambda, RatFun, Rational};
 use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
@@ -21,9 +43,18 @@ pub enum DeltaConvention {
     InverseMetricNorm,
 }
 
+/// Identifies the convention used to produce a calibration.
+///
+/// This is not used as mathematics; it is metadata that keeps tests and error
+/// messages honest when several possible `R`/`S` normalizations are present.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CalibrationId(pub String);
 
+/// Basis and normalization of the semisimple frame.
+///
+/// The graph evaluator assumes diagonal TFT vertices.  The exact powers of the
+/// canonical metric depend on whether idempotents have already been normalized
+/// by square roots of metric norms, so we keep the convention explicit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanonicalFrameConvention {
     FlatBasis,
@@ -89,6 +120,12 @@ impl RMatrix {
     }
 }
 
+/// `q`-series valued `R(z) = 1 + R_1 z + ...` in the canonical frame.
+///
+/// In Givental-Teleman reconstruction this is the upper-triangular symplectic
+/// loop-group calibration.  It transforms the product-of-point-theories TFT
+/// into the target CohFT after the descendant/ancestor calibration has been
+/// applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesRMatrix {
     size: usize,
@@ -211,6 +248,11 @@ impl SeriesRMatrix {
         Ok(())
     }
 
+    /// Checks the symplectic condition `R(-z)^T eta R(z) = eta`.
+    ///
+    /// This is the most useful local sanity check for an `R`-matrix: if it
+    /// fails, the edge propagator would not define a CohFT-compatible graph
+    /// sum.
     pub fn check_unitarity(&self, metric: &SeriesMatrix) -> Result<(), GwError> {
         if metric.rows() != self.size || metric.cols() != self.size {
             return Err(GwError::ConventionMismatch(format!(
@@ -382,14 +424,21 @@ pub type ProjectiveSpaceJCalibration = SemisimpleCalibration;
 pub trait SemisimpleCohftProvider {
     type Insertion;
 
+    /// Number of canonical idempotents, also the number of colors in the graph
+    /// sum.
     fn colors(&self) -> usize;
 
+    /// Descendant exponent `k` in an insertion `tau_k(gamma)`.
     fn descendant_power(&self, insertion: &Self::Insertion) -> usize;
 
+    /// Cohomological degree of the whole insertion monomial, when it is known
+    /// from the target basis.
     fn insertion_degree(&self, _insertions: &[Self::Insertion]) -> Option<usize> {
         None
     }
 
+    /// Virtual dimension in the target theory.  The graph engine uses this only
+    /// for pruning; the actual Givental sum is independent of this helper.
     fn virtual_dimension(&self, _genus: usize, _degree: usize, _markings: usize) -> Option<isize> {
         None
     }
@@ -418,12 +467,21 @@ pub trait SemisimpleCohftProvider {
         }
     }
 
+    /// Descendant-to-ancestor calibration.
+    ///
+    /// Algebraically, this expands each descendant insertion into ancestor
+    /// powers before the `R`-matrix graph action is applied.
     fn descendant_s_matrix(
         &self,
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError>;
 
+    /// Complete reusable graph kernel for a fixed target and truncation.
+    ///
+    /// The kernel contains `R`, `R^{-1}`, the edge propagator, and translation
+    /// coefficients.  It is cached aggressively because those objects dominate
+    /// repeated series computations.
     fn graph_kernel(
         &self,
         q_degree: usize,
@@ -431,12 +489,21 @@ pub trait SemisimpleCohftProvider {
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError>;
 
+    /// Flat-basis vector for a cohomology insertion.
+    ///
+    /// The graph evaluator immediately applies `S` and `Psi^{-1}` after this
+    /// conversion, so provider implementations should return coefficients in
+    /// the same flat basis used by their `S`-matrix.
     fn insertion_vector(
         &self,
         insertion: &Self::Insertion,
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError>;
 
+    /// Optional scalar fallback for intentionally small seed cases.
+    ///
+    /// This is used only after the graph path reports that an unstable range or
+    /// missing truncation is outside the implemented graph evaluator.
     fn scalar_fallback_value(
         &self,
         _genus: usize,
@@ -628,6 +695,15 @@ struct LambdaCalibrationCacheKey {
     weights: Vec<Rational>,
 }
 
+/// Builds the projective-space calibration from small quantum cohomology.
+///
+/// This is the `P^n` specialization of the general reconstruction input:
+///
+/// 1. solve the quantum relation `prod(H-lambda_i)=q` for canonical roots;
+/// 2. form unnormalized idempotents and the flat-to-canonical matrix `Psi`;
+/// 3. compute the Dubrovin connection `Psi^{-1} q d(Psi)/dq`;
+/// 4. solve the `R`-matrix flatness recursion with the Bernoulli classical
+///    asymptotic as the integration constant.
 pub fn projective_space_j_calibration(
     n: usize,
     q_degree: usize,
@@ -1547,6 +1623,11 @@ pub struct GiventalGraphKernel {
 }
 
 impl GiventalGraphKernel {
+    /// Builds the Feynman-rule kernel from a semisimple calibration.
+    ///
+    /// This performs the universal part of quantization:
+    /// `R -> R^{-1}`, `R^{-1}1 -> T`, and `R^{-1},eta^{-1} ->` edge
+    /// propagators.  It does not inspect target geometry.
     pub fn from_calibration(
         calibration: SemisimpleCalibration,
         graph_dimension: usize,
@@ -1558,6 +1639,11 @@ impl GiventalGraphKernel {
         Self::from_parts(calibration, inverse_r, translation, graph_dimension)
     }
 
+    /// Builds a graph kernel when a caller has already supplied `R^{-1}` and
+    /// translation coefficients.
+    ///
+    /// Twisted-theory experiments use this to test alternate QRR/Birkhoff
+    /// calibrations without reusing the default projective-space construction.
     pub fn from_parts(
         calibration: SemisimpleCalibration,
         inverse_r: Vec<SeriesMatrix>,
@@ -1594,6 +1680,11 @@ impl GiventalGraphKernel {
     }
 }
 
+/// Materializes all graph-local data derived from a calibration.
+///
+/// The mathematical content is the conversion from a global `R`-matrix to the
+/// Feynman rules used on a stable graph: `R^{-1}` on legs, the symplectic edge
+/// propagator, and the translation vector.
 fn projective_space_graph_kernel(
     n: usize,
     q_degree: usize,
@@ -1634,6 +1725,11 @@ fn projective_space_graph_kernel(
     Ok(kernel)
 }
 
+/// Public ordinary `P^n` Gromov-Witten computation by the Givental graph sum.
+///
+/// This is the production path for projective-space invariants.  It wraps the
+/// generic semisimple evaluator with projective-space dimension checks and
+/// result labels.
 pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
 
@@ -1758,6 +1854,9 @@ where
         ));
     }
 
+    // The largest total psi degree on a stable-curve vertex is the dimension
+    // of Mbar_{g,n}.  This one number bounds the necessary `R`, edge, and
+    // translation powers for the whole graph sum.
     let graph_dimension = 3 * genus + insertions.len() - 3;
     let needed_r_order = graph_dimension + 1;
     let needed_s_order = max_descendant_power;
@@ -1777,6 +1876,9 @@ where
     let leg_options = if insertions.is_empty() {
         Vec::new()
     } else {
+        // Descendant insertions first become ancestor insertions via `S`, then
+        // move from the flat basis to the canonical basis via `Psi^{-1}`, then
+        // receive the graph-leg action of `R^{-1}`.
         let descendant_s = provider.descendant_s_matrix(q_degree, needed_s_order)?;
         let insertion_terms = ancestor_insertion_terms_from_provider(
             provider,
@@ -1829,6 +1931,12 @@ const MASTER_DEFAULT_MAX_WORKERS: usize = 8;
 const MASTER_MIN_SHARED_KERNEL_TASKS: usize = 8;
 const MASTER_MIN_RESTRICTED_KERNEL_TASKS: usize = 2;
 
+/// Batched sparse potential evaluator for many coefficients at once.
+///
+/// Mathematically this computes the same coefficients as repeated calls to
+/// `compute_semisimple_graph_value`.  The reorganization is purely algorithmic:
+/// it shares graph kernels and, for small marking counts, precontracts the
+/// entire stable-graph sum into an external-leg tensor.
 pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>, GwError> {
     if req.mode != ComputeMode::Givental {
         return Ok(None);
@@ -3613,6 +3721,9 @@ fn ancestor_insertion_terms_from_provider<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
+    // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
+    // the canonical idempotent basis used by the graph colors.
     insertions
         .iter()
         .map(|insertion| {
@@ -3679,6 +3790,8 @@ fn apply_matrix_to_vector(
 }
 
 fn inverse_r_coefficients(coefficients: &[SeriesMatrix]) -> Vec<SeriesMatrix> {
+    // Formal inverse of R(z) with R_0 = 1.  The recurrence is the coefficient
+    // extraction of R(z) R(z)^{-1} = 1.
     let size = coefficients[0].rows();
     let q_degree = coefficients[0].max_degree();
     let mut inverse = Vec::with_capacity(coefficients.len());
@@ -3698,6 +3811,8 @@ fn translation_coefficients(
     unit: &[QSeries],
     q_degree: usize,
 ) -> Vec<Vec<QSeries>> {
+    // Givental's translation is T(psi)=psi(1-R^{-1})1.  Since R^{-1}_0=1, the
+    // first nonzero coefficient appears at psi^2.
     let size = unit.len();
     let mut out = vec![vec![QSeries::zero(q_degree); inverse_r.len() + 1]; size];
     for power in 2..=inverse_r.len() {
@@ -3719,6 +3834,11 @@ fn edge_propagator_coefficients(
     max_power: usize,
     q_degree: usize,
 ) -> Result<Vec<Vec<Vec<Vec<QSeries>>>>, GwError> {
+    // The edge term is the regular part of
+    //   (eta^{-1} - R^{-1}(psi_1) eta^{-1} R^{-1}(-psi_2)^T)
+    //       / (psi_1 + psi_2).
+    // This expands that quotient into coefficients of psi_1^a psi_2^b for
+    // every pair of endpoint colors.
     let size = metric.rows();
     let mut metric_inverse = Vec::with_capacity(size);
     for color in 0..size {
@@ -3799,6 +3919,10 @@ fn accumulate_graph_factors(
     total: &mut QSeries,
     profile: &mut GraphEvalProfile,
 ) {
+    // Recursively chooses one leg/edge factor option for every half-edge in a
+    // fixed colored stable graph.  At the leaves, the collected psi powers are
+    // integrated over each vertex Mbar_{g(v),val(v)} with translation
+    // insertions included by `vertex_contribution_with_translations`.
     if profile.enabled {
         profile.recursion_calls += 1;
     }
@@ -4052,6 +4176,10 @@ fn vertex_contribution_with_translations(
     q_degree: usize,
     profile: &mut GraphEvalProfile,
 ) -> QSeries {
+    // A vertex is the diagonal TFT factor times a point-theory psi integral.
+    // If the chosen half-edge powers do not fill the vertex dimension, the
+    // missing degree is supplied by any number of translation insertions
+    // T(psi), divided by their factorial symmetry.
     let mut sorted_powers = base_powers.to_vec();
     sorted_powers.sort_unstable();
     let key = VertexContributionKey {
@@ -4126,6 +4254,9 @@ fn vertex_tft_factor(
     color: usize,
     calibration: &ProjectiveSpaceJCalibration,
 ) -> QSeries {
+    // In an unnormalized/relative-normalized canonical frame the TFT vertex is
+    // diagonal.  The powers below are the usual product-of-point-theories
+    // factors rewritten in the frame stored by `SemisimpleCalibration`.
     let genus_factor = if genus == 0 {
         calibration.inverse_delta[color].clone()
     } else {
@@ -4212,6 +4343,9 @@ fn prepared_stable_graphs(
     markings: usize,
     colors: usize,
 ) -> Arc<Vec<PreparedStableGraph>> {
+    // Stable graphs and color orbits depend only on (g,n,number of idempotents),
+    // not on insertions or degree.  Precomputing automorphism factors and vertex
+    // dimension caps avoids repeating graph-theoretic work in series mode.
     static CACHE: OnceLock<Mutex<HashMap<(usize, usize, usize), Arc<Vec<PreparedStableGraph>>>>> =
         OnceLock::new();
     let key = (genus, markings, colors);

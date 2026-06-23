@@ -5,11 +5,13 @@ use crate::givental::{
     compute_by_givental_graphs, projective_space_descendant_s_matrix,
     projective_space_j_calibration, CanonicalFrameConvention, SeriesRMatrix,
 };
-use crate::localization::genus_zero_localization_graphs;
 use crate::series::{QSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation_backends::growi::{
     disputed_p2_genus_two_descendants, fast_positive_genus_cases, oracle_cases,
+};
+use crate::validation_backends::legacy_localization::{
+    compute as legacy_localization_compute, genus_zero_localization_graphs,
 };
 use crate::validation_backends::local_cy::{
     local_p2_gw, local_p2_gw_from_gv, resolved_conifold_gw,
@@ -145,63 +147,47 @@ fn test_p2_degree_one_line() -> Result<(), String> {
         tau(0, CohomologyClass::h_power(2, 2)),
         tau(0, CohomologyClass::h_power(2, 1)),
     ];
-    let req = InvariantRequest {
-        mode: ComputeMode::CompareLocalizationAndGivental,
-        ..InvariantRequest::new(2, 0, 1, insertions)
-    };
-    expect_eq(
-        compute(req).map_err(|err| err.to_string())?.value,
-        RatFun::one(),
-    )
+    let req = InvariantRequest::new(2, 0, 1, insertions);
+    let givental = compute(req.clone()).map_err(|err| err.to_string())?;
+    let direct = legacy_localization_compute(&req).map_err(|err| err.to_string())?;
+    expect_eq(givental.value.clone(), RatFun::one())?;
+    expect_eq(direct.value, givental.value)
 }
 
 fn test_p2_conic_count() -> Result<(), String> {
-    let req = InvariantRequest {
-        mode: ComputeMode::Localization,
-        ..InvariantRequest::new(2, 0, 2, vec![tau(0, CohomologyClass::h_power(2, 2)); 5])
-    };
+    let req = InvariantRequest::new(2, 0, 2, vec![tau(0, CohomologyClass::h_power(2, 2)); 5]);
     expect_eq(
-        compute(req).map_err(|err| err.to_string())?.value,
+        validation_seed(&req).map_err(|err| err.to_string())?.value,
         RatFun::one(),
     )
 }
 
 fn test_p2_cubic_count() -> Result<(), String> {
-    let req = InvariantRequest {
-        mode: ComputeMode::Localization,
-        ..InvariantRequest::new(2, 0, 3, vec![tau(0, CohomologyClass::h_power(2, 2)); 8])
-    };
+    let req = InvariantRequest::new(2, 0, 3, vec![tau(0, CohomologyClass::h_power(2, 2)); 8]);
     expect_eq(
-        compute(req).map_err(|err| err.to_string())?.value,
+        validation_seed(&req).map_err(|err| err.to_string())?.value,
         RatFun::from(12usize),
     )
 }
 
 fn test_p2_quartic_count() -> Result<(), String> {
-    let req = InvariantRequest {
-        mode: ComputeMode::Localization,
-        ..InvariantRequest::new(2, 0, 4, vec![tau(0, CohomologyClass::h_power(2, 2)); 11])
-    };
+    let req = InvariantRequest::new(2, 0, 4, vec![tau(0, CohomologyClass::h_power(2, 2)); 11]);
     expect_eq(
-        compute(req).map_err(|err| err.to_string())?.value,
+        validation_seed(&req).map_err(|err| err.to_string())?.value,
         RatFun::from(620usize),
     )
 }
 
 fn test_p2_quintic_count() -> Result<(), String> {
-    let req = InvariantRequest {
-        mode: ComputeMode::Localization,
-        ..InvariantRequest::new(2, 0, 5, vec![tau(0, CohomologyClass::h_power(2, 2)); 14])
-    };
+    let req = InvariantRequest::new(2, 0, 5, vec![tau(0, CohomologyClass::h_power(2, 2)); 14]);
     expect_eq(
-        compute(req).map_err(|err| err.to_string())?.value,
+        validation_seed(&req).map_err(|err| err.to_string())?.value,
         RatFun::from(87304usize),
     )
 }
 
 fn test_primary_potential_series() -> Result<(), String> {
-    let mut req = SeriesRequest::new(2, 0, 1, 3);
-    req.mode = ComputeMode::CompareLocalizationAndGivental;
+    let req = SeriesRequest::new(2, 0, 1, 3);
     let series = compute_series(req).map_err(|err| err.to_string())?;
     let found = series.coefficients.iter().any(|coefficient| {
         coefficient.degree == 1
@@ -237,10 +223,10 @@ fn test_p1_equivariant_localization() -> Result<(), String> {
         degree: 1,
         insertions: vec![tau(0, CohomologyClass::h_power(1, 1)); 2],
         equivariant: true,
-        mode: ComputeMode::Localization,
+        mode: ComputeMode::Givental,
         truncation: None,
     };
-    let result = compute(req).map_err(|err| err.to_string())?;
+    let result = legacy_localization_compute(&req).map_err(|err| err.to_string())?;
     expect_eq(result.value.clone(), RatFun::one())?;
     let limit = result
         .nonequivariant_limit_line(1, &[Rational::one(), Rational::from(2)])
@@ -612,6 +598,12 @@ fn expect_eq<T: std::fmt::Debug + PartialEq>(actual: T, expected: T) -> Result<(
     } else {
         Err(format!("expected {expected:?}, got {actual:?}"))
     }
+}
+
+fn validation_seed(
+    req: &InvariantRequest,
+) -> Result<crate::InvariantResult, crate::error::GwError> {
+    crate::validation::seed_compute(req, "validation-seed")
 }
 
 #[cfg(test)]
