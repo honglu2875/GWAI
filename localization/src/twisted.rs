@@ -4517,29 +4517,58 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError> {
         let fiber_weights = self.fiber_weights();
-        let s_matrix = match self.line_mode {
+        let (s_matrix, flat_metric) = match self.line_mode {
             TwistedLineMode::EarlyRational => {
-                NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+                let s_matrix =
+                    NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+                        self.base.n,
+                        self.twist.clone(),
+                        q_degree,
+                        z_order,
+                        self.base_weights().to_vec(),
+                        fiber_weights.clone(),
+                    )?
+                    .birkhoff_descendant_s_matrix(z_order)?;
+                let flat_metric = twisted_inverse_euler_flat_metric_matrix(
+                    self.base.n,
+                    q_degree,
+                    &self.twist,
+                    self.base_weights(),
+                    &fiber_weights,
+                )?;
+                (s_matrix, flat_metric)
+            }
+            TwistedLineMode::SymbolicLimit => {
+                let s_matrix = NegativeSplitLineHypergeometricModel::new(
                     self.base.n,
                     self.twist.clone(),
                     q_degree,
                     z_order,
-                    self.base_weights().to_vec(),
-                    fiber_weights,
+                    self.base_weights(),
+                    &fiber_weights,
                 )?
-                .birkhoff_descendant_s_matrix(z_order)
+                .birkhoff_descendant_s_matrix(z_order)?;
+                let lambda = crate::algebra::lambda(0);
+                let base_weight_line = self
+                    .base_weights()
+                    .iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
+                    .collect::<Vec<_>>();
+                let fiber_weight_line = fiber_weights
+                    .iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
+                    .collect::<Vec<_>>();
+                let flat_metric = twisted_inverse_euler_flat_metric_matrix_ratfun(
+                    self.base.n,
+                    q_degree,
+                    &self.twist,
+                    &base_weight_line,
+                    &fiber_weight_line,
+                )?;
+                (s_matrix, flat_metric)
             }
-            TwistedLineMode::SymbolicLimit => NegativeSplitLineHypergeometricModel::new(
-                self.base.n,
-                self.twist.clone(),
-                q_degree,
-                z_order,
-                self.base_weights(),
-                &fiber_weights,
-            )?
-            .birkhoff_descendant_s_matrix(z_order),
-        }?;
-        invert_descendant_s_matrix(s_matrix)
+        };
+        metric_adjoint_descendant_s_matrix(s_matrix, &flat_metric)
     }
 
     fn graph_kernel(
@@ -4618,30 +4647,22 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
     }
 }
 
-fn invert_descendant_s_matrix(s_matrix: SeriesSMatrix) -> Result<SeriesSMatrix, GwError> {
-    let size = s_matrix.size();
-    let q_degree = s_matrix.q_degree();
-    let z_order = s_matrix.z_order();
-    let mut inverse = Vec::with_capacity(z_order + 1);
-    inverse.push(SeriesMatrix::identity(size, q_degree));
-    for order in 1..=z_order {
-        let mut total = SeriesMatrix::zero(size, size, q_degree);
-        for left in 1..=order {
-            total = total.add(
-                &s_matrix
-                    .coefficient(left)
-                    .unwrap()
-                    .mul(&inverse[order - left]),
-            );
-        }
-        inverse.push(total.neg());
-    }
+fn metric_adjoint_descendant_s_matrix(
+    s_matrix: SeriesSMatrix,
+    flat_metric: &SeriesMatrix,
+) -> Result<SeriesSMatrix, GwError> {
+    let metric_inverse = invert_series_matrix(flat_metric)?;
+    let coefficients = s_matrix
+        .coefficients()
+        .iter()
+        .map(|matrix| metric_inverse.mul(&matrix.transpose()).mul(flat_metric))
+        .collect::<Vec<_>>();
     SeriesSMatrix::from_coefficients(
-        size,
-        q_degree,
-        z_order,
-        inverse,
-        CalibrationId(format!("{}-inverse-insertion", s_matrix.calibration().0)),
+        s_matrix.size(),
+        s_matrix.q_degree(),
+        s_matrix.z_order(),
+        coefficients,
+        CalibrationId(format!("{}-metric-adjoint", s_matrix.calibration().0)),
     )
 }
 
@@ -5037,6 +5058,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn local_p2_birkhoff_graph_recovers_known_genus_zero_divisor_row() {
+        let provider = TwistedProjectiveSpaceProvider::new(2, vec![3], false).unwrap();
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(2, 1)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+        ];
+        let expected = [
+            (1, RatFun::from(3usize)),
+            (2, RatFun::from(-45)),
+            (3, RatFun::from(732usize)),
+        ];
+
+        for (degree, oracle) in expected {
+            let value = crate::givental::compute_semisimple_graph_value(
+                &provider,
+                0,
+                degree,
+                &insertions,
+                None,
+            )
+            .unwrap();
+            assert_eq!(value, oracle, "local P2 <H,H,H>_0,{degree}");
+        }
+    }
+
+    #[test]
+    fn o_minus_one_p2_birkhoff_graph_matches_localization_row() {
+        let provider = TwistedProjectiveSpaceProvider::rational_lambda_line_with_weights(
+            2,
+            vec![1],
+            vec![
+                Rational::from(1usize),
+                Rational::from(2usize),
+                Rational::from(4usize),
+            ],
+            vec![Rational::from(0usize)],
+        )
+        .unwrap();
+        let cases = [
+            (tau(5, CohomologyClass::one(2)), RatFun::zero(), "tau5(1)"),
+            (
+                tau(4, CohomologyClass::h_power(2, 1)),
+                RatFun::from_rational(Rational::new(-1, 480)),
+                "tau4(H)",
+            ),
+            (
+                tau(3, CohomologyClass::h_power(2, 2)),
+                RatFun::from_rational(Rational::new(-7, 480)),
+                "tau3(H^2)",
+            ),
+        ];
+
+        for (insertion, oracle, label) in cases {
+            let value = crate::givental::compute_semisimple_graph_value(
+                &provider,
+                2,
+                2,
+                &[insertion],
+                None,
+            )
+            .unwrap();
+            assert_eq!(value, oracle, "O(-1)->P2 g=2 d=2 {label}");
+        }
+    }
+
     fn assert_birkhoff_idempotents_diagonalize_inverse_euler_pairing(
         n: usize,
         q_degree: usize,
@@ -5247,7 +5335,9 @@ mod tests {
         assert_eq!(descendant_s.z_order(), 2);
         assert_eq!(
             descendant_s.calibration(),
-            &CalibrationId("negative-split-equivariant-hypergeometric-birkhoff".to_string())
+            &CalibrationId(
+                "negative-split-equivariant-hypergeometric-birkhoff-metric-adjoint".to_string()
+            )
         );
         assert_eq!(
             descendant_s.coefficient(0),

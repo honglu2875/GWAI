@@ -2,6 +2,7 @@ use gw_pn::error::GwError;
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
+use gw_pn::twisted::{compute_negative_split_twisted, TwistedInvariantRequest};
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
 };
@@ -30,6 +31,7 @@ fn run() -> Result<(), GwError> {
     match command.as_str() {
         "psi" => run_psi(&args),
         "compute" => run_compute(&args),
+        "twisted" => run_twisted(&args),
         "series" => run_series(&args),
         "tests" | "test" => run_tests(),
         _ => Err(GwError::ParseError(format!(
@@ -134,6 +136,29 @@ fn run_series(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
+fn run_twisted(args: &[String]) -> Result<(), GwError> {
+    let n = required_usize(args, "--n")?;
+    let twist = parse_degrees_flag(args, "--twist")?
+        .ok_or_else(|| GwError::ParseError("missing --twist".to_string()))?;
+    let genus = first_usize_flag(args, &["--g", "--genus"])?
+        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
+    let degree = first_usize_flag(args, &["--d", "--degree"])?
+        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
+    let insertions = repeated_string_flag(args, "--insert")
+        .into_iter()
+        .map(|raw| parse_insertion(n, &raw))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut req = TwistedInvariantRequest::new(n, twist, genus, degree, insertions)?;
+    req.equivariant = has_flag(args, "--equivariant");
+    let result = compute_negative_split_twisted(&req)?;
+    println!("{}", result.value);
+    for note in result.notes {
+        println!("note: {note}");
+    }
+    Ok(())
+}
+
 fn run_compute(args: &[String]) -> Result<(), GwError> {
     let n = required_usize(args, "--n")?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
@@ -232,6 +257,26 @@ fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
     Ok(tau(descendant_power, class))
 }
 
+fn parse_degrees_flag(args: &[String], flag: &str) -> Result<Option<Vec<usize>>, GwError> {
+    let Some(raw) = parse_string_flag(args, flag)? else {
+        return Ok(None);
+    };
+    let degrees = raw
+        .split(',')
+        .map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err(GwError::ParseError(format!(
+                    "empty degree in {flag} value `{raw}`"
+                )));
+            }
+            part.parse::<usize>()
+                .map_err(|_| GwError::ParseError(format!("invalid degree `{part}` in {flag}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Some(degrees))
+}
+
 fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
     match raw {
         "1" => Ok(CohomologyClass::one(n)),
@@ -322,6 +367,8 @@ Commands:\n\
   gw-pn psi --g 2 --powers 4\n\
   gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode compare\n\
   gw-pn compute --n 1 --g 0 --d 1 --insert 'tau0(H)' --insert 'tau0(H)' --mode localization --equivariant --nonequivariant-limit\n\
+  gw-pn twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau4(H)'\n\
+  gw-pn twisted --n 2 --twist 3 --g 2 --d 3\n\
   gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode compare\n\
 \n\
 Supported compute seed cases:\n\
