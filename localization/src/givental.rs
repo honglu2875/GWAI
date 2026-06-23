@@ -1828,6 +1828,31 @@ where
     Ok(total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
 }
 
+/// Computes all coefficients `q^0, ..., q^degree_max` for one fixed insertion
+/// list with a single graph-kernel construction and a single stable-graph sum.
+///
+/// This is useful for validation rows such as local Calabi-Yau no-insertion
+/// tables: repeated calls to [`compute_semisimple_graph_value`] rebuild and
+/// reevaluate the same truncated graph problem at every degree, while this
+/// helper evaluates once at the largest requested degree and then extracts the
+/// coefficients.
+pub fn compute_semisimple_graph_coefficients<P>(
+    provider: &P,
+    genus: usize,
+    degree_max: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<Vec<RatFun>, GwError>
+where
+    P: SemisimpleCohftProvider,
+{
+    let total =
+        compute_semisimple_graph_series(provider, genus, degree_max, insertions, truncation)?;
+    Ok((0..=degree_max)
+        .map(|degree| total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
+        .collect())
+}
+
 /// Computes the full truncated q-series produced by the generic semisimple
 /// Givental graph engine for the given insertions.
 pub fn compute_semisimple_graph_series<P>(
@@ -4774,6 +4799,26 @@ mod tests {
         let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
         let generic = compute_semisimple_graph_value(&provider, 0, 2, &insertions, None).unwrap();
         assert_eq!(generic, public);
+    }
+
+    #[test]
+    fn semisimple_graph_coefficients_match_single_value_path() {
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(1, 1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+        ];
+        let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
+        let coefficients =
+            compute_semisimple_graph_coefficients(&provider, 0, 2, &insertions, None).unwrap();
+
+        assert_eq!(coefficients.len(), 3);
+        for (degree, coefficient) in coefficients.iter().enumerate() {
+            let single =
+                compute_semisimple_graph_value(&provider, 0, degree, &insertions, None).unwrap();
+            assert_eq!(coefficient, &single, "q^{degree}");
+        }
+        assert_eq!(coefficients[1], RatFun::one());
     }
 
     #[test]

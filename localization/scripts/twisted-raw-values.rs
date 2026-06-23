@@ -1,5 +1,5 @@
 use gw_pn::algebra::RatFun;
-use gw_pn::givental::compute_semisimple_graph_value;
+use gw_pn::givental::compute_semisimple_graph_coefficients;
 use gw_pn::validation_backends::local_cy::{local_p2_gw, resolved_conifold_gw};
 use gw_pn::twisted::TwistedProjectiveSpaceProvider;
 use std::env;
@@ -89,10 +89,13 @@ fn print_conifold(genus: usize, degree_min: usize, degree_max: usize) {
     let provider = TwistedProjectiveSpaceProvider::new(1, vec![1, 1], false).unwrap();
     println!("resolved conifold raw graph values, genus {genus}");
     println!("degree,raw-equals-oracle,lambda-line-limit,oracle,limit-ratio");
-    for degree in degree_min..=degree_max {
-        let oracle = RatFun::from_rational(resolved_conifold_gw(genus, degree).unwrap());
-        print_row(&provider, genus, degree, oracle);
-    }
+    print_rows_from_one_series(
+        &provider,
+        genus,
+        degree_min,
+        degree_max,
+        resolved_conifold_gw,
+    );
 }
 
 fn print_local_p2(genus: usize, degree_min: usize, degree_max: usize) {
@@ -100,42 +103,44 @@ fn print_local_p2(genus: usize, degree_min: usize, degree_max: usize) {
     println!();
     println!("local P2 raw graph values, genus {genus}");
     println!("degree,raw-equals-oracle,lambda-line-limit,oracle,limit-ratio");
+    print_rows_from_one_series(&provider, genus, degree_min, degree_max, local_p2_gw);
+}
+
+fn print_rows_from_one_series(
+    provider: &TwistedProjectiveSpaceProvider,
+    genus: usize,
+    degree_min: usize,
+    degree_max: usize,
+    oracle_fn: fn(usize, usize) -> Option<gw_pn::algebra::Rational>,
+) {
+    let raw_series = std::panic::catch_unwind(|| {
+        compute_semisimple_graph_coefficients(provider, genus, degree_max, &[], None)
+    });
+
     for degree in degree_min..=degree_max {
-        let oracle = RatFun::from_rational(local_p2_gw(genus, degree).unwrap());
-        print_row(&provider, genus, degree, oracle);
+        let oracle = RatFun::from_rational(oracle_fn(genus, degree).unwrap());
+        match &raw_series {
+            Ok(Ok(values)) => print_row_from_raw(degree, values[degree].clone(), oracle),
+            Ok(Err(err)) => println!("{degree},error:{err},,{oracle},"),
+            Err(_) => println!("{degree},panic,,{oracle},"),
+        }
+        io::stdout().flush().unwrap();
     }
 }
 
-fn print_row(
-    provider: &TwistedProjectiveSpaceProvider,
-    genus: usize,
-    degree: usize,
-    oracle: RatFun,
-) {
-    let raw = std::panic::catch_unwind(|| {
-        compute_semisimple_graph_value(provider, genus, degree, &[], None)
-    });
-    match raw {
-        Ok(Ok(raw)) => match raw.nonequivariant_limit_line(0, &[gw_pn::algebra::Rational::one()]) {
-            Ok(limit) => {
-                let limit = RatFun::from_rational(limit);
-                let ratio = if oracle.is_zero() {
-                    "undefined".to_string()
-                } else {
-                    (limit.clone() / oracle.clone()).to_string()
-                };
-                println!("{degree},{},{limit},{oracle},{ratio}", raw == oracle);
-            }
-            Err(err) => {
-                println!("{degree},{},limit-error:{err},{oracle},", raw == oracle);
-            }
-        },
-        Ok(Err(err)) => {
-            println!("{degree},error:{err},,{oracle},");
+fn print_row_from_raw(degree: usize, raw: RatFun, oracle: RatFun) {
+    match raw.nonequivariant_limit_line(0, &[gw_pn::algebra::Rational::one()]) {
+        Ok(limit) => {
+            let limit = RatFun::from_rational(limit);
+            let ratio = if oracle.is_zero() {
+                "undefined".to_string()
+            } else {
+                (limit.clone() / oracle.clone()).to_string()
+            };
+            println!("{degree},{},{limit},{oracle},{ratio}", raw == oracle);
         }
-        Err(_) => {
-            println!("{degree},panic,,{oracle},");
+        Err(err) => {
+            println!("{degree},{},limit-error:{err},{oracle},", raw == oracle);
         }
     }
-    io::stdout().flush().unwrap();
 }
