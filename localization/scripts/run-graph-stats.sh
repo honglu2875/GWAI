@@ -2,8 +2,10 @@
 set -eu
 
 profile=debug
+rustc_profile_flags=
 if [ "${1:-}" = "--release" ]; then
   profile=release
+  rustc_profile_flags="-C opt-level=3 -C debuginfo=0"
   shift
 fi
 
@@ -28,6 +30,7 @@ out="${TMPDIR:-/tmp}/gw-pn-graph-stats"
 rustc scripts/graph-stats.rs \
   --edition=2021 \
   --crate-name graph_stats \
+  $rustc_profile_flags \
   -L "dependency=$target_dir/deps" \
   --extern "gw_pn=$lib" \
   -o "$out"

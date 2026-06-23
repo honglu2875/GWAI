@@ -1,7 +1,7 @@
 use gw_pn::algebra::RatFun;
-use gw_pn::givental::compute_semisimple_graph_coefficients;
-use gw_pn::validation_backends::local_cy::{local_p2_gw, resolved_conifold_gw};
+use gw_pn::givental::compute_semisimple_graph_coefficient_range;
 use gw_pn::twisted::TwistedProjectiveSpaceProvider;
+use gw_pn::validation_backends::local_cy::{local_p2_gw, resolved_conifold_gw};
 use std::env;
 use std::io::{self, Write};
 
@@ -88,7 +88,7 @@ impl ScriptConfig {
 fn print_conifold(genus: usize, degree_min: usize, degree_max: usize) {
     let provider = TwistedProjectiveSpaceProvider::new(1, vec![1, 1], false).unwrap();
     println!("resolved conifold raw graph values, genus {genus}");
-    println!("degree,raw-equals-oracle,lambda-line-limit,oracle,limit-ratio");
+    println!("degree,value-equals-oracle,lambda-line-limit,oracle,limit-ratio");
     print_rows_from_one_series(
         &provider,
         genus,
@@ -102,7 +102,7 @@ fn print_local_p2(genus: usize, degree_min: usize, degree_max: usize) {
     let provider = TwistedProjectiveSpaceProvider::new(2, vec![3], false).unwrap();
     println!();
     println!("local P2 raw graph values, genus {genus}");
-    println!("degree,raw-equals-oracle,lambda-line-limit,oracle,limit-ratio");
+    println!("degree,value-equals-oracle,lambda-line-limit,oracle,limit-ratio");
     print_rows_from_one_series(&provider, genus, degree_min, degree_max, local_p2_gw);
 }
 
@@ -114,13 +114,22 @@ fn print_rows_from_one_series(
     oracle_fn: fn(usize, usize) -> Option<gw_pn::algebra::Rational>,
 ) {
     let raw_series = std::panic::catch_unwind(|| {
-        compute_semisimple_graph_coefficients(provider, genus, degree_max, &[], None)
+        compute_semisimple_graph_coefficient_range(
+            provider,
+            genus,
+            degree_min,
+            degree_max,
+            &[],
+            None,
+        )
     });
 
     for degree in degree_min..=degree_max {
         let oracle = RatFun::from_rational(oracle_fn(genus, degree).unwrap());
         match &raw_series {
-            Ok(Ok(values)) => print_row_from_raw(degree, values[degree].clone(), oracle),
+            Ok(Ok(values)) => {
+                print_row_from_raw(degree, values[degree - degree_min].clone(), oracle)
+            }
             Ok(Err(err)) => println!("{degree},error:{err},,{oracle},"),
             Err(_) => println!("{degree},panic,,{oracle},"),
         }
@@ -129,7 +138,11 @@ fn print_rows_from_one_series(
 }
 
 fn print_row_from_raw(degree: usize, raw: RatFun, oracle: RatFun) {
-    match raw.nonequivariant_limit_line(0, &[gw_pn::algebra::Rational::one()]) {
+    let value = match raw.as_rational() {
+        Some(value) => Ok(value),
+        None => raw.nonequivariant_limit_line(0, &[gw_pn::algebra::Rational::one()]),
+    };
+    match value {
         Ok(limit) => {
             let limit = RatFun::from_rational(limit);
             let ratio = if oracle.is_zero() {
@@ -137,10 +150,10 @@ fn print_row_from_raw(degree: usize, raw: RatFun, oracle: RatFun) {
             } else {
                 (limit.clone() / oracle.clone()).to_string()
             };
-            println!("{degree},{},{limit},{oracle},{ratio}", raw == oracle);
+            println!("{degree},{},{limit},{oracle},{ratio}", limit == oracle);
         }
         Err(err) => {
-            println!("{degree},{},limit-error:{err},{oracle},", raw == oracle);
+            println!("{degree},false,limit-error:{err},{oracle},");
         }
     }
 }

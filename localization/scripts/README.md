@@ -22,8 +22,7 @@ The current stable-graph generator is exact but naive for higher genus and
 multiple markings; rows such as `g=3, markings=2` can be expensive.
 
 `run-twisted-raw-values.sh` compares negative split-bundle graph values with
-local Calabi-Yau oracle tables.  It prints whether the raw equivariant value is
-already the oracle value and then compares the finite lambda-line limit.  The
-default provider now uses early rational lambda-line specialization, so matching
-rows should normally have `raw-equals-oracle=true`.  The script remains useful
-as a performance diagnostic outside the default test path.
+local Calabi-Yau oracle tables.  It prints whether the final rational value
+matches the oracle, using the same rational fast path and finite lambda-line
+limit fallback as the public twisted CLI.  The script remains useful as a
+performance diagnostic outside the default test path.

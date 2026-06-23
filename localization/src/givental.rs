@@ -1846,9 +1846,34 @@ pub fn compute_semisimple_graph_coefficients<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    compute_semisimple_graph_coefficient_range(
+        provider, genus, 0, degree_max, insertions, truncation,
+    )
+}
+
+/// Computes a contiguous coefficient range from one truncated graph sum.
+///
+/// Unlike [`compute_semisimple_graph_coefficients`], this avoids cloning
+/// coefficients below `degree_min`, which matters for diagnostic rows whose
+/// intermediate rational functions can be much larger than the final
+/// non-equivariant numbers.
+pub fn compute_semisimple_graph_coefficient_range<P>(
+    provider: &P,
+    genus: usize,
+    degree_min: usize,
+    degree_max: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<Vec<RatFun>, GwError>
+where
+    P: SemisimpleCohftProvider,
+{
+    if degree_min > degree_max {
+        return Ok(Vec::new());
+    }
     let total =
         compute_semisimple_graph_series(provider, genus, degree_max, insertions, truncation)?;
-    Ok((0..=degree_max)
+    Ok((degree_min..=degree_max)
         .map(|degree| total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
         .collect())
 }
@@ -4819,6 +4844,11 @@ mod tests {
             assert_eq!(coefficient, &single, "q^{degree}");
         }
         assert_eq!(coefficients[1], RatFun::one());
+
+        let range =
+            compute_semisimple_graph_coefficient_range(&provider, 0, 1, 2, &insertions, None)
+                .unwrap();
+        assert_eq!(range, coefficients[1..=2].to_vec());
     }
 
     #[test]
