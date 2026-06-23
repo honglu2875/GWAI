@@ -145,6 +145,74 @@ impl fmt::Display for Rational {
     }
 }
 
+/// Arithmetic interface used by performance-sensitive series containers.
+///
+/// The existing symbolic engine uses [`RatFun`], but many non-equivariant and
+/// early-specialized computations only need exact rational coefficients.  This
+/// trait lets those two cases share `q`-series and matrix code while keeping the
+/// coefficient representation swappable.
+pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
+    fn zero() -> Self;
+    fn one() -> Self;
+    fn from_rational(value: Rational) -> Self;
+    fn is_zero(&self) -> bool;
+    fn neg(&self) -> Self;
+    fn add(&self, rhs: &Self) -> Self;
+    fn sub(&self, rhs: &Self) -> Self;
+    fn mul(&self, rhs: &Self) -> Self;
+    fn div(&self, rhs: &Self) -> Self;
+
+    fn from_usize(value: usize) -> Self {
+        Self::from_rational(Rational::from(value))
+    }
+
+    fn pow_usize(&self, exp: usize) -> Self {
+        let mut out = Self::one();
+        for _ in 0..exp {
+            out = out.mul(self);
+        }
+        out
+    }
+}
+
+impl Coeff for Rational {
+    fn zero() -> Self {
+        Rational::zero()
+    }
+
+    fn one() -> Self {
+        Rational::one()
+    }
+
+    fn from_rational(value: Rational) -> Self {
+        value
+    }
+
+    fn is_zero(&self) -> bool {
+        self.is_zero()
+    }
+
+    fn neg(&self) -> Self {
+        -self.clone()
+    }
+
+    fn add(&self, rhs: &Self) -> Self {
+        self.clone() + rhs.clone()
+    }
+
+    fn sub(&self, rhs: &Self) -> Self {
+        self.clone() - rhs.clone()
+    }
+
+    fn mul(&self, rhs: &Self) -> Self {
+        self.clone() * rhs.clone()
+    }
+
+    fn div(&self, rhs: &Self) -> Self {
+        self.clone() / rhs.clone()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Monomial(Vec<(String, i32)>);
 
@@ -616,6 +684,44 @@ impl RatFun {
             ));
         }
         Ok(num / den)
+    }
+}
+
+impl Coeff for RatFun {
+    fn zero() -> Self {
+        RatFun::zero()
+    }
+
+    fn one() -> Self {
+        RatFun::one()
+    }
+
+    fn from_rational(value: Rational) -> Self {
+        RatFun::from_rational(value)
+    }
+
+    fn is_zero(&self) -> bool {
+        self.is_zero()
+    }
+
+    fn neg(&self) -> Self {
+        -self.clone()
+    }
+
+    fn add(&self, rhs: &Self) -> Self {
+        self + rhs
+    }
+
+    fn sub(&self, rhs: &Self) -> Self {
+        self - rhs
+    }
+
+    fn mul(&self, rhs: &Self) -> Self {
+        self * rhs
+    }
+
+    fn div(&self, rhs: &Self) -> Self {
+        self / rhs
     }
 }
 

@@ -1,28 +1,30 @@
-use crate::algebra::RatFun;
+use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QSeries {
-    coeffs: Vec<RatFun>,
+pub struct QSeries<C = RatFun> {
+    coeffs: Vec<C>,
 }
 
-impl QSeries {
-    pub fn from_coeffs(coeffs: Vec<RatFun>) -> Self {
+pub type RationalQSeries = QSeries<Rational>;
+
+impl<C: Coeff> QSeries<C> {
+    pub fn from_coeffs(coeffs: Vec<C>) -> Self {
         Self { coeffs }
     }
 
     pub fn zero(max_degree: usize) -> Self {
         Self {
-            coeffs: vec![RatFun::zero(); max_degree + 1],
+            coeffs: vec![C::zero(); max_degree + 1],
         }
     }
 
     pub fn one(max_degree: usize) -> Self {
-        Self::constant(RatFun::one(), max_degree)
+        Self::constant(C::one(), max_degree)
     }
 
-    pub fn constant(value: RatFun, max_degree: usize) -> Self {
+    pub fn constant(value: C, max_degree: usize) -> Self {
         let mut out = Self::zero(max_degree);
         out.coeffs[0] = value;
         out
@@ -31,7 +33,7 @@ impl QSeries {
     pub fn q(max_degree: usize) -> Self {
         let mut out = Self::zero(max_degree);
         if max_degree >= 1 {
-            out.coeffs[1] = RatFun::one();
+            out.coeffs[1] = C::one();
         }
         out
     }
@@ -40,16 +42,16 @@ impl QSeries {
         self.coeffs.len().saturating_sub(1)
     }
 
-    pub fn coeff(&self, degree: usize) -> Option<&RatFun> {
+    pub fn coeff(&self, degree: usize) -> Option<&C> {
         self.coeffs.get(degree)
     }
 
-    pub fn coeffs(&self) -> &[RatFun] {
+    pub fn coeffs(&self) -> &[C] {
         &self.coeffs
     }
 
     pub fn is_zero(&self) -> bool {
-        self.coeffs.iter().all(RatFun::is_zero)
+        self.coeffs.iter().all(Coeff::is_zero)
     }
 
     pub fn add(&self, rhs: &Self) -> Self {
@@ -59,7 +61,7 @@ impl QSeries {
                 .coeffs
                 .iter()
                 .zip(rhs.coeffs.iter())
-                .map(|(a, b)| a + b)
+                .map(|(a, b)| a.add(b))
                 .collect(),
         }
     }
@@ -71,20 +73,20 @@ impl QSeries {
                 .coeffs
                 .iter()
                 .zip(rhs.coeffs.iter())
-                .map(|(a, b)| a - b)
+                .map(|(a, b)| a.sub(b))
                 .collect(),
         }
     }
 
     pub fn neg(&self) -> Self {
         Self {
-            coeffs: self.coeffs.iter().cloned().map(|c| -c).collect(),
+            coeffs: self.coeffs.iter().map(Coeff::neg).collect(),
         }
     }
 
-    pub fn scale(&self, scalar: &RatFun) -> Self {
+    pub fn scale(&self, scalar: &C) -> Self {
         Self {
-            coeffs: self.coeffs.iter().map(|coeff| coeff * scalar).collect(),
+            coeffs: self.coeffs.iter().map(|coeff| coeff.mul(scalar)).collect(),
         }
     }
 
@@ -95,9 +97,9 @@ impl QSeries {
             .enumerate()
             .map(|(degree, coeff)| {
                 if degree == 0 {
-                    RatFun::zero()
+                    C::zero()
                 } else {
-                    coeff * &RatFun::from(degree)
+                    coeff.mul(&C::from_usize(degree))
                 }
             })
             .collect();
@@ -107,7 +109,7 @@ impl QSeries {
     pub fn mul(&self, rhs: &Self) -> Self {
         self.assert_same_truncation(rhs);
         let max_degree = self.max_degree();
-        let mut out = vec![RatFun::zero(); max_degree + 1];
+        let mut out = vec![C::zero(); max_degree + 1];
         for i in 0..=max_degree {
             if self.coeffs[i].is_zero() {
                 continue;
@@ -116,8 +118,8 @@ impl QSeries {
                 if rhs.coeffs[j].is_zero() {
                     continue;
                 }
-                let term = &self.coeffs[i] * &rhs.coeffs[j];
-                out[i + j] = &out[i + j] + &term;
+                let term = self.coeffs[i].mul(&rhs.coeffs[j]);
+                out[i + j] = out[i + j].add(&term);
             }
         }
         Self { coeffs: out }
@@ -135,15 +137,15 @@ impl QSeries {
             ));
         }
 
-        let mut out = vec![RatFun::zero(); max_degree + 1];
-        out[0] = &RatFun::one() / constant;
+        let mut out = vec![C::zero(); max_degree + 1];
+        out[0] = C::one().div(constant);
         for degree in 1..=max_degree {
-            let mut sum = RatFun::zero();
+            let mut sum = C::zero();
             for k in 1..=degree {
-                let term = &self.coeffs[k] * &out[degree - k];
-                sum = &sum + &term;
+                let term = self.coeffs[k].mul(&out[degree - k]);
+                sum = sum.add(&term);
             }
-            out[degree] = -(&sum / constant);
+            out[degree] = sum.div(constant).neg();
         }
         Ok(Self { coeffs: out })
     }
@@ -153,7 +155,7 @@ impl QSeries {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
-        let mut out = QSeries::one(self.max_degree());
+        let mut out = QSeries::<C>::one(self.max_degree());
         for _ in 0..exp {
             out = out.mul(self);
         }
@@ -162,22 +164,23 @@ impl QSeries {
 
     pub fn sqrt_with_constant_one(&self) -> Result<Self, GwError> {
         let max_degree = self.max_degree();
-        if self.coeff(0) != Some(&RatFun::one()) {
+        let one = C::one();
+        if self.coeff(0) != Some(&one) {
             return Err(GwError::AlgebraFailure(
                 "sqrt_with_constant_one requires constant coefficient 1".to_string(),
             ));
         }
 
-        let mut out = vec![RatFun::zero(); max_degree + 1];
-        out[0] = RatFun::one();
+        let mut out = vec![C::zero(); max_degree + 1];
+        out[0] = C::one();
         for degree in 1..=max_degree {
-            let mut quadratic_terms = RatFun::zero();
+            let mut quadratic_terms = C::zero();
             for left in 1..degree {
-                let term = &out[left] * &out[degree - left];
-                quadratic_terms = &quadratic_terms + &term;
+                let term = out[left].mul(&out[degree - left]);
+                quadratic_terms = quadratic_terms.add(&term);
             }
-            let numerator = self.coeffs[degree].clone() - quadratic_terms;
-            out[degree] = &numerator / &RatFun::from(2usize);
+            let numerator = self.coeffs[degree].sub(&quadratic_terms);
+            out[degree] = numerator.div(&C::from_usize(2));
         }
         Ok(Self { coeffs: out })
     }
@@ -192,30 +195,32 @@ impl QSeries {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesMatrix {
+pub struct SeriesMatrix<C = RatFun> {
     rows: usize,
     cols: usize,
-    entries: Vec<Vec<QSeries>>,
+    entries: Vec<Vec<QSeries<C>>>,
 }
 
-impl SeriesMatrix {
+pub type RationalSeriesMatrix = SeriesMatrix<Rational>;
+
+impl<C: Coeff> SeriesMatrix<C> {
     pub fn zero(rows: usize, cols: usize, max_degree: usize) -> Self {
         Self {
             rows,
             cols,
-            entries: vec![vec![QSeries::zero(max_degree); cols]; rows],
+            entries: vec![vec![QSeries::<C>::zero(max_degree); cols]; rows],
         }
     }
 
     pub fn identity(size: usize, max_degree: usize) -> Self {
         let mut out = Self::zero(size, size, max_degree);
         for i in 0..size {
-            out.entries[i][i] = QSeries::one(max_degree);
+            out.entries[i][i] = QSeries::<C>::one(max_degree);
         }
         out
     }
 
-    pub fn from_entries(entries: Vec<Vec<QSeries>>) -> Self {
+    pub fn from_entries(entries: Vec<Vec<QSeries<C>>>) -> Self {
         let rows = entries.len();
         let cols = entries.first().map(Vec::len).unwrap_or_default();
         assert!(entries.iter().all(|row| row.len() == cols));
@@ -226,24 +231,24 @@ impl SeriesMatrix {
         }
     }
 
-    pub fn constant(entries: Vec<Vec<RatFun>>, max_degree: usize) -> Self {
+    pub fn constant(entries: Vec<Vec<C>>, max_degree: usize) -> Self {
         Self::from_entries(
             entries
                 .into_iter()
                 .map(|row| {
                     row.into_iter()
-                        .map(|entry| QSeries::constant(entry, max_degree))
+                        .map(|entry| QSeries::<C>::constant(entry, max_degree))
                         .collect()
                 })
                 .collect(),
         )
     }
 
-    pub fn diagonal(diagonal: Vec<QSeries>) -> Self {
+    pub fn diagonal(diagonal: Vec<QSeries<C>>) -> Self {
         let size = diagonal.len();
         let max_degree = diagonal
             .first()
-            .map(QSeries::max_degree)
+            .map(QSeries::<C>::max_degree)
             .unwrap_or_default();
         let mut out = Self::zero(size, size, max_degree);
         for (idx, value) in diagonal.into_iter().enumerate() {
@@ -260,11 +265,11 @@ impl SeriesMatrix {
         self.cols
     }
 
-    pub fn entry(&self, row: usize, col: usize) -> &QSeries {
+    pub fn entry(&self, row: usize, col: usize) -> &QSeries<C> {
         &self.entries[row][col]
     }
 
-    pub fn entries(&self) -> &[Vec<QSeries>] {
+    pub fn entries(&self) -> &[Vec<QSeries<C>>] {
         &self.entries
     }
 
@@ -283,7 +288,7 @@ impl SeriesMatrix {
         Self::from_entries(
             self.entries
                 .iter()
-                .map(|row| row.iter().map(QSeries::q_derivative).collect())
+                .map(|row| row.iter().map(QSeries::<C>::q_derivative).collect())
                 .collect(),
         )
     }
@@ -328,7 +333,7 @@ impl SeriesMatrix {
         Self::from_entries(
             self.entries
                 .iter()
-                .map(|row| row.iter().map(QSeries::neg).collect())
+                .map(|row| row.iter().map(QSeries::<C>::neg).collect())
                 .collect(),
         )
     }
@@ -340,7 +345,7 @@ impl SeriesMatrix {
         let mut out = Self::zero(self.rows, rhs.cols, max_degree);
         for row in 0..self.rows {
             for col in 0..rhs.cols {
-                let mut total = QSeries::zero(max_degree);
+                let mut total = QSeries::<C>::zero(max_degree);
                 for k in 0..self.cols {
                     total = total.add(&self.entries[row][k].mul(&rhs.entries[k][col]));
                 }
@@ -354,18 +359,18 @@ impl SeriesMatrix {
         self.entries
             .first()
             .and_then(|row| row.first())
-            .map(QSeries::max_degree)
+            .map(QSeries::<C>::max_degree)
             .unwrap_or_default()
     }
 
     pub fn is_zero(&self) -> bool {
         self.entries
             .iter()
-            .all(|row| row.iter().all(QSeries::is_zero))
+            .all(|row| row.iter().all(QSeries::<C>::is_zero))
     }
 }
 
-impl fmt::Display for QSeries {
+impl<C: Coeff + fmt::Display> fmt::Display for QSeries<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut parts = Vec::new();
         for (degree, coeff) in self.coeffs.iter().enumerate() {
@@ -429,17 +434,48 @@ mod tests {
     }
 
     #[test]
+    fn rational_q_series_uses_plain_rational_coefficients() {
+        let max_degree = 3;
+        let one = RationalQSeries::one(max_degree);
+        let q = RationalQSeries::q(max_degree);
+        let two = RationalQSeries::constant(Rational::from(2usize), max_degree);
+        let series = one.add(&q).mul(&two);
+
+        assert_eq!(series.coeff(0), Some(&Rational::from(2usize)));
+        assert_eq!(series.coeff(1), Some(&Rational::from(2usize)));
+        assert_eq!(series.coeff(2), Some(&Rational::zero()));
+
+        let inv = one.add(&q).inverse().unwrap();
+        assert_eq!(inv.coeff(0), Some(&Rational::one()));
+        assert_eq!(inv.coeff(1), Some(&Rational::from(-1)));
+        assert_eq!(inv.coeff(2), Some(&Rational::one()));
+        assert_eq!(inv.coeff(3), Some(&Rational::from(-1)));
+    }
+
+    #[test]
     fn matrix_multiplication_works_over_q_series() {
-        let q = QSeries::q(1);
-        let one = QSeries::one(1);
+        let q = QSeries::<RatFun>::q(1);
+        let one = QSeries::<RatFun>::one(1);
         let a = SeriesMatrix::from_entries(vec![
             vec![one.clone(), q.clone()],
-            vec![QSeries::zero(1), one.clone()],
+            vec![QSeries::<RatFun>::zero(1), one.clone()],
         ]);
         let product = a.mul(&SeriesMatrix::identity(2, 1));
         assert_eq!(product, a);
         assert_eq!(a.transpose().rows(), 2);
-        assert!(SeriesMatrix::zero(2, 2, 1).is_zero());
-        assert_eq!(a.add(&a.neg()), SeriesMatrix::zero(2, 2, 1));
+        assert!(SeriesMatrix::<RatFun>::zero(2, 2, 1).is_zero());
+        assert_eq!(a.add(&a.neg()), SeriesMatrix::<RatFun>::zero(2, 2, 1));
+    }
+
+    #[test]
+    fn rational_series_matrix_multiplication_works() {
+        let one = RationalQSeries::one(1);
+        let q = RationalQSeries::q(1);
+        let matrix = RationalSeriesMatrix::from_entries(vec![
+            vec![one.clone(), q.clone()],
+            vec![RationalQSeries::zero(1), one],
+        ]);
+        let product = matrix.mul(&RationalSeriesMatrix::identity(2, 1));
+        assert_eq!(product, matrix);
     }
 }
