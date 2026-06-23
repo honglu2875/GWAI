@@ -25,7 +25,7 @@ use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
 use crate::graphs::{stable_graphs, StableGraph};
-use crate::series::{QSeries, SeriesMatrix};
+use crate::series::{QSeries, RationalQSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
 use crate::{
@@ -1508,6 +1508,22 @@ struct EdgeFactorOption {
     coefficient: QSeries,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RationalEdgeFactorOption {
+    left_power: usize,
+    right_power: usize,
+    coefficient: RationalQSeries,
+}
+
+#[derive(Debug)]
+struct RationalNoInsertionGraphKernel {
+    delta: Vec<RationalQSeries>,
+    inverse_delta: Vec<RationalQSeries>,
+    relative_sqrt_delta: Vec<RationalQSeries>,
+    translation: Vec<Vec<RationalQSeries>>,
+    edge_options: Vec<Vec<Vec<RationalEdgeFactorOption>>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VertexContributionKey {
     genus: usize,
@@ -1963,14 +1979,34 @@ where
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
-    let total = evaluate_scalar_graphs_parallel(
-        graphs.as_ref(),
-        &leg_options,
-        &kernel,
-        q_degree,
-        graph_dimension,
-        &mut profile,
-    );
+    let total = if insertions.is_empty() && !env_flag("GWAI_DISABLE_RATIONAL_GRAPH") {
+        evaluate_rational_no_insertion_graphs_if_possible(
+            graphs.as_ref(),
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        )
+        .unwrap_or_else(|| {
+            evaluate_scalar_graphs_parallel(
+                graphs.as_ref(),
+                &leg_options,
+                &kernel,
+                q_degree,
+                graph_dimension,
+                &mut profile,
+            )
+        })
+    } else {
+        evaluate_scalar_graphs_parallel(
+            graphs.as_ref(),
+            &leg_options,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        )
+    };
     profile.add_graph_elapsed(graphs_started.elapsed());
     profile.finish();
     Ok(total)
@@ -2636,6 +2672,17 @@ fn master_worker_count(work_items: usize) -> usize {
     requested.min(work_items).max(1)
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 fn contract_task_chunk(
     kernels: &HashMap<usize, ExternalLegKernel>,
     tasks: &[MasterContractionTask],
@@ -2827,6 +2874,398 @@ fn evaluate_scalar_graph_chunk(
         profile,
         vertex_cache,
     }
+}
+
+struct RationalGraphChunkResult {
+    total: RationalQSeries,
+    profile: GraphEvalProfile,
+}
+
+impl RationalNoInsertionGraphKernel {
+    fn from_symbolic(kernel: &GiventalGraphKernel) -> Option<Self> {
+        Some(Self {
+            delta: qseries_slice_to_rational(&kernel.calibration.delta)?,
+            inverse_delta: qseries_slice_to_rational(&kernel.calibration.inverse_delta)?,
+            relative_sqrt_delta: qseries_slice_to_rational(
+                &kernel.calibration.relative_sqrt_delta,
+            )?,
+            translation: kernel
+                .translation
+                .iter()
+                .map(|row| qseries_slice_to_rational(row))
+                .collect::<Option<Vec<_>>>()?,
+            edge_options: kernel
+                .edge_options
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|options| {
+                            options
+                                .iter()
+                                .map(|option| {
+                                    Some(RationalEdgeFactorOption {
+                                        left_power: option.left_power,
+                                        right_power: option.right_power,
+                                        coefficient: qseries_to_rational(&option.coefficient)?,
+                                    })
+                                })
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
+                .collect::<Option<Vec<_>>>()?,
+        })
+    }
+}
+
+fn qseries_slice_to_rational(series: &[QSeries]) -> Option<Vec<RationalQSeries>> {
+    series.iter().map(qseries_to_rational).collect()
+}
+
+fn qseries_to_rational(series: &QSeries) -> Option<RationalQSeries> {
+    Some(RationalQSeries::from_coeffs(
+        series
+            .coeffs()
+            .iter()
+            .map(RatFun::as_rational)
+            .collect::<Option<Vec<_>>>()?,
+    ))
+}
+
+fn rational_qseries_to_ratfun(series: &RationalQSeries) -> QSeries {
+    QSeries::from_coeffs(
+        series
+            .coeffs()
+            .iter()
+            .cloned()
+            .map(RatFun::from_rational)
+            .collect(),
+    )
+}
+
+fn evaluate_rational_no_insertion_graphs_if_possible(
+    graphs: &[PreparedStableGraph],
+    kernel: &Arc<GiventalGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+    profile: &mut GraphEvalProfile,
+) -> Option<QSeries> {
+    let rational_kernel = Arc::new(RationalNoInsertionGraphKernel::from_symbolic(kernel)?);
+    let total = evaluate_rational_no_insertion_graphs_parallel(
+        graphs,
+        &rational_kernel,
+        q_degree,
+        graph_dimension,
+        profile,
+    );
+    Some(rational_qseries_to_ratfun(&total))
+}
+
+fn evaluate_rational_no_insertion_graphs_parallel(
+    graphs: &[PreparedStableGraph],
+    kernel: &Arc<RationalNoInsertionGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+    profile: &mut GraphEvalProfile,
+) -> RationalQSeries {
+    let worker_count = master_worker_count(graphs.len());
+    let results = if worker_count <= 1 {
+        vec![evaluate_rational_no_insertion_graph_chunk(
+            graphs,
+            kernel,
+            q_degree,
+            graph_dimension,
+        )]
+    } else {
+        let chunk_size = graphs.len().div_ceil(worker_count);
+        thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for chunk in graphs.chunks(chunk_size) {
+                handles.push(scope.spawn(move || {
+                    evaluate_rational_no_insertion_graph_chunk(
+                        chunk,
+                        kernel,
+                        q_degree,
+                        graph_dimension,
+                    )
+                }));
+            }
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .expect("rational graph evaluation worker panicked")
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+
+    let mut total = RationalQSeries::zero(q_degree);
+    for result in results {
+        profile.absorb_graph_counts(&result.profile);
+        total = total.add(&result.total);
+    }
+    total
+}
+
+fn evaluate_rational_no_insertion_graph_chunk(
+    graphs: &[PreparedStableGraph],
+    kernel: &RationalNoInsertionGraphKernel,
+    q_degree: usize,
+    graph_dimension: usize,
+) -> RationalGraphChunkResult {
+    let oracle = WittenKontsevich::new();
+    let mut profile = GraphEvalProfile::new();
+    let mut vertex_cache = HashMap::new();
+    let mut total = RationalQSeries::zero(q_degree);
+    for prepared in graphs {
+        let graph = &prepared.graph;
+        profile.colorings += prepared.colorings.len();
+        for coloring in prepared.colorings.iter() {
+            let Some(coloring_factor) = coloring.factor.as_rational() else {
+                continue;
+            };
+            let mut graph_total = RationalQSeries::zero(q_degree);
+            let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+            let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+            accumulate_rational_no_insertion_graph_factors(
+                graph,
+                &coloring.colors,
+                kernel,
+                &oracle,
+                &mut vertex_cache,
+                q_degree,
+                graph_dimension,
+                0,
+                0,
+                RationalQSeries::one(q_degree).scale(&coloring_factor),
+                &mut base_powers,
+                &mut vertex_power_sums,
+                &prepared.vertex_power_caps,
+                &mut graph_total,
+                &mut profile,
+            );
+            total = total.add(&graph_total);
+        }
+    }
+    RationalGraphChunkResult { total, profile }
+}
+
+fn accumulate_rational_no_insertion_graph_factors(
+    graph: &crate::graphs::StableGraph,
+    colors: &[usize],
+    kernel: &RationalNoInsertionGraphKernel,
+    oracle: &WittenKontsevich,
+    vertex_cache: &mut HashMap<VertexContributionKey, RationalQSeries>,
+    q_degree: usize,
+    max_power: usize,
+    edge_index: usize,
+    current_power_sum: usize,
+    coefficient: RationalQSeries,
+    base_powers: &mut [Vec<usize>],
+    vertex_power_sums: &mut [usize],
+    vertex_power_caps: &[usize],
+    total: &mut RationalQSeries,
+    profile: &mut GraphEvalProfile,
+) {
+    if profile.enabled {
+        profile.recursion_calls += 1;
+    }
+    if coefficient.is_zero() || current_power_sum > max_power {
+        return;
+    }
+
+    if edge_index < graph.edges.len() {
+        let edge = &graph.edges[edge_index];
+        let left_color = colors[edge.a];
+        let right_color = colors[edge.b];
+        for option in &kernel.edge_options[left_color][right_color] {
+            let next_power_sum = current_power_sum + option.left_power + option.right_power;
+            if next_power_sum > max_power {
+                continue;
+            }
+            if edge.a == edge.b {
+                let next_vertex_power =
+                    vertex_power_sums[edge.a] + option.left_power + option.right_power;
+                if next_vertex_power > vertex_power_caps[edge.a] {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_vertex_power;
+            } else {
+                let next_left_power = vertex_power_sums[edge.a] + option.left_power;
+                let next_right_power = vertex_power_sums[edge.b] + option.right_power;
+                if next_left_power > vertex_power_caps[edge.a]
+                    || next_right_power > vertex_power_caps[edge.b]
+                {
+                    continue;
+                }
+                vertex_power_sums[edge.a] = next_left_power;
+                vertex_power_sums[edge.b] = next_right_power;
+            }
+            let next_coefficient = coefficient.mul(&option.coefficient);
+            if next_coefficient.is_zero() {
+                if edge.a == edge.b {
+                    vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+                } else {
+                    vertex_power_sums[edge.b] -= option.right_power;
+                    vertex_power_sums[edge.a] -= option.left_power;
+                }
+                continue;
+            }
+            base_powers[edge.a].push(option.left_power);
+            base_powers[edge.b].push(option.right_power);
+            accumulate_rational_no_insertion_graph_factors(
+                graph,
+                colors,
+                kernel,
+                oracle,
+                vertex_cache,
+                q_degree,
+                max_power,
+                edge_index + 1,
+                next_power_sum,
+                next_coefficient,
+                base_powers,
+                vertex_power_sums,
+                vertex_power_caps,
+                total,
+                profile,
+            );
+            base_powers[edge.b].pop();
+            base_powers[edge.a].pop();
+            if edge.a == edge.b {
+                vertex_power_sums[edge.a] -= option.left_power + option.right_power;
+            } else {
+                vertex_power_sums[edge.b] -= option.right_power;
+                vertex_power_sums[edge.a] -= option.left_power;
+            }
+        }
+        return;
+    }
+
+    let mut vertex_product = RationalQSeries::one(q_degree);
+    for (vertex, powers) in base_powers.iter().enumerate() {
+        let vertex_sum = rational_vertex_contribution_with_translations(
+            graph.vertices[vertex].genus,
+            colors[vertex],
+            powers,
+            kernel,
+            oracle,
+            vertex_cache,
+            q_degree,
+            profile,
+        );
+        vertex_product = vertex_product.mul(&vertex_sum);
+        if vertex_product.is_zero() {
+            return;
+        }
+    }
+    if profile.enabled {
+        profile.leaves += 1;
+    }
+    *total = total.add(&coefficient.mul(&vertex_product));
+}
+
+fn rational_vertex_contribution_with_translations(
+    genus: usize,
+    color: usize,
+    base_powers: &[usize],
+    kernel: &RationalNoInsertionGraphKernel,
+    oracle: &WittenKontsevich,
+    vertex_cache: &mut HashMap<VertexContributionKey, RationalQSeries>,
+    q_degree: usize,
+    profile: &mut GraphEvalProfile,
+) -> RationalQSeries {
+    let mut sorted_powers = base_powers.to_vec();
+    sorted_powers.sort_unstable();
+    let key = VertexContributionKey {
+        genus,
+        color,
+        powers: sorted_powers,
+    };
+    if let Some(cached) = vertex_cache.get(&key) {
+        if profile.enabled {
+            profile.vertex_cache_hits += 1;
+        }
+        return cached.clone();
+    }
+    if profile.enabled {
+        profile.vertex_cache_misses += 1;
+    }
+
+    let base_dimension = 3isize * genus as isize - 3 + base_powers.len() as isize;
+    let base_power_sum = base_powers.iter().sum::<usize>() as isize;
+    let translation_excess = base_dimension - base_power_sum;
+    if translation_excess < 0 {
+        let zero = RationalQSeries::zero(q_degree);
+        vertex_cache.insert(key, zero.clone());
+        return zero;
+    }
+
+    let mut total = RationalQSeries::zero(q_degree);
+    if translation_excess == 0 {
+        let vertex_factor = rational_vertex_tft_factor(genus, base_powers.len(), color, kernel);
+        total = total.add(&vertex_factor.scale(&oracle.psi_integral(genus, base_powers)));
+    }
+
+    for partition in translation_excess_partitions(translation_excess as usize) {
+        if profile.enabled {
+            profile.translation_terms += 1;
+        }
+
+        let translation_count = partition
+            .iter()
+            .map(|(_, multiplicity)| *multiplicity)
+            .sum::<usize>();
+        let mut powers = Vec::with_capacity(base_powers.len() + translation_count);
+        powers.extend_from_slice(base_powers);
+
+        let mut coefficient = RationalQSeries::one(q_degree);
+        let mut symmetry = Rational::one();
+        for (excess, multiplicity) in partition {
+            let power = excess + 1;
+            if power >= kernel.translation[color].len() {
+                coefficient = RationalQSeries::zero(q_degree);
+                break;
+            }
+
+            coefficient =
+                coefficient.mul(&kernel.translation[color][power].pow_usize(multiplicity));
+            if coefficient.is_zero() {
+                break;
+            }
+            powers.extend(std::iter::repeat(power).take(multiplicity));
+
+            symmetry = symmetry * Rational::from(factorial(multiplicity));
+        }
+        if coefficient.is_zero() {
+            continue;
+        }
+
+        let vertex_factor = rational_vertex_tft_factor(genus, powers.len(), color, kernel);
+        let psi = oracle.psi_integral(genus, &powers);
+        let term = coefficient
+            .mul(&vertex_factor)
+            .scale(&(psi / symmetry.clone()));
+        total = total.add(&term);
+    }
+    vertex_cache.insert(key, total.clone());
+    total
+}
+
+fn rational_vertex_tft_factor(
+    genus: usize,
+    valence: usize,
+    color: usize,
+    kernel: &RationalNoInsertionGraphKernel,
+) -> RationalQSeries {
+    let genus_factor = if genus == 0 {
+        kernel.inverse_delta[color].clone()
+    } else {
+        kernel.delta[color].pow_usize(genus - 1)
+    };
+    genus_factor.mul(&kernel.relative_sqrt_delta[color].pow_usize(valence))
 }
 
 struct ExternalGraphChunkResult {
@@ -4849,6 +5288,39 @@ mod tests {
             compute_semisimple_graph_coefficient_range(&provider, 0, 1, 2, &insertions, None)
                 .unwrap();
         assert_eq!(range, coefficients[1..=2].to_vec());
+    }
+
+    #[test]
+    fn rational_no_insertion_graph_sidecar_matches_dense_evaluator() {
+        let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
+        let genus = 2;
+        let q_degree = 1;
+        let graph_dimension = 3 * genus - 3;
+        let kernel = provider
+            .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
+            .unwrap();
+        let graphs = prepared_stable_graphs(genus, 0, provider.colors());
+
+        let mut dense_profile = GraphEvalProfile::new();
+        let dense = evaluate_scalar_graphs_parallel(
+            graphs.as_ref(),
+            &[],
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut dense_profile,
+        );
+        let mut rational_profile = GraphEvalProfile::new();
+        let rational = evaluate_rational_no_insertion_graphs_if_possible(
+            graphs.as_ref(),
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut rational_profile,
+        )
+        .expect("nonequivariant P1 graph kernel should be rational");
+
+        assert_eq!(rational, dense);
     }
 
     #[test]
