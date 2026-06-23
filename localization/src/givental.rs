@@ -4207,42 +4207,51 @@ fn vertex_contribution_with_translations(
     }
 
     let mut total = QSeries::zero(q_degree);
-    let max_translations = translation_excess as usize;
-    for translation_count in 0..=max_translations {
-        if translation_count == 0 {
-            if translation_excess == 0 {
-                let vertex_factor = vertex_tft_factor(genus, base_powers.len(), color, calibration);
-                total = total.add(&vertex_factor.scale(&RatFun::from_rational(
-                    oracle.psi_integral(genus, base_powers),
-                )));
+    if translation_excess == 0 {
+        let vertex_factor = vertex_tft_factor(genus, base_powers.len(), color, calibration);
+        total = total.add(&vertex_factor.scale(&RatFun::from_rational(
+            oracle.psi_integral(genus, base_powers),
+        )));
+    }
+
+    for partition in translation_excess_partitions(translation_excess as usize) {
+        if profile.enabled {
+            profile.translation_terms += 1;
+        }
+
+        let translation_count = partition
+            .iter()
+            .map(|(_, multiplicity)| *multiplicity)
+            .sum::<usize>();
+        let mut powers = Vec::with_capacity(base_powers.len() + translation_count);
+        powers.extend_from_slice(base_powers);
+
+        let mut coefficient = QSeries::one(q_degree);
+        let mut symmetry = RatFun::one();
+        for (excess, multiplicity) in partition {
+            let power = excess + 1;
+            if power >= translation[color].len() {
+                coefficient = QSeries::zero(q_degree);
+                break;
             }
+
+            coefficient = coefficient.mul(&translation[color][power].pow_usize(multiplicity));
+            if coefficient.is_zero() {
+                break;
+            }
+            powers.extend(std::iter::repeat(power).take(multiplicity));
+
+            let multiplicity_factor = RatFun::from(factorial(multiplicity));
+            symmetry = &symmetry * &multiplicity_factor;
+        }
+        if coefficient.is_zero() {
             continue;
         }
 
-        for composition in positive_compositions(translation_excess as usize, translation_count) {
-            if profile.enabled {
-                profile.translation_terms += 1;
-            }
-            let mut powers = base_powers.to_vec();
-            let mut coefficient = QSeries::one(q_degree);
-            for excess in composition {
-                let power = excess + 1;
-                if power >= translation[color].len() {
-                    coefficient = QSeries::zero(q_degree);
-                    break;
-                }
-                coefficient = coefficient.mul(&translation[color][power]);
-                powers.push(power);
-            }
-            if coefficient.is_zero() {
-                continue;
-            }
-            let vertex_factor = vertex_tft_factor(genus, powers.len(), color, calibration);
-            let psi = RatFun::from_rational(oracle.psi_integral(genus, &powers));
-            let symmetry = RatFun::from(factorial(translation_count));
-            let term = coefficient.mul(&vertex_factor).scale(&(&psi / &symmetry));
-            total = total.add(&term);
-        }
+        let vertex_factor = vertex_tft_factor(genus, powers.len(), color, calibration);
+        let psi = RatFun::from_rational(oracle.psi_integral(genus, &powers));
+        let term = coefficient.mul(&vertex_factor).scale(&(&psi / &symmetry));
+        total = total.add(&term);
     }
     vertex_cache.insert(key, total.clone());
     total
@@ -4269,36 +4278,43 @@ fn factorial(n: usize) -> usize {
     (1..=n).product::<usize>().max(1)
 }
 
-fn positive_compositions(total: usize, parts: usize) -> Vec<Vec<usize>> {
-    fn rec(total: usize, parts: usize, current: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
-        if current.len() + 1 == parts {
-            if total > 0 {
-                current.push(total);
-                out.push(current.clone());
-                current.pop();
-            }
+/// Unordered translation excess profiles.
+///
+/// A translation insertion with psi power `power` contributes one new marked
+/// point and consumes `power - 1` units of the vertex dimension excess.  The
+/// older ordered-composition expansion of `exp(T)` produced many identical
+/// point-theory terms and then divided by the total number of translations
+/// factorial.  Grouping by multiplicity profiles leaves exactly one term per
+/// partition with symmetry factor `prod_e c_e!`, where `c_e` is the
+/// multiplicity of excess `e`.
+fn translation_excess_partitions(total: usize) -> Vec<Vec<(usize, usize)>> {
+    fn rec(
+        next_excess: usize,
+        remaining: usize,
+        current: &mut Vec<(usize, usize)>,
+        out: &mut Vec<Vec<(usize, usize)>>,
+    ) {
+        if remaining == 0 {
+            out.push(current.clone());
             return;
         }
-        let remaining_slots = parts - current.len() - 1;
-        for value in 1..=total.saturating_sub(remaining_slots) {
-            current.push(value);
-            rec(total - value, parts, current, out);
-            current.pop();
+
+        for excess in next_excess..=remaining {
+            let max_multiplicity = remaining / excess;
+            for multiplicity in 1..=max_multiplicity {
+                current.push((excess, multiplicity));
+                rec(excess + 1, remaining - excess * multiplicity, current, out);
+                current.pop();
+            }
         }
     }
 
-    if parts == 0 {
-        return if total == 0 {
-            vec![Vec::new()]
-        } else {
-            Vec::new()
-        };
-    }
-    if total < parts {
+    if total == 0 {
         return Vec::new();
     }
+
     let mut out = Vec::new();
-    rec(total, parts, &mut Vec::new(), &mut out);
+    rec(1, total, &mut Vec::new(), &mut out);
     out
 }
 
@@ -4438,6 +4454,60 @@ mod tests {
     use super::*;
     use crate::geometry::CohomologyClass;
     use crate::{tau, ComputeMode, InvariantRequest};
+
+    #[test]
+    fn translation_excess_partitions_group_ordered_compositions() {
+        let partitions = translation_excess_partitions(4);
+        let mut as_strings = partitions
+            .iter()
+            .map(|partition| {
+                partition
+                    .iter()
+                    .map(|(excess, multiplicity)| format!("{excess}^{multiplicity}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>();
+        as_strings.sort();
+        assert_eq!(as_strings, vec!["1^1 3^1", "1^2 2^1", "1^4", "2^2", "4^1"]);
+
+        let ordered_terms = partitions
+            .iter()
+            .map(|partition| {
+                let translation_count = partition
+                    .iter()
+                    .map(|(_, multiplicity)| *multiplicity)
+                    .sum::<usize>();
+                let denominator = partition
+                    .iter()
+                    .map(|(_, multiplicity)| factorial(*multiplicity))
+                    .product::<usize>();
+                factorial(translation_count) / denominator
+            })
+            .sum::<usize>();
+        assert_eq!(ordered_terms, 8);
+    }
+
+    #[test]
+    fn translation_partition_symmetries_recover_ordered_composition_counts() {
+        for total in 1..=8 {
+            let ordered_terms = translation_excess_partitions(total)
+                .iter()
+                .map(|partition| {
+                    let translation_count = partition
+                        .iter()
+                        .map(|(_, multiplicity)| *multiplicity)
+                        .sum::<usize>();
+                    let denominator = partition
+                        .iter()
+                        .map(|(_, multiplicity)| factorial(*multiplicity))
+                        .product::<usize>();
+                    factorial(translation_count) / denominator
+                })
+                .sum::<usize>();
+            assert_eq!(ordered_terms, 1usize << (total - 1));
+        }
+    }
 
     #[test]
     fn identity_r_matrix_has_expected_coefficients() {
