@@ -97,16 +97,20 @@ cargo run --quiet -- compute --n 2 --g 0 --d 1 \
 
 Computes negative split-bundle twists over `P^n`.
 
-The flag `--twist a,b,c` means:
+The flag `--twist -a,-b,-c` means:
 
 ```text
 O(-a) + O(-b) + O(-c) -> P^n
 ```
 
+The public CLI requires the minus signs. Internally the code still stores the
+positive magnitudes because the sign is part of the negative split-bundle
+convention.
+
 Basic form:
 
 ```bash
-cargo run --quiet -- twisted --n <n> --twist <degrees> --g <genus> --d <degree> \
+cargo run --quiet -- twisted --n <n> --twist <negative-degrees> --g <genus> --d <degree> \
   --insert 'tauK(CLASS)'
 ```
 
@@ -115,7 +119,7 @@ cargo run --quiet -- twisted --n <n> --twist <degrees> --g <genus> --d <degree> 
 `O(-1) -> P^2`, genus 2, degree 2:
 
 ```bash
-cargo run --quiet -- twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau4(H)'
+cargo run --quiet -- twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'
 ```
 
 Output:
@@ -124,11 +128,11 @@ Output:
 -1/480
 ```
 
-Other entries in the same localization row:
+Other checked entries with the same target/genus/degree:
 
 ```bash
-cargo run --quiet -- twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau5(1)'
-cargo run --quiet -- twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau3(H^2)'
+cargo run --quiet -- twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau5(1)'
+cargo run --quiet -- twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau3(H^2)'
 ```
 
 Expected outputs:
@@ -141,7 +145,7 @@ Expected outputs:
 Local `P^2 = O(-3) -> P^2`, no insertions:
 
 ```bash
-cargo run --quiet -- twisted --n 2 --twist 3 --g 2 --d 3
+cargo run --quiet -- twisted --n 2 --twist -3 --g 2 --d 3
 ```
 
 Output:
@@ -153,7 +157,7 @@ Output:
 Resolved conifold `O(-1) + O(-1) -> P^1`:
 
 ```bash
-cargo run --quiet -- twisted --n 1 --twist 1,1 --g 2 --d 3
+cargo run --quiet -- twisted --n 1 --twist -1,-1 --g 2 --d 3
 ```
 
 Output:
@@ -168,6 +172,51 @@ Notes:
   twists through an early rational lambda-line specialization.
 - Full symbolic equivariant twisted output is not enabled from this command.
 - Degree-zero local twisted invariants are not implemented in this path.
+
+## `degree-series`
+
+Computes one fixed insertion profile while varying the degree. Without
+`--twist`, this uses the ordinary `P^n` Givental backend; with `--twist`, it
+uses the negative split-bundle backend.
+
+Basic form:
+
+```bash
+cargo run --quiet -- degree-series --n <n> --g <genus> --d-max <degree> \
+  --insert 'tauK(CLASS)' \
+  --mode givental
+```
+
+Twisted local `P^2` example:
+
+```bash
+cargo run --quiet -- degree-series --n 2 --twist -3 --g 2 --d-max 3
+```
+
+Degree ranges default to `--d-min 0` in the ordinary theory and `--d-min 1` in
+the negative split-bundle theory. You can override this with `--d-min`.
+
+## `genus-series`
+
+Computes one fixed insertion profile while varying the genus. As with
+`degree-series`, omitting `--twist` selects ordinary `P^n`; adding `--twist`
+selects the negative split-bundle theory.
+
+Basic form:
+
+```bash
+cargo run --quiet -- genus-series --n <n> --d <degree> --g-max <genus> \
+  --insert 'tauK(CLASS)' \
+  --mode givental
+```
+
+Twisted local `P^2` example:
+
+```bash
+cargo run --quiet -- genus-series --n 2 --twist -3 --d 1 --g-max 3
+```
+
+Genus ranges default to `--g-min 0`. You can override this with `--g-min`.
 
 ## `series`
 

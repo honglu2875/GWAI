@@ -32,6 +32,8 @@ fn run() -> Result<(), GwError> {
         "psi" => run_psi(&args),
         "compute" => run_compute(&args),
         "twisted" => run_twisted(&args),
+        "degree-series" => run_degree_series(&args),
+        "genus-series" => run_genus_series(&args),
         "series" => run_series(&args),
         "tests" | "test" => run_tests(),
         _ => Err(GwError::ParseError(format!(
@@ -136,7 +138,7 @@ fn run_series(args: &[String]) -> Result<(), GwError> {
 
 fn run_twisted(args: &[String]) -> Result<(), GwError> {
     let n = required_usize(args, "--n")?;
-    let twist = parse_degrees_flag(args, "--twist")?
+    let twist = parse_negative_twist_flag(args, "--twist")?
         .ok_or_else(|| GwError::ParseError("missing --twist".to_string()))?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
@@ -157,25 +159,105 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
+fn run_degree_series(args: &[String]) -> Result<(), GwError> {
+    let n = required_usize(args, "--n")?;
+    let genus = first_usize_flag(args, &["--g", "--genus"])?
+        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
+    let degree_max = first_usize_flag(args, &["--d-max", "--degree-max"])?
+        .ok_or_else(|| GwError::ParseError("missing --d-max".to_string()))?;
+    let twist = parse_negative_twist_flag(args, "--twist")?;
+    let degree_min = first_usize_flag(args, &["--d-min", "--degree-min"])?
+        .unwrap_or(if twist.is_some() { 1 } else { 0 });
+    if degree_min > degree_max {
+        return Err(GwError::ParseError(format!(
+            "--d-min ({degree_min}) cannot exceed --d-max ({degree_max})"
+        )));
+    }
+    let mode = parse_compute_mode(args)?;
+    let equivariant = has_flag(args, "--equivariant");
+    let insertions = parse_insertions(n, args)?;
+    let label = insertion_list_label(&insertions);
+
+    let mut warnings = Vec::new();
+    for degree in degree_min..=degree_max {
+        match compute_series_point(
+            n,
+            twist.as_deref(),
+            genus,
+            degree,
+            &insertions,
+            equivariant,
+            mode,
+        ) {
+            Ok(result) => println!("q^{degree} [{label}] = {}", result.value),
+            Err(GwError::UnsupportedInvariant(msg)) => {
+                warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if let Some(path) = write_warnings_file("degree-series", &warnings)? {
+        eprintln!(
+            "warnings written to {}; inspect this file if needed",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_genus_series(args: &[String]) -> Result<(), GwError> {
+    let n = required_usize(args, "--n")?;
+    let degree = first_usize_flag(args, &["--d", "--degree"])?
+        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
+    let genus_max = first_usize_flag(args, &["--g-max", "--genus-max"])?
+        .ok_or_else(|| GwError::ParseError("missing --g-max".to_string()))?;
+    let genus_min = first_usize_flag(args, &["--g-min", "--genus-min"])?.unwrap_or(0);
+    if genus_min > genus_max {
+        return Err(GwError::ParseError(format!(
+            "--g-min ({genus_min}) cannot exceed --g-max ({genus_max})"
+        )));
+    }
+    let twist = parse_negative_twist_flag(args, "--twist")?;
+    let mode = parse_compute_mode(args)?;
+    let equivariant = has_flag(args, "--equivariant");
+    let insertions = parse_insertions(n, args)?;
+    let label = insertion_list_label(&insertions);
+
+    let mut warnings = Vec::new();
+    for genus in genus_min..=genus_max {
+        match compute_series_point(
+            n,
+            twist.as_deref(),
+            genus,
+            degree,
+            &insertions,
+            equivariant,
+            mode,
+        ) {
+            Ok(result) => println!("g={genus} q^{degree} [{label}] = {}", result.value),
+            Err(GwError::UnsupportedInvariant(msg)) => {
+                warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    if let Some(path) = write_warnings_file("genus-series", &warnings)? {
+        eprintln!(
+            "warnings written to {}; inspect this file if needed",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn run_compute(args: &[String]) -> Result<(), GwError> {
     let n = required_usize(args, "--n")?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
     let degree = first_usize_flag(args, &["--d", "--degree"])?
         .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
-    let mode = match parse_string_flag(args, "--mode")?.as_deref() {
-        None | Some("givental") => ComputeMode::Givental,
-        Some(other) => {
-            return Err(GwError::ParseError(format!(
-                "invalid --mode `{other}`; expected givental"
-            )))
-        }
-    };
-
-    let insertions = repeated_string_flag(args, "--insert")
-        .into_iter()
-        .map(|raw| parse_insertion(n, &raw))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mode = parse_compute_mode(args)?;
+    let insertions = parse_insertions(n, args)?;
 
     let req = InvariantRequest {
         n,
@@ -197,6 +279,34 @@ fn run_compute(args: &[String]) -> Result<(), GwError> {
         println!("note: {note}");
     }
     Ok(())
+}
+
+fn compute_series_point(
+    n: usize,
+    twist: Option<&[usize]>,
+    genus: usize,
+    degree: usize,
+    insertions: &[gw_pn::Insertion],
+    equivariant: bool,
+    mode: ComputeMode,
+) -> Result<gw_pn::InvariantResult, GwError> {
+    if let Some(twist) = twist {
+        let mut req =
+            TwistedInvariantRequest::new(n, twist.to_vec(), genus, degree, insertions.to_vec())?;
+        req.equivariant = equivariant;
+        return compute_negative_split_twisted(&req);
+    }
+
+    let req = InvariantRequest {
+        n,
+        genus,
+        degree,
+        insertions: insertions.to_vec(),
+        equivariant,
+        mode,
+        truncation: None,
+    };
+    compute(req)
 }
 
 fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<PathBuf>, GwError> {
@@ -231,6 +341,13 @@ fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<Path
     Ok(Some(path))
 }
 
+fn parse_insertions(n: usize, args: &[String]) -> Result<Vec<gw_pn::Insertion>, GwError> {
+    repeated_string_flag(args, "--insert")
+        .into_iter()
+        .map(|raw| parse_insertion(n, &raw))
+        .collect()
+}
+
 fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
     let compact = raw
         .chars()
@@ -253,7 +370,7 @@ fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
     Ok(tau(descendant_power, class))
 }
 
-fn parse_degrees_flag(args: &[String], flag: &str) -> Result<Option<Vec<usize>>, GwError> {
+fn parse_negative_twist_flag(args: &[String], flag: &str) -> Result<Option<Vec<usize>>, GwError> {
     let Some(raw) = parse_string_flag(args, flag)? else {
         return Ok(None);
     };
@@ -263,14 +380,35 @@ fn parse_degrees_flag(args: &[String], flag: &str) -> Result<Option<Vec<usize>>,
             let part = part.trim();
             if part.is_empty() {
                 return Err(GwError::ParseError(format!(
-                    "empty degree in {flag} value `{raw}`"
+                    "empty twist degree in {flag} value `{raw}`"
                 )));
             }
-            part.parse::<usize>()
-                .map_err(|_| GwError::ParseError(format!("invalid degree `{part}` in {flag}")))
+            let degree = part.parse::<isize>().map_err(|_| {
+                GwError::ParseError(format!("invalid twist degree `{part}` in {flag}"))
+            })?;
+            if degree >= 0 {
+                return Err(GwError::ParseError(format!(
+                    "negative split bundles must be written with negative degrees, e.g. `{flag} -3` or `{flag} -1,-1`; got `{part}`"
+                )));
+            }
+            degree
+                .checked_abs()
+                .map(|value| value as usize)
+                .ok_or_else(|| {
+                    GwError::ParseError(format!("invalid twist degree `{part}` in {flag}"))
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(degrees))
+}
+
+fn parse_compute_mode(args: &[String]) -> Result<ComputeMode, GwError> {
+    match parse_string_flag(args, "--mode")?.as_deref() {
+        None | Some("givental") => Ok(ComputeMode::Givental),
+        Some(other) => Err(GwError::ParseError(format!(
+            "invalid --mode `{other}`; expected givental"
+        ))),
+    }
 }
 
 fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
@@ -354,6 +492,25 @@ fn default_lambda_line_weights(n: usize) -> Vec<Rational> {
     weights
 }
 
+fn insertion_list_label(insertions: &[gw_pn::Insertion]) -> String {
+    if insertions.is_empty() {
+        return "1".to_string();
+    }
+    insertions
+        .iter()
+        .map(|insertion| {
+            let class = match insertion.class.pure_power() {
+                Some(0) => "1".to_string(),
+                Some(1) => "H".to_string(),
+                Some(power) => format!("H^{power}"),
+                None => "class".to_string(),
+            };
+            format!("tau{}({class})", insertion.descendant_power)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn print_help() {
     println!(
         "gw-pn\n\
@@ -362,8 +519,10 @@ Commands:\n\
   gw-pn tests\n\
   gw-pn psi --g 2 --powers 4\n\
   gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
-  gw-pn twisted --n 2 --twist 1 --g 2 --d 2 --insert 'tau4(H)'\n\
-  gw-pn twisted --n 2 --twist 3 --g 2 --d 3\n\
+  gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
+  gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
+  gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
+  gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\
   gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode givental\n\
 \n\
 Supported compute seed cases:\n\
