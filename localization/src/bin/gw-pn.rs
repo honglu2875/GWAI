@@ -37,14 +37,15 @@ fn run() -> Result<(), GwError> {
         "degree-series" => run_degree_series(&args),
         "genus-series" => run_genus_series(&args),
         "series" => run_series(&args),
-        "tests" | "test" => run_tests(),
+        "tests" | "test" => run_tests(&args),
         _ => Err(GwError::ParseError(format!(
             "unknown command `{command}`; try --help"
         ))),
     }
 }
 
-fn run_tests() -> Result<(), GwError> {
+fn run_tests(args: &[String]) -> Result<(), GwError> {
+    validate_flags(args, &[])?;
     let report = run_builtin_tests();
     for case in &report.cases {
         let status = if case.passed { "ok" } else { "FAILED" };
@@ -69,6 +70,14 @@ fn run_tests() -> Result<(), GwError> {
 }
 
 fn run_psi(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--powers"),
+        ],
+    )?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
     let powers_raw = parse_string_flag(args, "--powers")?
@@ -91,6 +100,23 @@ fn run_psi(args: &[String]) -> Result<(), GwError> {
 }
 
 fn run_series(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--n"),
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--d-max"),
+            CliFlag::value("--degree-max"),
+            CliFlag::value("--max-markings"),
+            CliFlag::value("--m-max"),
+            CliFlag::value("--max-descendant"),
+            CliFlag::value("--k-max"),
+            CliFlag::value("--mode"),
+            CliFlag::switch("--include-zero"),
+            CliFlag::switch("--equivariant"),
+        ],
+    )?;
     let n = required_usize(args, "--n")?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
@@ -139,6 +165,19 @@ fn run_series(args: &[String]) -> Result<(), GwError> {
 }
 
 fn run_twisted(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--n"),
+            CliFlag::value("--twist"),
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--d"),
+            CliFlag::value("--degree"),
+            CliFlag::value("--insert"),
+            CliFlag::switch("--equivariant"),
+        ],
+    )?;
     let n = required_usize(args, "--n")?;
     let twist = parse_negative_twist_flag(args, "--twist")?
         .ok_or_else(|| GwError::ParseError("missing --twist".to_string()))?;
@@ -162,6 +201,7 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
 }
 
 fn run_degree_series(args: &[String]) -> Result<(), GwError> {
+    validate_flags(args, degree_series_flags())?;
     let n = required_usize(args, "--n")?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
@@ -242,6 +282,7 @@ fn run_degree_series(args: &[String]) -> Result<(), GwError> {
 }
 
 fn run_genus_series(args: &[String]) -> Result<(), GwError> {
+    validate_flags(args, genus_series_flags())?;
     let n = required_usize(args, "--n")?;
     let degree = first_usize_flag(args, &["--d", "--degree"])?
         .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
@@ -321,6 +362,20 @@ fn run_genus_series(args: &[String]) -> Result<(), GwError> {
 }
 
 fn run_compute(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--n"),
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--d"),
+            CliFlag::value("--degree"),
+            CliFlag::value("--mode"),
+            CliFlag::value("--insert"),
+            CliFlag::switch("--equivariant"),
+            CliFlag::switch("--nonequivariant-limit"),
+        ],
+    )?;
     let n = required_usize(args, "--n")?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
         .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
@@ -389,6 +444,145 @@ enum InsertionSelection {
 struct BoundedInsertionScan {
     profiles: Vec<Vec<gw_pn::Insertion>>,
     include_zero: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CliFlag {
+    name: &'static str,
+    takes_value: bool,
+}
+
+impl CliFlag {
+    const fn value(name: &'static str) -> Self {
+        Self {
+            name,
+            takes_value: true,
+        }
+    }
+
+    const fn switch(name: &'static str) -> Self {
+        Self {
+            name,
+            takes_value: false,
+        }
+    }
+}
+
+const DEGREE_SERIES_FLAGS: &[CliFlag] = &[
+    CliFlag::value("--n"),
+    CliFlag::value("--g"),
+    CliFlag::value("--genus"),
+    CliFlag::value("--d-max"),
+    CliFlag::value("--degree-max"),
+    CliFlag::value("--d-min"),
+    CliFlag::value("--degree-min"),
+    CliFlag::value("--twist"),
+    CliFlag::value("--mode"),
+    CliFlag::value("--insert"),
+    CliFlag::value("--max-markings"),
+    CliFlag::value("--m-max"),
+    CliFlag::value("--max-descendant"),
+    CliFlag::value("--k-max"),
+    CliFlag::switch("--equivariant"),
+    CliFlag::switch("--include-zero"),
+];
+
+const GENUS_SERIES_FLAGS: &[CliFlag] = &[
+    CliFlag::value("--n"),
+    CliFlag::value("--d"),
+    CliFlag::value("--degree"),
+    CliFlag::value("--g-max"),
+    CliFlag::value("--genus-max"),
+    CliFlag::value("--g-min"),
+    CliFlag::value("--genus-min"),
+    CliFlag::value("--twist"),
+    CliFlag::value("--mode"),
+    CliFlag::value("--insert"),
+    CliFlag::value("--max-markings"),
+    CliFlag::value("--m-max"),
+    CliFlag::value("--max-descendant"),
+    CliFlag::value("--k-max"),
+    CliFlag::switch("--equivariant"),
+    CliFlag::switch("--include-zero"),
+];
+
+fn degree_series_flags() -> &'static [CliFlag] {
+    DEGREE_SERIES_FLAGS
+}
+
+fn genus_series_flags() -> &'static [CliFlag] {
+    GENUS_SERIES_FLAGS
+}
+
+fn validate_flags(args: &[String], allowed: &[CliFlag]) -> Result<(), GwError> {
+    let mut idx = 0;
+    while idx < args.len() {
+        let arg = &args[idx];
+        if let Some(flag) = allowed.iter().find(|candidate| candidate.name == arg) {
+            if flag.takes_value {
+                let value = args
+                    .get(idx + 1)
+                    .ok_or_else(|| GwError::ParseError(format!("{arg} requires a value")))?;
+                if allowed
+                    .iter()
+                    .any(|candidate| candidate.name == value.as_str())
+                {
+                    return Err(GwError::ParseError(format!("{arg} requires a value")));
+                }
+                idx += 2;
+            } else {
+                idx += 1;
+            }
+            continue;
+        }
+
+        if arg.starts_with('-') {
+            let suggestion = suggest_flag(arg, allowed)
+                .map(|candidate| format!("; maybe you meant `{candidate}`"))
+                .unwrap_or_default();
+            return Err(GwError::ParseError(format!(
+                "unknown flag `{arg}`{suggestion}"
+            )));
+        }
+
+        return Err(GwError::ParseError(format!("unexpected argument `{arg}`")));
+    }
+    Ok(())
+}
+
+fn suggest_flag(arg: &str, allowed: &[CliFlag]) -> Option<&'static str> {
+    let (name, distance) = allowed
+        .iter()
+        .map(|flag| (flag.name, levenshtein(arg, flag.name)))
+        .min_by_key(|(_, distance)| *distance)?;
+    (distance <= flag_suggestion_threshold(arg)).then_some(name)
+}
+
+fn flag_suggestion_threshold(arg: &str) -> usize {
+    match arg.len() {
+        0..=6 => 1,
+        7..=12 => 2,
+        _ => 3,
+    }
+}
+
+fn levenshtein(left: &str, right: &str) -> usize {
+    let right_len = right.chars().count();
+    let mut previous = (0..=right_len).collect::<Vec<_>>();
+    let mut current = vec![0; right_len + 1];
+
+    for (left_idx, left_char) in left.chars().enumerate() {
+        current[0] = left_idx + 1;
+        for (right_idx, right_char) in right.chars().enumerate() {
+            let substitution = previous[right_idx] + usize::from(left_char != right_char);
+            let insertion = current[right_idx] + 1;
+            let deletion = previous[right_idx + 1] + 1;
+            current[right_idx + 1] = substitution.min(insertion).min(deletion);
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    previous[right_len]
 }
 
 fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<PathBuf>, GwError> {
@@ -711,4 +905,54 @@ Supported compute seed cases:\n\
   P^0 point-theory psi integrals, genus-zero degree-zero constants,\n\
   and genus-zero three-point primary small quantum products."
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn flag_validation_suggests_close_match() {
+        let err = validate_flags(
+            &args(&[
+                "--n",
+                "2",
+                "--g",
+                "2",
+                "--d-max",
+                "3",
+                "--max-descendants",
+                "5",
+            ]),
+            degree_series_flags(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("maybe you meant `--max-descendant`"));
+    }
+
+    #[test]
+    fn flag_validation_accepts_negative_twist_value() {
+        validate_flags(
+            &args(&["--n", "1", "--twist", "-1,-1", "--g", "2", "--d", "1"]),
+            &[
+                CliFlag::value("--n"),
+                CliFlag::value("--twist"),
+                CliFlag::value("--g"),
+                CliFlag::value("--d"),
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn flag_validation_rejects_unused_positional_arguments() {
+        let err = validate_flags(&args(&["extra"]), &[]).unwrap_err();
+        assert!(err.to_string().contains("unexpected argument `extra`"));
+    }
 }
