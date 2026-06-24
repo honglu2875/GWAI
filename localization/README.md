@@ -175,15 +175,24 @@ Notes:
 
 ## `degree-series`
 
-Computes one fixed insertion profile while varying the degree. Without
-`--twist`, this uses the ordinary `P^n` Givental backend; with `--twist`, it
-uses the negative split-bundle backend.
+Computes invariants while varying the degree. Without `--twist`, this uses the
+ordinary `P^n` Givental backend; with `--twist`, it uses the negative
+split-bundle backend.
 
-Basic form:
+For a fixed insertion profile:
 
 ```bash
 cargo run --quiet -- degree-series --n <n> --g <genus> --d-max <degree> \
   --insert 'tauK(CLASS)' \
+  --mode givental
+```
+
+For a bounded scan over insertion profiles:
+
+```bash
+cargo run --quiet -- degree-series --n <n> --g <genus> --d-max <degree> \
+  --max-markings <m> \
+  --max-descendant <k> \
   --mode givental
 ```
 
@@ -193,20 +202,41 @@ Twisted local `P^2` example:
 cargo run --quiet -- degree-series --n 2 --twist -3 --g 2 --d-max 3
 ```
 
+Twisted scan example:
+
+```bash
+cargo run --quiet -- degree-series --n 2 --twist -1 --g 2 --d-max 2 \
+  --max-markings 1 \
+  --max-descendant 5
+```
+
 Degree ranges default to `--d-min 0` in the ordinary theory and `--d-min 1` in
 the negative split-bundle theory. You can override this with `--d-min`.
+When `--max-markings` is supplied, the command enumerates all monomials in
+`tauK(1),...,tauK(H^n)` up to those bounds and prunes dimension-incompatible
+profiles before running the graph evaluator. `--include-zero` prints computed
+zero values too.
 
 ## `genus-series`
 
-Computes one fixed insertion profile while varying the genus. As with
-`degree-series`, omitting `--twist` selects ordinary `P^n`; adding `--twist`
-selects the negative split-bundle theory.
+Computes invariants while varying the genus. As with `degree-series`, omitting
+`--twist` selects ordinary `P^n`; adding `--twist` selects the negative
+split-bundle theory.
 
-Basic form:
+For a fixed insertion profile:
 
 ```bash
 cargo run --quiet -- genus-series --n <n> --d <degree> --g-max <genus> \
   --insert 'tauK(CLASS)' \
+  --mode givental
+```
+
+For a bounded scan over insertion profiles:
+
+```bash
+cargo run --quiet -- genus-series --n <n> --d <degree> --g-max <genus> \
+  --max-markings <m> \
+  --max-descendant <k> \
   --mode givental
 ```
 
@@ -216,7 +246,16 @@ Twisted local `P^2` example:
 cargo run --quiet -- genus-series --n 2 --twist -3 --d 1 --g-max 3
 ```
 
+Twisted scan example:
+
+```bash
+cargo run --quiet -- genus-series --n 2 --twist -1 --d 2 --g-max 2 \
+  --max-markings 1 \
+  --max-descendant 5
+```
+
 Genus ranges default to `--g-min 0`. You can override this with `--g-min`.
+When `--max-markings` is supplied, `--max-descendant` defaults to 0 if omitted.
 
 ## `series`
 

@@ -2,7 +2,9 @@ use gw_pn::error::GwError;
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
-use gw_pn::twisted::{compute_negative_split_twisted, TwistedInvariantRequest};
+use gw_pn::twisted::{
+    compute_negative_split_twisted, NegativeSplitBundleTwist, TwistedInvariantRequest,
+};
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
 };
@@ -175,25 +177,59 @@ fn run_degree_series(args: &[String]) -> Result<(), GwError> {
     }
     let mode = parse_compute_mode(args)?;
     let equivariant = has_flag(args, "--equivariant");
-    let insertions = parse_insertions(n, args)?;
-    let label = insertion_list_label(&insertions);
+    let insertion_selection = parse_series_insertions(n, args)?;
+    let twist_model = parse_twist_model(twist.as_ref())?;
 
     let mut warnings = Vec::new();
-    for degree in degree_min..=degree_max {
-        match compute_series_point(
-            n,
-            twist.as_deref(),
-            genus,
-            degree,
-            &insertions,
-            equivariant,
-            mode,
-        ) {
-            Ok(result) => println!("q^{degree} [{label}] = {}", result.value),
-            Err(GwError::UnsupportedInvariant(msg)) => {
-                warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
+    match insertion_selection {
+        InsertionSelection::Fixed(insertions) => {
+            let label = insertion_list_label(&insertions);
+            for degree in degree_min..=degree_max {
+                match compute_series_point(
+                    n,
+                    twist.as_deref(),
+                    genus,
+                    degree,
+                    &insertions,
+                    equivariant,
+                    mode,
+                ) {
+                    Ok(result) => println!("q^{degree} [{label}] = {}", result.value),
+                    Err(GwError::UnsupportedInvariant(msg)) => {
+                        warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            Err(err) => return Err(err),
+        }
+        InsertionSelection::Bounded(scan) => {
+            for degree in degree_min..=degree_max {
+                for insertions in &scan.profiles {
+                    if !dimension_compatible(n, twist_model.as_ref(), genus, degree, insertions) {
+                        continue;
+                    }
+                    let label = insertion_list_label(insertions);
+                    match compute_series_point(
+                        n,
+                        twist.as_deref(),
+                        genus,
+                        degree,
+                        insertions,
+                        equivariant,
+                        mode,
+                    ) {
+                        Ok(result) => {
+                            if scan.include_zero || !result.value.is_zero() {
+                                println!("q^{degree} [{label}] = {}", result.value);
+                            }
+                        }
+                        Err(GwError::UnsupportedInvariant(msg)) => {
+                            warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
         }
     }
     if let Some(path) = write_warnings_file("degree-series", &warnings)? {
@@ -220,25 +256,59 @@ fn run_genus_series(args: &[String]) -> Result<(), GwError> {
     let twist = parse_negative_twist_flag(args, "--twist")?;
     let mode = parse_compute_mode(args)?;
     let equivariant = has_flag(args, "--equivariant");
-    let insertions = parse_insertions(n, args)?;
-    let label = insertion_list_label(&insertions);
+    let insertion_selection = parse_series_insertions(n, args)?;
+    let twist_model = parse_twist_model(twist.as_ref())?;
 
     let mut warnings = Vec::new();
-    for genus in genus_min..=genus_max {
-        match compute_series_point(
-            n,
-            twist.as_deref(),
-            genus,
-            degree,
-            &insertions,
-            equivariant,
-            mode,
-        ) {
-            Ok(result) => println!("g={genus} q^{degree} [{label}] = {}", result.value),
-            Err(GwError::UnsupportedInvariant(msg)) => {
-                warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
+    match insertion_selection {
+        InsertionSelection::Fixed(insertions) => {
+            let label = insertion_list_label(&insertions);
+            for genus in genus_min..=genus_max {
+                match compute_series_point(
+                    n,
+                    twist.as_deref(),
+                    genus,
+                    degree,
+                    &insertions,
+                    equivariant,
+                    mode,
+                ) {
+                    Ok(result) => println!("g={genus} q^{degree} [{label}] = {}", result.value),
+                    Err(GwError::UnsupportedInvariant(msg)) => {
+                        warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
+                    }
+                    Err(err) => return Err(err),
+                }
             }
-            Err(err) => return Err(err),
+        }
+        InsertionSelection::Bounded(scan) => {
+            for genus in genus_min..=genus_max {
+                for insertions in &scan.profiles {
+                    if !dimension_compatible(n, twist_model.as_ref(), genus, degree, insertions) {
+                        continue;
+                    }
+                    let label = insertion_list_label(insertions);
+                    match compute_series_point(
+                        n,
+                        twist.as_deref(),
+                        genus,
+                        degree,
+                        insertions,
+                        equivariant,
+                        mode,
+                    ) {
+                        Ok(result) => {
+                            if scan.include_zero || !result.value.is_zero() {
+                                println!("g={genus} q^{degree} [{label}] = {}", result.value);
+                            }
+                        }
+                        Err(GwError::UnsupportedInvariant(msg)) => {
+                            warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+            }
         }
     }
     if let Some(path) = write_warnings_file("genus-series", &warnings)? {
@@ -309,6 +379,18 @@ fn compute_series_point(
     compute(req)
 }
 
+#[derive(Debug, Clone)]
+enum InsertionSelection {
+    Fixed(Vec<gw_pn::Insertion>),
+    Bounded(BoundedInsertionScan),
+}
+
+#[derive(Debug, Clone)]
+struct BoundedInsertionScan {
+    profiles: Vec<Vec<gw_pn::Insertion>>,
+    include_zero: bool,
+}
+
 fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<PathBuf>, GwError> {
     if warnings.is_empty() {
         return Ok(None);
@@ -339,6 +421,29 @@ fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<Path
         ))
     })?;
     Ok(Some(path))
+}
+
+fn parse_series_insertions(n: usize, args: &[String]) -> Result<InsertionSelection, GwError> {
+    let explicit = parse_insertions(n, args)?;
+    if !explicit.is_empty() {
+        return Ok(InsertionSelection::Fixed(explicit));
+    }
+
+    let max_markings = first_usize_flag(args, &["--max-markings", "--m-max"])?;
+    let max_descendant = first_usize_flag(args, &["--max-descendant", "--k-max"])?;
+    if max_markings.is_none() {
+        if max_descendant.is_some() {
+            return Err(GwError::ParseError(
+                "--max-descendant requires --max-markings".to_string(),
+            ));
+        }
+        return Ok(InsertionSelection::Fixed(Vec::new()));
+    }
+
+    Ok(InsertionSelection::Bounded(BoundedInsertionScan {
+        profiles: bounded_insertion_profiles(n, max_markings.unwrap(), max_descendant.unwrap_or(0)),
+        include_zero: has_flag(args, "--include-zero"),
+    }))
 }
 
 fn parse_insertions(n: usize, args: &[String]) -> Result<Vec<gw_pn::Insertion>, GwError> {
@@ -400,6 +505,14 @@ fn parse_negative_twist_flag(args: &[String], flag: &str) -> Result<Option<Vec<u
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Some(degrees))
+}
+
+fn parse_twist_model(
+    twist: Option<&Vec<usize>>,
+) -> Result<Option<NegativeSplitBundleTwist>, GwError> {
+    twist
+        .map(|degrees| NegativeSplitBundleTwist::new(degrees.clone()))
+        .transpose()
 }
 
 fn parse_compute_mode(args: &[String]) -> Result<ComputeMode, GwError> {
@@ -492,6 +605,73 @@ fn default_lambda_line_weights(n: usize) -> Vec<Rational> {
     weights
 }
 
+fn bounded_insertion_profiles(
+    n: usize,
+    max_markings: usize,
+    max_descendant_power: usize,
+) -> Vec<Vec<gw_pn::Insertion>> {
+    let mut basis = Vec::new();
+    for descendant_power in 0..=max_descendant_power {
+        for h_power in 0..=n {
+            basis.push(tau(descendant_power, CohomologyClass::h_power(n, h_power)));
+        }
+    }
+
+    let mut profiles = Vec::new();
+    for markings in 0..=max_markings {
+        collect_insertion_profiles(&basis, markings, 0, &mut Vec::new(), &mut profiles);
+    }
+    profiles
+}
+
+fn collect_insertion_profiles(
+    basis: &[gw_pn::Insertion],
+    markings: usize,
+    start: usize,
+    current: &mut Vec<gw_pn::Insertion>,
+    out: &mut Vec<Vec<gw_pn::Insertion>>,
+) {
+    if current.len() == markings {
+        out.push(current.clone());
+        return;
+    }
+    for idx in start..basis.len() {
+        current.push(basis[idx].clone());
+        collect_insertion_profiles(basis, markings, idx, current, out);
+        current.pop();
+    }
+}
+
+fn dimension_compatible(
+    n: usize,
+    twist: Option<&NegativeSplitBundleTwist>,
+    genus: usize,
+    degree: usize,
+    insertions: &[gw_pn::Insertion],
+) -> bool {
+    let Some(total_degree) = insertion_degree(insertions) else {
+        return true;
+    };
+    let virtual_dimension = match twist {
+        Some(twist) => twist.virtual_dimension(n, genus, degree, insertions.len()),
+        None => ordinary_virtual_dimension(n, genus, degree, insertions.len()),
+    };
+    virtual_dimension >= 0 && total_degree as isize == virtual_dimension
+}
+
+fn ordinary_virtual_dimension(n: usize, genus: usize, degree: usize, markings: usize) -> isize {
+    (1 - genus as isize) * (n as isize - 3) + (n + 1) as isize * degree as isize + markings as isize
+}
+
+fn insertion_degree(insertions: &[gw_pn::Insertion]) -> Option<usize> {
+    let mut total = 0usize;
+    for insertion in insertions {
+        total = total.checked_add(insertion.descendant_power)?;
+        total = total.checked_add(insertion.class.pure_power()?)?;
+    }
+    Some(total)
+}
+
 fn insertion_list_label(insertions: &[gw_pn::Insertion]) -> String {
     if insertions.is_empty() {
         return "1".to_string();
@@ -522,7 +702,9 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
+  gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\
+  gw-pn genus-series --n 2 --twist -1 --d 2 --g-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode givental\n\
 \n\
 Supported compute seed cases:\n\
