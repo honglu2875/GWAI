@@ -1,6 +1,7 @@
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
+use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
 use gw_pn::twisted::{
@@ -38,6 +39,7 @@ fn run() -> Result<(), GwError> {
         "degree-series" => run_degree_series(&args),
         "genus-series" => run_genus_series(&args),
         "formula" => run_formula(&args),
+        "resolvent" => run_resolvent(&args),
         "series" => run_series(&args),
         "tests" | "test" => run_tests(&args),
         _ => Err(GwError::ParseError(format!(
@@ -276,6 +278,87 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
+fn run_resolvent(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--n"),
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--d"),
+            CliFlag::value("--degree"),
+            CliFlag::value("--markings"),
+            CliFlag::value("--m"),
+            CliFlag::value("--twist"),
+            CliFlag::value("--mode"),
+            CliFlag::switch("--equivariant"),
+        ],
+    )?;
+    let n = required_usize(args, "--n")?;
+    let genus = first_usize_flag(args, &["--g", "--genus"])?
+        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
+    let degree = first_usize_flag(args, &["--d", "--degree"])?
+        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
+    let markings = first_usize_flag(args, &["--markings", "--m"])?
+        .ok_or_else(|| GwError::ParseError("missing --markings".to_string()))?;
+    let twist = parse_negative_twist_flag(args, "--twist")?;
+    let twist_model = parse_twist_model(twist.as_ref())?;
+    let mode = parse_compute_mode(args)?;
+    let equivariant = has_flag(args, "--equivariant");
+    let virtual_dimension = match twist_model.as_ref() {
+        Some(twist) => twist.virtual_dimension(n, genus, degree, markings),
+        None => ordinary_virtual_dimension(n, genus, degree, markings),
+    };
+
+    let req = ResolventRequest {
+        target_n: n,
+        genus,
+        degree,
+        markings,
+        virtual_dimension,
+    };
+    let result = compute_resolvent_generating_function(&req, |insertions| {
+        compute_series_point(
+            n,
+            twist.as_deref(),
+            genus,
+            degree,
+            insertions,
+            equivariant,
+            mode,
+        )
+    })?;
+
+    println!("Resolvent generating function");
+    println!("target: P^{n}");
+    if let Some(twist) = twist.as_ref() {
+        let degrees = twist
+            .iter()
+            .map(|degree| format!("O(-{degree})"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        println!("twist: {degrees}");
+    }
+    println!("genus: {genus}");
+    println!("degree: {degree}");
+    println!("markings: {markings}");
+    println!("virtual_dimension: {virtual_dimension}");
+    println!("engine: {}", result.engine);
+    println!(
+        "terms: {} candidate, {} nonzero",
+        result.candidate_terms, result.nonzero_terms
+    );
+    println!("F = {}", result.value);
+
+    if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+        eprintln!(
+            "warnings written to {}; inspect this file if needed",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn formula_expansion_from_args(
     args: &[String],
     n_flag: Option<usize>,
@@ -312,13 +395,16 @@ fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
         None => Ok(FormulaBasisMode::Raw),
         Some("coefficients") | Some("coefficient") => Ok(FormulaBasisMode::Coefficients),
         Some("raw") => Ok(FormulaBasisMode::Raw),
-        Some("rational") => Ok(FormulaBasisMode::Rational),
+        Some("rational") => Err(GwError::ParseError(
+            "invalid --basis `rational`; formula rational basis was removed, use --basis raw for formulas or the resolvent subcommand for fixed-degree resolvent generating functions"
+                .to_string(),
+        )),
         Some("resolvent") => Err(GwError::ParseError(
-            "invalid --basis `resolvent`; the resolvent display was folded into --basis rational"
+            "invalid --basis `resolvent`; use --basis raw for formulas or the resolvent subcommand for fixed-degree resolvent generating functions"
                 .to_string(),
         )),
         Some(other) => Err(GwError::ParseError(format!(
-            "invalid --basis `{other}`; expected coefficients, raw, or rational"
+            "invalid --basis `{other}`; expected coefficients or raw"
         ))),
     }
 }
@@ -1020,10 +1106,11 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --basis rational --format tex-fragment\n\
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
+  gw-pn resolvent --n 2 --g 0 --d 1 --markings 3\n\
+  gw-pn resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\
@@ -1146,10 +1233,16 @@ mod tests {
     }
 
     #[test]
-    fn formula_basis_resolvent_points_to_rational() {
+    fn formula_basis_resolvent_is_not_a_formula_basis() {
         let err = parse_formula_basis(&args(&["--basis", "resolvent"])).unwrap_err();
+        assert!(err.to_string().contains("resolvent subcommand"));
+    }
+
+    #[test]
+    fn formula_basis_rational_was_removed() {
+        let err = parse_formula_basis(&args(&["--basis", "rational"])).unwrap_err();
         assert!(err
             .to_string()
-            .contains("resolvent display was folded into --basis rational"));
+            .contains("formula rational basis was removed"));
     }
 }

@@ -1,14 +1,12 @@
 # Symbolic rationalization engine
 
 This module is intentionally separate from the production Givental graph
-evaluator.  It provides the quotient-reduction layer used by
-`formula --basis rational`: start from packed resolvent graph expressions,
-substitute engine calibration data, contract canonical-root sums where
-available, and simplify the result to graph-wise rational expressions.  The
-formula command also has a bounded coefficient-extraction view, enabled by
-`--d`, that calls the production S/R/T graph evaluator and formats the
-resulting q-truncated descendant potential, both as the full stable-graph sum
-and as graph-local contributions in each graph section.
+evaluator.  It provides low-level quotient-reduction tools: substitute
+engine calibration data, contract canonical-root sums where available, and
+simplify expressions in quotient rings.  The previous public formula
+`rational` basis has been removed until its mathematical meaning is made
+precise; fixed-degree resolvent generating functions now live in the top-level
+`resolvent` command.
 
 Implemented now:
 

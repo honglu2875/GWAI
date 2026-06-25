@@ -22,6 +22,7 @@ pub mod frobenius;
 pub mod geometry;
 pub mod givental;
 pub mod graphs;
+pub mod resolvent;
 pub mod series;
 pub mod symbolic;
 pub mod tautological;

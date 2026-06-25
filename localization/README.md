@@ -179,7 +179,7 @@ Notes:
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
-number of markings. This is an explanatory tool with three formula bases:
+number of markings. This is an explanatory tool with two formula bases:
 
 - `--basis raw`: the default engine-specialized symbolic graph formula. It
   substitutes the projective-space or twisted calibration into the packed graph
@@ -187,15 +187,6 @@ number of markings. This is an explanatory tool with three formula bases:
   visible.
 - `--basis coefficients`: the legacy fully unrolled coefficient basis in
   `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
-- `--basis rational`: packed kernels with insertions left as
-  `gamma_l/(z_l-psi_l)`, so coefficient extraction in `z_l` recovers
-  individual descendants. Rational contractions are layered on where available.
-  The symbolic no-`--d` seed is the ordinary `P^n` genus-zero three-primary
-  one-vertex graph, where the color sum is contracted by
-  `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. When
-  `--d` is supplied for ordinary `P^n`, rational mode also prints bounded
-  coefficient extractions, with labelled variables `x_{ell,k,a}` for
-  `tau_k(H^a)` at marking `ell`.
 
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
 now just requests the same engine dictionary that raw mode uses by default.
@@ -207,15 +198,6 @@ semisimple CohFT skeleton:
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --max-descendant 5 \
   --d 3
-```
-
-For the currently supported quotient-reduced rational-basis case:
-
-```bash
-cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
-  --basis rational \
-  --d 1 \
-  --format text
 ```
 
 For standalone TeX output, including a document preamble and TikZ graph
@@ -241,15 +223,6 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --format tex-fragment
 ```
 
-Use `--basis rational` to keep all descendants at each marking packed into one
-resolvent variable:
-
-```bash
-cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis rational \
-  --format tex-fragment
-```
-
 Use `--basis raw` to specialize the resolvent kernels to the current
 projective-space or twisted calibration. Without `--twist`, this is ordinary
 `P^n`; with `--twist`, this is the negative split backend:
@@ -269,10 +242,10 @@ The coefficient output defines the basis elements `S`, `PsiInv`, `RInv`, `T`,
 `Delta`, `EtaInv`, and point-theory psi integrals, then lists the finite stable
 graphs, truncation orders, and expanded graph terms. Marking and edge factors
 are expanded directly in those basis elements rather than kept as separate
-composite basis elements. The raw and rational bases instead print one compact
-graph expression per stable graph, with the leg and edge kernel formulas
-substituted directly into the graph bracket while descendant insertions stay
-packed in the variables `z_l`.
+composite basis elements. The raw basis instead prints one compact graph
+expression per stable graph, with the leg and edge kernel formulas substituted
+directly into the graph bracket while descendant insertions stay packed in the
+variables `z_l`.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and
@@ -283,6 +256,26 @@ so no display runs past the right margin or off the bottom of a page. It avoids
 giant `\left...\right` delimiter pairs. Standalone `tex` output loads
 `amsmath`, `mathtools`, `microtype`, and `tikz`; `tex-fragment` users should
 load the first three (plus `tikz`) in their surrounding document.
+
+## `resolvent`
+
+Computes the fixed-degree labelled resolvent generating function
+
+```text
+sum_{a_i,k_i} <prod_i tau_{k_i}(H^{a_i})>_{g,d}
+  prod_i t_i^{a_i}/a_i! * z_i^{-k_i-1}.
+```
+
+For fixed genus, degree, and number of markings, the virtual dimension fixes
+`sum_i(a_i+k_i)`, so this is a finite Laurent polynomial in the `z_i^{-1}` and
+a polynomial in the `t_i`.  Each coefficient is simplified by the same exact
+algebra engine used elsewhere in the crate.
+
+```bash
+cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
+
+cargo run --quiet -- resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1
+```
 
 ## `degree-series`
 

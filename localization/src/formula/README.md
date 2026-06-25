@@ -35,19 +35,11 @@ Main files:
   off the bottom of a page.  It avoids giant `\left...\right` delimiter pairs.
 
 The coefficient basis deliberately keeps the lowest-level coefficient data
-symbolic.  The raw and rational bases keep descendant variables packed as
-resolvent insertions and substitute the leg and edge kernel formulas into each
-graph bracket.  The raw basis emphasizes the selected ordinary or twisted
-calibration data.  The rational basis is the quotient-reduction path: every
-graph is displayed as a packed Laurent expression in the `z_l` variables, and
-additional rational contractions are layered on where implemented.  Without a
-q-degree, its symbolic seed case is the ordinary `P^n` genus-zero
-three-primary one-vertex graph: the root sum `sum_{P(u)=0} f(u)/P'(u)` is
-reduced as the top coefficient of `f(H)` modulo `prod_a(H-lambda_a)-q`.  When
-a q-degree is supplied with `--d`, rational mode also prints bounded
-coefficient extractions from the same S/R/T graph kernel.  These contracted
-expressions use labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking
-`ell`.
+symbolic.  The raw basis keeps descendant variables packed as resolvent
+insertions and substitutes the leg and edge kernel formulas into each graph
+bracket after reading the selected ordinary or twisted calibration data.  Actual
+fixed-degree resolvent generating functions are computed by the top-level
+`resolvent` command, not by this formula renderer.
 
 Sample commands:
 
@@ -56,11 +48,6 @@ Sample commands:
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --basis coefficients \
   --twist -3 \
-  --format tex-fragment
-
-# Packed rational descendants with insertion variables z_l.
-cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis rational \
   --format tex-fragment
 
 # Standalone TeX document with ordinary P^2 raw root-sum calibration.
@@ -74,9 +61,6 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --basis raw \
   --format tex
 
-# Quotient-reduced ordinary P^2 primary three-point expression.
-cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
-  --basis rational \
-  --d 1 \
-  --format text
+# Fixed-degree resolvent generating functions live in the top-level command.
+cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
 ```
