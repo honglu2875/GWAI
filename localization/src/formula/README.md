@@ -12,12 +12,12 @@ help humans trace definitions and intermediate formulas.
 
 Main files:
 
-- `atoms.rs`: glossary for the named components `S`, `Psi`, `RInv`, edge
-  propagator, translation `T`, `Delta`, and point-theory psi integrals.
+- `atoms.rs`: glossary for the primitive components `S`, `PsiInv`, `RInv`,
+  translation `T`, `Delta`, `EtaInv`, and point-theory psi integrals.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
-  orders, stable graph metadata, and expanded graph terms using the individual
-  atom coefficients.  The renderer keeps only the descendant leg coefficient
-  `L_{ell,i}^p` as a local shorthand for its finite `S/PsiInv/RInv` sum.
+  orders, stable graph metadata, and expanded graph terms using primitive atom
+  coefficients.  Marking factors are expanded into `S/PsiInv/RInv`, and edge
+  factors are expanded into `RInv/EtaInv`.
 
 The first renderer deliberately keeps calibration data symbolic.  Later stages
 can add substitution modes that print actual truncated `R_k`, `S_k`, `T_k`,

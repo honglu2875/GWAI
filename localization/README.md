@@ -191,11 +191,12 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --d 3
 ```
 
-The output defines the atoms `S`, `Psi`, `RInv`, `Edge`, `T`, `Delta`, and the
-point-theory psi integrals, then lists the finite stable graphs, truncation
-orders, and expanded graph terms. The only local shorthand is `L_{ell,i}^p`,
-the descendant-leg coefficient built from `S`, `PsiInv`, and `RInv`. Add
-`--no-glossary` for a shorter listing that still includes the graph formulas.
+The output defines the primitive atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`,
+`EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
+truncation orders, and expanded graph terms. Marking and edge factors are
+expanded directly in those atoms rather than kept as separate composite atoms.
+Add `--no-glossary` for a shorter listing that still includes the graph
+formulas.
 
 ## `degree-series`
 

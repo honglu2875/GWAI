@@ -187,7 +187,7 @@ impl FormulaSkeleton {
             self.request.inverse_r_order()
         ));
         out.push_str(&format!(
-            "- Edge_{{i,j}}^{{a,b}} is materialized for 0 <= a,b <= D = {}; the graph sum prunes terms whose total vertex psi degree is too large.\n",
+            "- Internal edge factors use endpoint powers 0 <= a,b <= D = {}; the graph sum prunes terms whose total vertex psi degree is too large.\n",
             self.request.edge_power_max()
         ));
         if self.request.translation_power_max() < 2 {
@@ -210,14 +210,12 @@ impl FormulaSkeleton {
         out.push_str("----------------------\n");
         out.push_str("For a formal insertion at marking ell,\n");
         out.push_str("  gamma_ell = sum_{k<=K,a} x_{ell,k,a} tau_k(phi_a),\n");
-        out.push_str("the descendant leg of final color i and ancestor psi power p is\n");
-        out.push_str("  Leg_{ell,i}^p = sum x_{ell,k,a} RInv_r[i,j] PsiInv[j,b] S_s[b,a]\n");
+        out.push_str("each marking factor is expanded directly as finite sums of\n");
+        out.push_str("  x_{ell,k,a} * S_s[b,a] * PsiInv[j,b] * RInv_r[i,j]\n");
+        out.push_str("with p = k - s + r.  Internal edges are also expanded directly in\n");
         out.push_str(
-            "where p = k - s + r, 0 <= s <= k, and repeated flat/color indices are summed.\n\n",
+            "RInv and EtaInv, so the graph terms below use only primitive calibration atoms.\n\n",
         );
-        out.push_str("For an internal edge between colors i and j, Edge_{i,j}^{a,b} is the\n");
-        out.push_str("regularized symplectic propagator coefficient carrying psi powers a and b\n");
-        out.push_str("to the two endpoint vertices.\n\n");
         out.push_str(
             "For a vertex of genus h and color i, the base half-edge/marking powers and\n",
         );
@@ -287,7 +285,7 @@ impl GraphFormulaSkeleton {
         }
         out.push_str("  Symbolic contribution shape:\n");
         out.push_str(&format!(
-            "    (1/{}) * sum_{{color(v) in 0..{}}} [product of leg, edge, and vertex atoms]\n",
+            "    (1/{}) * sum_{{color(v) in 0..{}}} [product of marking, edge, and vertex factors]\n",
             self.automorphism_order,
             request.colors - 1
         ));
@@ -315,14 +313,6 @@ impl GraphFormulaSkeleton {
             }
             out.push_str("    )\n");
         }
-        out.push_str("    Here L_{ell,i}^p is the descendant leg coefficient\n");
-        out.push_str(&format!(
-            "      L_{{ell,i}}^p = sum_{{0<=k<=K={}, 0<=alpha,beta,j<{}, 0<=s<=k, 0<=r<=D+1={}, p=k-s+r}}\n",
-            request.max_descendant_power,
-            request.colors,
-            request.inverse_r_order()
-        ));
-        out.push_str("        x_{ell,k,alpha} * RInv_r[i,j] * PsiInv[j,beta] * S_s[beta,alpha].\n");
     }
 
     fn color_sum_label(&self, colors: usize) -> String {
@@ -344,15 +334,18 @@ impl GraphFormulaSkeleton {
             let mut fixed_factors = Vec::new();
             for (marking, &power) in assignment.leg_powers.iter().enumerate() {
                 let vertex = self.graph.legs[marking];
-                fixed_factors.push(format!("L_{{{marking},i{vertex}}}^{power}"));
+                fixed_factors.push(leg_factor(marking, &format!("i{vertex}"), power, request));
             }
             for (edge_index, &(left_power, right_power)) in
                 assignment.edge_powers.iter().enumerate()
             {
                 let edge = &self.graph.edges[edge_index];
-                fixed_factors.push(format!(
-                    "Edge_{{i{},i{}}}^{{{left_power},{right_power}}}",
-                    edge.a, edge.b
+                fixed_factors.push(edge_factor(
+                    &format!("i{}", edge.a),
+                    &format!("i{}", edge.b),
+                    left_power,
+                    right_power,
+                    request.colors,
                 ));
             }
 
@@ -502,6 +495,61 @@ fn append_distributed_terms(
             out,
         );
         current_vertex_factors.pop();
+    }
+}
+
+fn leg_factor(marking: usize, color: &str, power: usize, request: &FormulaRequest) -> String {
+    let mut terms = Vec::new();
+    for k in 0..=request.max_descendant_power {
+        for s in 0..=k {
+            for r in 0..=request.inverse_r_order() {
+                if k - s + r != power {
+                    continue;
+                }
+                terms.push(format!(
+                    "sum_{{alpha,beta,j=0..{}}} x_{{{marking},{k},alpha}} * RInv_{r}[{color},j] * PsiInv[j,beta] * S_{s}[beta,alpha]",
+                    request.colors - 1
+                ));
+            }
+        }
+    }
+    parenthesized_sum(&terms)
+}
+
+fn edge_factor(
+    left_color: &str,
+    right_color: &str,
+    left_power: usize,
+    right_power: usize,
+    colors: usize,
+) -> String {
+    let mut out = String::new();
+    out.push('(');
+    for t in 0..=right_power {
+        let sign = if t % 2 == 0 { "-" } else { "+" };
+        if t == 0 {
+            out.push_str(sign);
+        } else {
+            out.push(' ');
+            out.push_str(sign);
+            out.push(' ');
+        }
+        out.push_str(&format!(
+            "sum_{{nu=0..{}}} RInv_{}[{left_color},nu] * EtaInv_nu * RInv_{}[{right_color},nu]",
+            colors - 1,
+            left_power + 1 + t,
+            right_power - t
+        ));
+    }
+    out.push(')');
+    out
+}
+
+fn parenthesized_sum(terms: &[String]) -> String {
+    match terms {
+        [] => "0".to_string(),
+        [term] => format!("({term})"),
+        _ => format!("({})", terms.join(" + ")),
     }
 }
 
@@ -659,10 +707,13 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_text();
         assert!(rendered.contains("Expanded contribution in atom coefficients"));
-        assert!(rendered.contains("L_{0,i0}^0"));
+        assert!(rendered.contains("x_{0,0,alpha}"));
+        assert!(rendered.contains("RInv_0[i0,j]"));
+        assert!(rendered.contains("S_0[beta,alpha]"));
         assert!(rendered.contains("DeltaInv_{i0}"));
         assert!(rendered.contains("PsiInt(0;0,0,0)"));
-        assert!(rendered.contains("L_{ell,i}^p"));
+        assert!(!rendered.contains("Here L"));
+        assert!(!rendered.contains("L_{"));
     }
 
     #[test]
