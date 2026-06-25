@@ -13,9 +13,11 @@
 
 pub mod atoms;
 pub mod skeleton;
+pub mod specialization;
 
 pub use atoms::{all_atom_kinds, atom_glossary, AtomKind};
 pub use skeleton::{
     build_formula_skeleton, FormulaRequest, FormulaSkeleton, GraphFormulaSkeleton,
     VertexFormulaSlot,
 };
+pub use specialization::FormulaSpecialization;

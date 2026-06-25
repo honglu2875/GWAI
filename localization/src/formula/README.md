@@ -14,6 +14,11 @@ Main files:
 
 - `atoms.rs`: glossary for the primitive components `S`, `PsiInv`, `RInv`,
   translation `T`, `Delta`, `EtaInv`, and point-theory psi integrals.
+- `specialization.rs`: optional engine-specific dictionaries that explain how
+  the universal atoms are read for ordinary `P^n` or negative split twists.
+  These dictionaries reduce graph atoms to calibration primitives such as
+  canonical roots, hypergeometric/Birkhoff `S`, twisted pairings, and QRR
+  `R`-recursions.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
   orders, stable graph metadata, and expanded graph terms using primitive atom
   coefficients.  Marking factors are expanded into `S/PsiInv/RInv`, and edge

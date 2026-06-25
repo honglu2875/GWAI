@@ -7,6 +7,7 @@ use crate::error::GwError;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
 
 use super::atoms::atom_glossary;
+use super::specialization::FormulaSpecialization;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormulaRequest {
@@ -16,6 +17,7 @@ pub struct FormulaRequest {
     pub max_descendant_power: usize,
     pub q_degree: Option<usize>,
     pub include_glossary: bool,
+    pub specialization: Option<FormulaSpecialization>,
 }
 
 impl FormulaRequest {
@@ -27,6 +29,7 @@ impl FormulaRequest {
             max_descendant_power: 0,
             q_degree: None,
             include_glossary: true,
+            specialization: None,
         }
     }
 
@@ -149,6 +152,10 @@ impl FormulaSkeleton {
         self.render_header(&mut out);
         self.render_finite_orders(&mut out);
         self.render_formula_convention(&mut out);
+        if let Some(specialization) = &self.request.specialization {
+            out.push('\n');
+            out.push_str(&specialization.render_text());
+        }
         if self.request.include_glossary {
             out.push('\n');
             out.push_str(&atom_glossary());
@@ -162,6 +169,10 @@ impl FormulaSkeleton {
         self.render_tex_header(&mut out);
         self.render_tex_finite_orders(&mut out);
         self.render_tex_formula_convention(&mut out);
+        if let Some(specialization) = &self.request.specialization {
+            out.push('\n');
+            out.push_str(&specialization.render_tex());
+        }
         if self.request.include_glossary {
             out.push('\n');
             self.render_tex_glossary(&mut out);

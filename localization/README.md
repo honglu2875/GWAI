@@ -203,6 +203,26 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 Use `--format tex-fragment` when embedding the formula into an existing
 document that already loads `amsmath` and `tikz`.
 
+Formula output is universal by default. To attach an engine-specific
+calibration dictionary, use `--specialize projective` for ordinary `P^n`, or
+pass a negative split twist:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --specialize projective \
+  --format tex
+
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --twist -3 \
+  --format tex
+```
+
+These specialization sections do not change the stable graph expansion. They
+explain how the universal atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`, and
+`EtaInv` are read in the chosen engine: ordinary `P^n` via canonical roots of
+`\prod_a(x-\lambda_a)-q`, or negative split twists via the
+hypergeometric/Birkhoff `S` and QRR `R` calibration.
+
 The output defines the primitive atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 `EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
 truncation orders, and expanded graph terms. Marking and edge factors are
