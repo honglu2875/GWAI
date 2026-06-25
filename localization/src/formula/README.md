@@ -38,15 +38,17 @@ The coefficient basis deliberately keeps the lowest-level coefficient data
 symbolic.  The resolvent basis keeps descendant variables packed but substitutes
 the leg and edge kernel formulas into each graph bracket.  The raw basis does
 the same after reading those kernels in the ordinary or twisted calibration.
-The rational basis is the quotient-reduction path.  Its first implemented case
-is the ordinary `P^n` genus-zero three-primary one-vertex graph: the root sum
-`sum_{P(u)=0} f(u)/P'(u)` is reduced as the top coefficient of `f(H)` modulo
-`prod_a(H-lambda_a)-q`.  When a q-degree is supplied with `--d`, rational mode
-also prints the fully S/R/T-contracted bounded descendant potential for the
-requested fixed marking count, using labelled variables `x_{ell,k,a}` for
-`tau_k(H^a)` at marking `ell`.  More general per-graph `q`-series contractions
-remain future work, and unsupported graph-local reductions are reported
-explicitly instead of being silently displayed in raw notation.
+The rational basis is the quotient-reduction path.  Without a q-degree, its
+symbolic seed case is the ordinary `P^n` genus-zero three-primary one-vertex
+graph: the root sum `sum_{P(u)=0} f(u)/P'(u)` is reduced as the top coefficient
+of `f(H)` modulo `prod_a(H-lambda_a)-q`.  When a q-degree is supplied with
+`--d`, rational mode also prints the fully S/R/T-contracted bounded descendant
+potential for the requested fixed marking count, and each stable graph section
+prints that graph's q-truncated contribution.  These contracted expressions use
+labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking `ell`.
+Unsupported graph-local reductions, such as twisted theories without a
+projective-space contracted kernel, are reported explicitly instead of being
+silently displayed in raw notation.
 
 Sample commands:
 

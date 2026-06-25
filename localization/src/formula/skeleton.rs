@@ -5,9 +5,12 @@ use std::f64::consts::PI;
 
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
+use crate::givental::projective_graph_bounded_potential_coefficients;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
 use crate::symbolic::projective_residue_monomial;
-use crate::{compute_series, ComputeMode, Insertion, SeriesRequest, SeriesResult};
+use crate::{
+    compute_series, ComputeMode, Insertion, SeriesCoefficient, SeriesRequest, SeriesResult,
+};
 
 use super::basis::basis_glossary;
 use super::expansion::FormulaExpansion;
@@ -579,12 +582,12 @@ impl FormulaSkeleton {
 
     fn render_tex_rational_glossary(&self, out: &mut String) {
         out.push_str("\\subsection*{Rational Basis Elements}\n");
-        out.push_str("This view contracts supported raw color/root sums by quotient-ring residue identities.  Currently implemented: ordinary $\\mathbb P^n$, genus $0$, one vertex, no edges, three primary markings.  There the color sum is reduced by\n");
+        out.push_str("This view contracts supported raw color/root sums by quotient-ring residue identities.  Without a supplied $q$-degree, the currently symbolic quotient seed is ordinary $\\mathbb P^n$, genus $0$, one vertex, no edges, three primary markings.  There the color sum is reduced by\n");
         out.push_str("\\[\n");
         out.push_str("\\sum_{P(u)=0}\\frac{f(u)}{P'(u)}=[H^n]\\,f(H)\\bmod P(H),\\qquad P(H)=\\prod_{a=0}^{n}(H-\\lambda_a)-q.\n");
         out.push_str("\\]\n");
-        out.push_str("When $q$-degree is supplied, rational mode also prints the fully $S/R/T$-contracted bounded descendant potential for the requested fixed marking count.\n");
-        out.push_str("Unsupported graphs are reported as not yet reduced.\n");
+        out.push_str("When $q$-degree is supplied for ordinary $\\mathbb P^n$, rational mode also prints the fully $S/R/T$-contracted bounded descendant potential and each stable graph's $q$-truncated graph-local contribution for the requested fixed marking count.\n");
+        out.push_str("Unsupported reductions, including twisted graph-local rational contractions, are reported explicitly.\n");
     }
 
     fn render_rational_bounded_potential_text(&self, out: &mut String) {
@@ -969,6 +972,34 @@ impl GraphFormulaSkeleton {
 
     fn render_rational_expression(&self, out: &mut String, request: &FormulaRequest) {
         out.push_str("  Rational residue-reduced contribution:\n");
+        if let Some(result) = self.rational_graph_bounded_terms(request) {
+            match result {
+                Ok(terms) => {
+                    out.push_str(&format!(
+                        "    Graph-local contracted q-potential C_{}^rational =\n",
+                        self.index
+                    ));
+                    if terms.is_empty() {
+                        out.push_str("      0 in this bounded range\n");
+                    } else {
+                        for (index, term) in terms.iter().enumerate() {
+                            let prefix = if index == 0 { "      " } else { "    + " };
+                            out.push_str(prefix);
+                            out.push_str(&series_coefficient_text(term));
+                            out.push('\n');
+                        }
+                    }
+                    out.push_str("    This substitutes the calibrated S/R/T graph factors and contracts this stable graph only.\n");
+                }
+                Err(err) => {
+                    out.push_str(&format!(
+                        "    graph-local rational contraction failed: {err}\n"
+                    ));
+                }
+            }
+            return;
+        }
+
         match self.rational_primary_three_point_terms(request) {
             Some(Ok(terms)) => {
                 out.push_str(&format!("    C_{}^rational = ", self.index));
@@ -988,9 +1019,10 @@ impl GraphFormulaSkeleton {
                 ));
             }
             None => {
-                out.push_str(
-                    "    not implemented for this graph. Current rational reduction supports only ordinary P^n, genus 0, one vertex, no edges, three primary markings, and max-descendant 0.\n",
-                );
+                out.push_str(&format!(
+                    "    {}\n",
+                    rational_unimplemented_message(request)
+                ));
             }
         }
     }
@@ -1097,6 +1129,48 @@ impl GraphFormulaSkeleton {
     }
 
     fn render_rational_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
+        if let Some(result) = self.rational_graph_bounded_terms(request) {
+            match result {
+                Ok(terms) => {
+                    if terms.is_empty() {
+                        out.push_str(&format!(
+                            "\\[\nC_{{{}}}^{{\\mathrm{{rat}}}}=0\n\\]\n",
+                            self.index
+                        ));
+                    } else {
+                        let items = terms
+                            .iter()
+                            .enumerate()
+                            .map(|(index, term)| {
+                                let connector = if index == 0 {
+                                    String::new()
+                                } else {
+                                    "+".to_string()
+                                };
+                                (connector, series_coefficient_tex(term))
+                            })
+                            .collect::<Vec<_>>();
+                        out.push_str(&tex_aligned_display_preserving_items(
+                            &format!("C_{{{}}}^{{\\mathrm{{rat}}}}={{}}&", self.index),
+                            &items,
+                            "",
+                            RATIONAL_TEX_LINE_BUDGET,
+                        ));
+                    }
+                    out.push_str("This substitutes the calibrated $S/R/T$ graph factors and contracts this stable graph only.\n");
+                }
+                Err(err) => {
+                    out.push_str("\\[\n");
+                    out.push_str(&format!(
+                        "\\text{{Graph-local rational contraction failed: {}}}\n",
+                        escape_tex_text(&err.to_string())
+                    ));
+                    out.push_str("\\]\n");
+                }
+            }
+            return;
+        }
+
         match self.rational_primary_three_point_terms(request) {
             Some(Ok(terms)) => {
                 let head = format!("C_{{{}}}^{{\\mathrm{{rat}}}}={{}}&", self.index);
@@ -1128,10 +1202,46 @@ impl GraphFormulaSkeleton {
             }
             None => {
                 out.push_str("\\[\n");
-                out.push_str("\\text{Rational reduction is not implemented for this graph.}\n");
+                out.push_str(&format!(
+                    "\\text{{{}}}\n",
+                    escape_tex_text(&rational_unimplemented_message(request))
+                ));
                 out.push_str("\\]\n");
             }
         }
+    }
+
+    fn rational_graph_bounded_terms(
+        &self,
+        request: &FormulaRequest,
+    ) -> Option<Result<Vec<RationalPotentialTerm>, GwError>> {
+        let q_degree = request.q_degree?;
+        let Some(FormulaExpansion::ProjectiveSpace { n, equivariant }) = &request.expansion else {
+            return None;
+        };
+        if request.colors != n + 1 {
+            return Some(Err(GwError::ConventionMismatch(format!(
+                "formula color count {} does not match P^{} rank {}",
+                request.colors,
+                n,
+                n + 1
+            ))));
+        }
+
+        Some(
+            projective_graph_bounded_potential_coefficients(
+                *n,
+                request.genus,
+                request.markings,
+                self.index,
+                q_degree,
+                request.max_descendant_power,
+                *equivariant,
+            )
+            .map(|coefficients| {
+                labelled_terms_from_coefficients(coefficients.iter(), request.markings)
+            }),
+        )
     }
 
     fn compact_tex_factors(&self, request: &FormulaRequest) -> Vec<String> {
@@ -1586,6 +1696,24 @@ fn rational_projective_n(request: &FormulaRequest) -> Option<usize> {
     }
 }
 
+fn rational_unimplemented_message(request: &FormulaRequest) -> String {
+    if request.q_degree.is_some() {
+        match &request.expansion {
+            Some(FormulaExpansion::NegativeSplitTwisted { .. }) => {
+                return "not implemented for this graph: bounded graph-local rational contraction currently reuses the ordinary P^n S/R/T kernel; twisted kernels are not wired into this formatter yet.".to_string();
+            }
+            Some(FormulaExpansion::ProjectiveSpace { .. }) => {
+                return "not implemented for this graph: bounded graph-local rational contraction requires ordinary P^n formula data with matching color count.".to_string();
+            }
+            None => {
+                return "not implemented for this graph: bounded graph-local rational contraction needs an engine, for example --n for ordinary P^n.".to_string();
+            }
+        }
+    }
+
+    "not implemented for this graph: without --d, current symbolic rational reduction supports only ordinary P^n, genus 0, one vertex, no edges, three primary markings, and max-descendant 0.".to_string()
+}
+
 fn raw_twisted(request: &FormulaRequest) -> bool {
     matches!(
         (&request.expansion, request.basis),
@@ -1710,12 +1838,24 @@ fn rational_primary_terms_text(terms: &[RationalPrimaryTerm]) -> String {
 }
 
 fn fixed_marking_terms(result: &SeriesResult, markings: usize) -> Vec<RationalPotentialTerm> {
+    labelled_terms_from_coefficients(
+        result
+            .coefficients
+            .iter()
+            .filter(|coefficient| coefficient.insertions.len() == markings),
+        markings,
+    )
+}
+
+fn labelled_terms_from_coefficients<'a>(
+    coefficients: impl IntoIterator<Item = &'a SeriesCoefficient>,
+    markings: usize,
+) -> Vec<RationalPotentialTerm> {
     let mut terms = Vec::new();
-    for coefficient in result
-        .coefficients
-        .iter()
-        .filter(|coefficient| coefficient.insertions.len() == markings)
-    {
+    for coefficient in coefficients {
+        if coefficient.insertions.len() != markings {
+            continue;
+        }
         for insertions in distinct_insertion_permutations(&coefficient.insertions) {
             terms.push(RationalPotentialTerm {
                 degree: coefficient.degree,
@@ -2833,6 +2973,25 @@ mod tests {
         assert!(rendered.contains("full S/R/T stable-graph sum"));
         assert!(rendered.contains("q^0 * x_{0,0,2} * x_{1,0,0} * x_{2,0,0}"));
         assert!(rendered.contains("q^1 * x_{0,0,2} * x_{1,0,2} * x_{2,0,1}"));
+        assert!(rendered.contains("Graph-local contracted q-potential C_0^rational"));
+    }
+
+    #[test]
+    fn rational_basis_with_degree_contracts_loop_graph_locally() {
+        let mut request = FormulaRequest::new(1, 1, 2);
+        request.basis = FormulaBasisMode::Rational;
+        request.q_degree = Some(1);
+        request.max_descendant_power = 2;
+        request.expansion = Some(FormulaExpansion::ProjectiveSpace {
+            n: 1,
+            equivariant: false,
+        });
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_text();
+        assert!(rendered.contains("Graph-local contracted q-potential C_0^rational"));
+        assert!(rendered.contains("Graph-local contracted q-potential C_1^rational"));
+        assert!(rendered.contains("q^0 * (-1/24) * x_{0,0,1}"));
+        assert!(!rendered.contains("not implemented for this graph"));
     }
 
     #[test]

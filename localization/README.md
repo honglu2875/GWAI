@@ -191,15 +191,13 @@ number of markings. This is an explanatory tool with four formula bases:
 - `--basis coefficients`: the legacy fully unrolled coefficient basis in
   `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
 - `--basis rational`: quotient-reduced graph expressions where supported. The
-  first implemented case is the ordinary `P^n` genus-zero three-primary
+  symbolic no-`--d` seed is the ordinary `P^n` genus-zero three-primary
   one-vertex graph, where the color sum is contracted by
-  `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. Other
-  graph shapes currently print an explicit "not implemented for this graph"
-  message rather than falling back to raw root-sum notation. When `--d` is
-  supplied for ordinary `P^n`, rational mode also prints the fully S/R/T
-  contracted bounded descendant potential for the requested fixed marking
-  count, with labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking
-  `ell`.
+  `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. When
+  `--d` is supplied for ordinary `P^n`, rational mode prints the fully S/R/T
+  contracted bounded descendant potential and each stable graph's q-truncated
+  graph-local contribution, with labelled variables `x_{ell,k,a}` for
+  `tau_k(H^a)` at marking `ell`.
 
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
 now just requests the same engine dictionary that raw mode uses by default.

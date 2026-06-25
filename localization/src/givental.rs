@@ -1901,6 +1901,97 @@ where
         .collect())
 }
 
+/// Computes one stable graph's contribution to the bounded descendant
+/// potential of ordinary `P^n`.
+///
+/// This is the formula renderer's graph-local rational path.  It uses the same
+/// external-leg kernel as `series`: each marking is left as an open
+/// `(canonical color, psi power)` state while the selected stable graph is
+/// fully contracted over colors, edge propagators, translations, and
+/// point-theory vertex integrals.  The final loop then attaches bounded flat
+/// insertions through the calibrated `S`, `Psi^{-1}`, and `R^{-1}` leg options.
+pub fn projective_graph_bounded_potential_coefficients(
+    n: usize,
+    genus: usize,
+    markings: usize,
+    graph_index: usize,
+    degree_max: usize,
+    max_descendant_power: usize,
+    equivariant: bool,
+) -> Result<Vec<SeriesCoefficient>, GwError> {
+    if !is_stable_cohft_range(genus, markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "graph-local rational potential is implemented for stable (g,m) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let provider = ProjectiveSpaceProvider::new(n, equivariant);
+    let colors = provider.colors();
+    let graph_dimension = 3 * genus + markings - 3;
+    let graph_kernel = provider.graph_kernel(degree_max, graph_dimension + 1, graph_dimension)?;
+    let graphs = prepared_stable_graphs(genus, markings, colors);
+    let prepared = graphs.get(graph_index).ok_or_else(|| {
+        GwError::UnsupportedInvariant(format!(
+            "stable graph index {graph_index} is out of range for (g,m)=({genus},{markings})"
+        ))
+    })?;
+
+    let mut profile = GraphEvalProfile::new();
+    profile.stable_graphs = 1;
+    profile.edge_options = graph_kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let external_kernel = evaluate_external_graphs_parallel(
+        std::slice::from_ref(prepared),
+        markings,
+        colors,
+        &graph_kernel,
+        degree_max,
+        graph_dimension,
+        &mut profile,
+    );
+
+    let descendant_s = provider.descendant_s_matrix(degree_max, max_descendant_power)?;
+    let basis = crate::insertion_basis(n, max_descendant_power);
+    let mut out = Vec::new();
+    for insertions in crate::insertion_monomials(&basis, markings) {
+        let insertion_terms = ancestor_insertion_terms_from_provider(
+            &provider,
+            &insertions,
+            &descendant_s,
+            &graph_kernel.calibration.psi_inverse,
+            degree_max,
+            graph_dimension,
+        )?;
+        let leg_options = leg_options_by_marking_color(
+            &insertion_terms,
+            &graph_kernel.inverse_r,
+            degree_max,
+            graph_dimension,
+            colors,
+        );
+
+        for degree in provider.candidate_degrees_from_dimension(genus, degree_max, &insertions) {
+            if dimension_mismatch(&provider, genus, degree, &insertions).is_some() {
+                continue;
+            }
+            let value = contract_external_leg_kernel_coeff(&external_kernel, &leg_options, degree);
+            if !value.is_zero() {
+                out.push(SeriesCoefficient {
+                    degree,
+                    insertions: insertions.clone(),
+                    value,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Computes the full truncated q-series produced by the generic semisimple
 /// Givental graph engine for the given insertions.
 pub fn compute_semisimple_graph_series<P>(
