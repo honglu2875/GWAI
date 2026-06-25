@@ -212,7 +212,7 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 ```
 
 Use `--format tex-fragment` when embedding the formula into an existing
-document that already loads `amsmath`, `breqn`, and `tikz`.
+document that already loads `amsmath`, `mathtools`, and `tikz`.
 
 Formula output is universal by default. The `--twist` flag is accepted in this
 raw mode but ignored, so the stable-graph skeleton remains provider-independent:
@@ -257,12 +257,13 @@ kernels `E(psi,phi)`.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and
-`\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`. Graph
-contributions are rendered as `dmath*` displays from the `breqn` package.  The
-renderer avoids giant `\left...\right` delimiter pairs and nested aligned
-chunks, and it inserts breakable product operators so TeX can choose line
-breaks.  Standalone `tex` output loads `breqn`; `tex-fragment` users should
-load it in their surrounding document.
+`\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`. The renderer wraps
+long displays itself: compact graph brackets use `multlined` (from
+`mathtools`), while the fully expanded basis sums use a page-breakable `align*`,
+so no display runs past the right margin or off the bottom of a page. It avoids
+giant `\left...\right` delimiter pairs. Standalone `tex` output loads
+`amsmath`, `mathtools`, `microtype`, and `tikz`; `tex-fragment` users should
+load the first three (plus `tikz`) in their surrounding document.
 
 ## `degree-series`
 

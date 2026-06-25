@@ -29,9 +29,10 @@ Main files:
   \(S_s\), \(R_r^{-1}\), \(\Psi^{-1}\), \((T_p)_i\), \(\Delta_i\), and
   point-theory intersection brackets.  TeX graph sections include TikZ
   drawings generated directly from the stable-graph vertices, edges, loops,
-  and labelled markings.  Graph contribution formulas use `dmath*` from
-  `breqn`, avoid giant `\left...\right` delimiter pairs and nested aligned
-  chunks, and expose product operators as TeX break points.
+  and labelled markings.  The renderer wraps long displays itself: compact
+  graph brackets use `multlined` (from `mathtools`) and the fully expanded
+  basis sums use a page-breakable `align*`, so nothing runs past the margin or
+  off the bottom of a page.  It avoids giant `\left...\right` delimiter pairs.
 
 The raw basis deliberately keeps the coefficient data symbolic.  The resolvent
 basis packs descendants and edge propagators into generating kernels, while the

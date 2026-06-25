@@ -242,10 +242,12 @@ impl FormulaSkeleton {
         out.push_str("\\usepackage[margin=1in]{geometry}\n");
         out.push_str("\\usepackage[T1]{fontenc}\n");
         out.push_str("\\usepackage{amsmath,amssymb,mathtools}\n");
-        out.push_str("\\usepackage{breqn}\n");
+        out.push_str("\\usepackage{microtype}\n");
         out.push_str("\\usepackage{tikz}\n");
         out.push_str("\\usetikzlibrary{calc,arrows.meta}\n");
         out.push_str("\\allowdisplaybreaks\n");
+        out.push_str("\\setlength{\\parindent}{0pt}\n");
+        out.push_str("\\setlength{\\parskip}{0.5\\baselineskip}\n");
         out.push_str("\\begin{document}\n\n");
         out.push_str(&self.render_tex());
         out.push_str("\\end{document}\n");
@@ -355,15 +357,17 @@ impl FormulaSkeleton {
     fn render_tex_header(&self, out: &mut String) {
         out.push_str("\\section*{Givental Graph Formula Skeleton}\n");
         out.push_str(&format!(
-            "Stable range: $g={}$, $m={}$.\n\n",
-            self.request.genus, self.request.markings
+            "Stable range: genus $g={}$ with $m={}$ marking{}.\n",
+            self.request.genus,
+            self.request.markings,
+            if self.request.markings == 1 { "" } else { "s" }
         ));
         out.push_str(&format!(
-            "Canonical colors are indexed by $i=0,\\ldots,{}$.\n\n",
+            "Canonical colors are indexed by $i=0,\\ldots,{}$, and the stable-curve dimension is\n",
             self.request.colors - 1
         ));
         out.push_str(&format!(
-            "\\[\nD=3g-3+m={}\n\\]\n",
+            "\\[\nD=3g-3+m={}.\n\\]\n",
             self.request.graph_dimension()
         ));
         match self.request.q_degree {
@@ -803,81 +807,129 @@ impl GraphFormulaSkeleton {
     }
 
     fn render_expanded_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
-        let terms = self.expanded_tex_factor_terms(request);
+        let terms = self
+            .expanded_tex_factor_terms(request)
+            .into_iter()
+            .map(|factors| {
+                let nontrivial = factors
+                    .into_iter()
+                    .filter(|factor| factor != "1")
+                    .collect::<Vec<_>>();
+                if nontrivial.is_empty() {
+                    vec!["1".to_string()]
+                } else {
+                    nontrivial
+                }
+            })
+            .collect::<Vec<_>>();
+
         if terms.is_empty() {
-            out.push_str("\\[\n");
-            out.push_str(&format!("C_{{{}}}=", self.index));
-            out.push_str("0\n\\]\n");
+            out.push_str(&format!("\\[\nC_{{{}}}=0\n\\]\n", self.index));
             return;
         }
 
-        out.push_str("\\begin{dmath*}\n");
-        out.push_str(&format!(
-            "C_{{{}}} = \\frac{{1}}{{{}}}{}",
+        let parenthesize = terms.len() > 1;
+        // The `={}&` sets the alignment column for the page-breakable `align*`.
+        let head = format!(
+            "C_{{{}}}={{}}&{}{}{}",
             self.index,
-            self.automorphism_order,
-            self.color_sum_tex(request.colors)
-        ));
-        if terms.len() == 1 {
-            out.push_str(&tex_product_expression(&terms[0]));
-        } else {
-            out.push_str("\\bigl(");
-            for (idx, factors) in terms.iter().enumerate() {
-                if idx > 0 {
-                    out.push_str(" +\n");
-                }
-                out.push_str(&tex_product_expression(factors));
+            tex_prefactor(self.automorphism_order),
+            self.color_sum_tex(request.colors),
+            if parenthesize { "\\bigl(" } else { "" }
+        );
+        let tail = if parenthesize { "\\bigr)" } else { "" };
+
+        let mut items = Vec::new();
+        for (term_index, factors) in terms.iter().enumerate() {
+            for (factor_index, factor) in factors.iter().enumerate() {
+                let connector = if term_index == 0 && factor_index == 0 {
+                    String::new()
+                } else if factor_index == 0 {
+                    "+".to_string()
+                } else {
+                    "\\mathbin{\\cdot}".to_string()
+                };
+                items.push((connector, factor.clone()));
             }
-            out.push_str("\\bigr)");
         }
-        out.push_str("\n\\end{dmath*}\n");
+        out.push_str(&tex_aligned_display(&head, &items, tail, TEX_LINE_BUDGET));
     }
 
     fn render_compact_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
-        out.push_str("\\begin{dmath*}\n");
-        out.push_str(&format!(
-            "C_{{{}}}^{{{}}}(\\mathbf z)=\\frac{{1}}{{{}}}{}\\langle {}\\rangle_\\Gamma^{{\\mathrm{{pt}}}}",
+        let factors = self.compact_tex_factors(request);
+        let head = format!(
+            "C_{{{}}}^{{{}}}(\\mathbf z)={}{}\\bigl\\langle ",
             self.index,
             request.basis.tex_superscript(),
-            self.automorphism_order,
+            tex_prefactor(self.automorphism_order),
             self.color_sum_tex(request.colors),
-            self.compact_tex_integrand(request)
-        ));
-        out.push_str("\n\\end{dmath*}\n");
+        );
+        let tail = "\\bigr\\rangle_\\Gamma^{\\mathrm{pt}}";
+
+        if factors.is_empty() {
+            out.push_str(&format!("\\[\n{head}1{tail}\n\\]\n"));
+            return;
+        }
+
+        let items = factors
+            .into_iter()
+            .enumerate()
+            .map(|(index, factor)| {
+                let connector = if index == 0 {
+                    String::new()
+                } else {
+                    "\\mathbin{\\cdot}".to_string()
+                };
+                (connector, factor)
+            })
+            .collect::<Vec<_>>();
+        out.push_str(&tex_multlined_display(&head, &items, tail, TEX_LINE_BUDGET));
     }
 
-    fn compact_tex_integrand(&self, request: &FormulaRequest) -> String {
+    fn compact_tex_factors(&self, request: &FormulaRequest) -> Vec<String> {
+        let rational = request.basis == FormulaBasisMode::Rational;
         let mut factors = Vec::new();
-        let kernel_superscript = match request.basis {
-            FormulaBasisMode::Rational => "^{\\mathrm{rat}}",
-            _ => "",
-        };
         for vertex in &self.vertices {
-            factors.push(format!(
-                "\\Theta{}_{{{}, {}}}(i_{{{}}})",
-                kernel_superscript, vertex.genus, vertex.valence, vertex.index
-            ));
+            let theta = if rational {
+                format!(
+                    "\\Theta_{{{}, {}}}^{{\\mathrm{{rat}}}}(i_{{{}}})",
+                    vertex.genus, vertex.valence, vertex.index
+                )
+            } else {
+                format!(
+                    "\\Theta_{{{}, {}}}(i_{{{}}})",
+                    vertex.genus, vertex.valence, vertex.index
+                )
+            };
+            factors.push(theta);
             if request.translation_power_max() >= 2 {
                 factors.push(format!("\\exp(T_{{i_{{{}}}}})", vertex.index));
             }
         }
         for (marking, &vertex) in self.graph.legs.iter().enumerate() {
+            // The rational kernel reuses the resolvent symbol; the `rat` tag has
+            // to share the single superscript slot with the descendant label so
+            // that it never collides into a double superscript.
+            let superscript = if rational {
+                format!("\\mathrm{{rat}},\\gamma_{{{marking}}}")
+            } else {
+                format!("\\gamma_{{{marking}}}")
+            };
             factors.push(format!(
-                "\\mathcal L{}_{{i_{{{}}}}}^{{\\gamma_{{{}}}}}(z_{{{}}},\\bar\\psi_{{\\ell_{{{}}}}})",
-                kernel_superscript, vertex, marking, marking, marking
+                "\\mathcal L_{{i_{{{vertex}}}}}^{{{superscript}}}(z_{{{marking}}},\\bar\\psi_{{\\ell_{{{marking}}}}})"
             ));
         }
         for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            let scripts = if rational {
+                format!("_{{i_{{{}}}i_{{{}}}}}^{{\\mathrm{{rat}}}}", edge.a, edge.b)
+            } else {
+                format!("_{{i_{{{}}}i_{{{}}}}}", edge.a, edge.b)
+            };
             factors.push(format!(
-                "\\mathcal E{}_{{i_{{{}}}i_{{{}}}}}(\\bar\\psi_{{e_{{{}}},+}},\\bar\\psi_{{e_{{{}}},-}})",
-                kernel_superscript, edge.a, edge.b, edge_index, edge_index
+                "\\mathcal E{scripts}(\\bar\\psi_{{e_{{{edge_index}}},+}},\\bar\\psi_{{e_{{{edge_index}}},-}})"
             ));
         }
-        if factors.is_empty() {
-            "1".to_string()
-        } else {
-            factors.join("\\mathbin{\\cdot}")
-        }
+        factors
     }
 
     fn color_sum_label(&self, colors: usize) -> String {
@@ -1147,17 +1199,210 @@ fn append_distributed_tex_factor_terms(
     }
 }
 
-fn tex_product_expression(factors: &[String]) -> String {
-    let nontrivial = factors
-        .iter()
-        .filter(|factor| factor.as_str() != "1")
-        .cloned()
-        .collect::<Vec<_>>();
-    if nontrivial.is_empty() {
-        "1".to_string()
+/// Target visual width (in rough character units) for a single displayed line.
+/// Lines are wrapped conservatively so the largest graph contributions stay
+/// inside the text block instead of running off the right margin.
+const TEX_LINE_BUDGET: usize = 52;
+
+/// A trivial automorphism factor reads as a bare `1`; suppress it so the display
+/// shows `\sum\langle\cdots\rangle` rather than the noisy `\frac{1}{1}`.
+fn tex_prefactor(order: usize) -> String {
+    if order <= 1 {
+        String::new()
     } else {
-        nontrivial.join("\\mathbin{\\cdot}")
+        format!("\\frac{{1}}{{{order}}}")
     }
+}
+
+/// Greedily break a `head … tail` display into lines no wider than `budget`.
+/// Each item pairs a factor with the connector (`\cdot`, `+`, …) that precedes
+/// it; when a break falls on a connector it leads the continuation line so the
+/// operator stays visible.  Line 0 already carries `head`; `tail` is appended to
+/// the final line.
+fn wrap_display_lines(
+    head: &str,
+    items: &[(String, String)],
+    tail: &str,
+    budget: usize,
+) -> Vec<String> {
+    let items = expand_wide_items(items, budget);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = head.to_string();
+    let mut current_width = tex_visual_width(head);
+
+    for (index, (connector, factor)) in items.iter().enumerate() {
+        let piece_width = tex_visual_width(connector) + tex_visual_width(factor);
+        if index == 0 || current_width + piece_width <= budget {
+            current.push_str(connector);
+            current.push_str(factor);
+            current_width += piece_width;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(connector);
+            current.push_str(factor);
+            current_width = piece_width;
+        }
+    }
+    current.push_str(tail);
+    lines.push(current);
+    lines
+}
+
+/// A single factor can still be wider than a whole line — most often an edge
+/// propagator that expands into a parenthesized sum of several signed root-sums.
+/// Such factors are split at their top-level `+`/`-` boundaries so the inner
+/// sum can break across lines; the enclosing `\bigl(`/`\bigr)` simply ride along
+/// on the first and last pieces.  Factors that already fit are left untouched.
+fn expand_wide_items(items: &[(String, String)], budget: usize) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (connector, factor) in items {
+        if tex_visual_width(factor) <= budget {
+            out.push((connector.clone(), factor.clone()));
+            continue;
+        }
+        let pieces = split_signed_sum(factor);
+        if pieces.len() <= 1 {
+            out.push((connector.clone(), factor.clone()));
+            continue;
+        }
+        for (piece_index, (sign, text)) in pieces.into_iter().enumerate() {
+            let piece_connector = if piece_index == 0 { connector.clone() } else { sign };
+            out.push((piece_connector, text));
+        }
+    }
+    out
+}
+
+/// Split a fragment on its top-level (brace depth zero) ` + ` / ` - ` separators,
+/// returning each summand paired with the sign that precedes it (empty for the
+/// first).  Used only to break an over-wide parenthesized sum across lines.
+fn split_signed_sum(fragment: &str) -> Vec<(String, String)> {
+    let chars: Vec<char> = fragment.chars().collect();
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut connector = String::new();
+    let mut depth = 0i32;
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+        }
+        if depth == 0
+            && c == ' '
+            && index + 2 < chars.len()
+            && (chars[index + 1] == '+' || chars[index + 1] == '-')
+            && chars[index + 2] == ' '
+        {
+            parts.push((std::mem::take(&mut connector), std::mem::take(&mut current)));
+            connector = chars[index + 1].to_string();
+            index += 3;
+            continue;
+        }
+        current.push(c);
+        index += 1;
+    }
+    parts.push((connector, current));
+    parts
+}
+
+/// Render a self-contained product (a compact graph bracket) with `multlined`.
+/// These displays are short and never span a page, so the centered continuation
+/// lines of `multlined` read nicely.  A display that already fits on one line is
+/// emitted as an ordinary centered equation instead of a left-flushed singleton.
+fn tex_multlined_display(
+    head: &str,
+    items: &[(String, String)],
+    tail: &str,
+    budget: usize,
+) -> String {
+    let lines = wrap_display_lines(head, items, tail, budget);
+    let mut out = String::new();
+    if lines.len() == 1 {
+        out.push_str("\\[\n");
+        out.push_str(&lines[0]);
+        out.push_str("\n\\]\n");
+    } else {
+        out.push_str("\\[\n\\begin{multlined}[b]\n");
+        out.push_str(&lines.join("\\\\\n"));
+        out.push_str("\n\\end{multlined}\n\\]\n");
+    }
+    out
+}
+
+/// Render a long sum (the fully expanded basis-coefficient terms) with `align*`.
+/// Unlike `multlined`, `align*` rows break across pages under
+/// `\allowdisplaybreaks`, which matters because one expanded contribution can be
+/// many pages tall.  `head` must already contain the alignment `&` (just after
+/// the `=`); continuation lines are flushed to that column.
+fn tex_aligned_display(
+    head: &str,
+    items: &[(String, String)],
+    tail: &str,
+    budget: usize,
+) -> String {
+    let lines = wrap_display_lines(head, items, tail, budget);
+    let body = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 0 {
+                line.clone()
+            } else {
+                format!("&{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\\\\\n");
+    format!("\\begin{{align*}}\n{body}\n\\end{{align*}}\n")
+}
+
+/// Rough estimate of the rendered width of a TeX fragment, in character-ish
+/// units.  Used only to decide line breaks: control sequences and grouping or
+/// scripting delimiters are dropped, while the visible glyphs they wrap are
+/// counted.  A deliberate over-count of scripts keeps the estimate on the safe
+/// (slightly narrow) side.
+fn tex_visual_width(fragment: &str) -> usize {
+    let mut width = 0usize;
+    let mut chars = fragment.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek() {
+                Some(d) if d.is_ascii_alphabetic() => {
+                    let mut name = String::new();
+                    while let Some(&d) = chars.peek() {
+                        if d.is_ascii_alphabetic() {
+                            name.push(d);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    width += match name.as_str() {
+                        // Big operators occupy roughly an em plus inter-script
+                        // slack, far more than a single glyph.
+                        "sum" | "prod" | "int" => 4,
+                        "frac" => 2,
+                        "bigl" | "bigr" | "langle" | "rangle" => 1,
+                        "cdot" | "Delta" | "Theta" | "Psi" | "Gamma" | "eta" | "tau" | "gamma"
+                        | "psi" | "phi" | "nu" | "alpha" | "beta" | "ldots" | "exp" | "bar"
+                        | "mathbf" | "mathrm" => 1,
+                        _ => 0,
+                    };
+                }
+                Some(_) => {
+                    chars.next();
+                    width += 1;
+                }
+                None => {}
+            },
+            '{' | '}' | '_' | '^' | ' ' => {}
+            _ => width += 1,
+        }
+    }
+    width
 }
 
 fn leg_factor(marking: usize, color: &str, power: usize, request: &FormulaRequest) -> String {
@@ -1533,17 +1778,12 @@ fn tikz_bend_option(ordinal: usize, total: usize) -> String {
 }
 
 fn tikz_loop_direction(vertex: usize, ordinal: usize, vertex_count: usize) -> &'static str {
-    const DIRECTIONS: [&str; 8] = [
-        "above",
-        "right",
-        "below",
-        "left",
-        "above right",
-        "below right",
-        "below left",
-        "above left",
-    ];
+    // Only the four cardinal `loop <dir>` keys are predefined by TikZ; the
+    // diagonal variants are not valid pgf keys, so we never emit them.
+    const DIRECTIONS: [&str; 4] = ["above", "right", "left", "below"];
     if vertex_count == 1 {
+        // Markings on an isolated vertex fan out downward (see `tikz_leg_angle`),
+        // so keep loops in the upper half-plane first to avoid overlapping them.
         return DIRECTIONS[ordinal % DIRECTIONS.len()];
     }
     DIRECTIONS[(vertex + ordinal) % DIRECTIONS.len()]
@@ -1564,7 +1804,11 @@ fn tikz_leg_angle(
     positions: &[TikzPoint],
 ) -> f64 {
     if positions.len() == 1 {
-        return PI / 2.0 + 2.0 * PI * ordinal as f64 / total_at_vertex.max(1) as f64;
+        // Fan the markings out across the lower half-plane, centered straight
+        // down, leaving the top free for loop edges.
+        let spread = PI / 6.0;
+        let midpoint = total_at_vertex.saturating_sub(1) as f64 / 2.0;
+        return -PI / 2.0 + (ordinal as f64 - midpoint) * spread;
     }
 
     let point = positions[vertex];
@@ -1664,7 +1908,6 @@ mod tests {
         assert!(rendered.contains("\\section*{Givental Graph Formula Skeleton}"));
         assert!(rendered.contains("\\begin{tikzpicture}"));
         assert!(rendered.contains("\\draw[leg]"));
-        assert!(rendered.contains("\\begin{dmath*}"));
         assert!(rendered.contains("\\mathbin{\\cdot}"));
         assert!(!rendered.contains("\\left["));
         assert!(!rendered.contains("\\right]"));
@@ -1676,16 +1919,33 @@ mod tests {
     }
 
     #[test]
-    fn tex_renderer_exposes_breakable_graph_math_without_forced_chunks() {
+    fn tex_renderer_wraps_expanded_sums_in_pagebreakable_align() {
         let skeleton = build_formula_skeleton(FormulaRequest::new(1, 1, 2)).unwrap();
         let rendered = skeleton.render_tex();
-        assert!(rendered.contains("\\begin{dmath*}"));
+        // Expanded sums can run many pages tall, so they use `align*` (whose rows
+        // break across pages) rather than the old `breqn`/`dmath*` route that
+        // overflowed both horizontally and vertically.
+        assert!(rendered.contains("\\begin{align*}"));
+        assert!(!rendered.contains("dmath"));
         assert!(rendered.contains("\\mathbin{\\cdot}(\\Psi^{-1})"));
         assert!(rendered.contains("\\mathbin{\\cdot}\\eta^{\\nu\\nu}"));
         assert!(rendered.contains("\\mathbin{\\cdot}(T_{2})_{i_{0}}"));
         assert!(rendered.contains("\\mathbin{\\cdot}\\langle \\tau_{1}\\rangle_{1}^{\\mathrm{pt}}"));
         assert!(!rendered.contains("\\begin{aligned}[t]"));
         assert!(!rendered.contains("&\\qquad {}\\cdot"));
+    }
+
+    #[test]
+    fn tex_renderer_wraps_compact_brackets_in_multlined() {
+        let mut request = FormulaRequest::new(2, 1, 3);
+        request.basis = FormulaBasisMode::Resolvent;
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_tex();
+        // The compact graph brackets are short and use `multlined`.
+        assert!(rendered.contains("\\begin{multlined}[b]"));
+        assert!(rendered.contains("\\bigl\\langle "));
+        assert!(rendered.contains("\\bigr\\rangle_\\Gamma^{\\mathrm{pt}}"));
+        assert!(!rendered.contains("dmath"));
     }
 
     #[test]
@@ -1715,8 +1975,12 @@ mod tests {
         assert!(rendered.contains("Rational Basis: Ordinary Projective Space"));
         assert!(rendered.contains("P(u_i)&=0"));
         assert!(rendered.contains("C_{0}^{\\mathrm{rat}}"));
-        assert!(rendered.contains("\\mathcal L^{\\mathrm{rat}}_{i_{0}}^{\\gamma_{0}}"));
-        assert!(rendered.contains("\\Theta^{\\mathrm{rat}}_{0, 3}(i_{0})"));
+        // The rational leg kernel must keep a single superscript group: the old
+        // `\mathcal L^{\mathrm{rat}}_{i_0}^{\gamma_0}` was a LaTeX double
+        // superscript error.
+        assert!(rendered.contains("\\mathcal L_{i_{0}}^{\\mathrm{rat},\\gamma_{0}}"));
+        assert!(!rendered.contains("\\mathcal L^{\\mathrm{rat}}_{i_{0}}^{\\gamma_{0}}"));
+        assert!(rendered.contains("\\Theta_{0, 3}^{\\mathrm{rat}}(i_{0})"));
     }
 
     #[test]
@@ -1724,7 +1988,7 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_tex_document();
         assert!(rendered.starts_with("\\documentclass[11pt]{article}"));
-        assert!(rendered.contains("\\usepackage{breqn}"));
+        assert!(rendered.contains("\\usepackage{amsmath,amssymb,mathtools}"));
         assert!(rendered.contains("\\usepackage{tikz}"));
         assert!(rendered.contains("\\begin{document}"));
         assert!(rendered.contains("\\begin{tikzpicture}"));
