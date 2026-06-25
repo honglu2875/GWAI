@@ -7,6 +7,7 @@
 
 pub mod algebra;
 pub mod error;
+pub mod formula;
 pub mod frobenius;
 pub mod geometry;
 pub mod givental;

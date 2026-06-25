@@ -176,6 +176,26 @@ Notes:
 - Full symbolic equivariant twisted output is not enabled from this command.
 - Degree-zero local twisted invariants are not implemented in this path.
 
+## `formula`
+
+Prints a human-readable Givental graph formula skeleton for fixed genus and
+number of markings. This is an explanatory tool: it keeps the atoms symbolic
+instead of substituting projective-space or twisted calibration data.
+
+Use `--n` for `P^n` color count, or `--colors` for a provider-independent
+semisimple CohFT skeleton:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --max-descendant 5 \
+  --d 3
+```
+
+The output defines the atoms `S`, `Psi`, `RInv`, `Edge`, `T`, `Delta`, and the
+point-theory psi integrals, then lists the finite stable graphs and truncation
+orders needed for that `(g,m)` range. Add `--no-glossary` for a shorter graph
+listing.
+
 ## `degree-series`
 
 Computes invariants while varying the degree. Without `--twist`, this uses the

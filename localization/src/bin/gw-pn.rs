@@ -1,4 +1,5 @@
 use gw_pn::error::GwError;
+use gw_pn::formula::{build_formula_skeleton, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
@@ -36,6 +37,7 @@ fn run() -> Result<(), GwError> {
         "twisted" => run_twisted(&args),
         "degree-series" => run_degree_series(&args),
         "genus-series" => run_genus_series(&args),
+        "formula" => run_formula(&args),
         "series" => run_series(&args),
         "tests" | "test" => run_tests(&args),
         _ => Err(GwError::ParseError(format!(
@@ -197,6 +199,50 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
     for note in result.notes {
         println!("note: {note}");
     }
+    Ok(())
+}
+
+fn run_formula(args: &[String]) -> Result<(), GwError> {
+    validate_flags(
+        args,
+        &[
+            CliFlag::value("--g"),
+            CliFlag::value("--genus"),
+            CliFlag::value("--markings"),
+            CliFlag::value("--m"),
+            CliFlag::value("--n"),
+            CliFlag::value("--colors"),
+            CliFlag::value("--max-descendant"),
+            CliFlag::value("--k-max"),
+            CliFlag::value("--d"),
+            CliFlag::value("--degree"),
+            CliFlag::switch("--no-glossary"),
+        ],
+    )?;
+    let genus = first_usize_flag(args, &["--g", "--genus"])?
+        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
+    let markings = first_usize_flag(args, &["--markings", "--m"])?
+        .ok_or_else(|| GwError::ParseError("missing --markings".to_string()))?;
+    let colors = match (
+        first_usize_flag(args, &["--colors"])?,
+        first_usize_flag(args, &["--n"])?,
+    ) {
+        (Some(_), Some(_)) => {
+            return Err(GwError::ParseError(
+                "pass either --colors or --n, not both".to_string(),
+            ))
+        }
+        (Some(colors), None) => colors,
+        (None, Some(n)) => n + 1,
+        (None, None) => return Err(GwError::ParseError("missing --colors or --n".to_string())),
+    };
+    let mut request = FormulaRequest::new(genus, markings, colors);
+    request.max_descendant_power =
+        first_usize_flag(args, &["--max-descendant", "--k-max"])?.unwrap_or(0);
+    request.q_degree = first_usize_flag(args, &["--d", "--degree"])?;
+    request.include_glossary = !has_flag(args, "--no-glossary");
+    let skeleton = build_formula_skeleton(request)?;
+    println!("{}", skeleton.render_text());
     Ok(())
 }
 
@@ -895,6 +941,7 @@ Commands:\n\
   gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\
