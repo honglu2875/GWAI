@@ -7,6 +7,7 @@ use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
 use crate::symbolic::projective_residue_monomial;
+use crate::{compute_series, ComputeMode, Insertion, SeriesRequest, SeriesResult};
 
 use super::basis::basis_glossary;
 use super::expansion::FormulaExpansion;
@@ -159,6 +160,20 @@ struct RationalPrimaryTerm {
     coefficient: RatFun,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RationalPotentialTerm {
+    degree: usize,
+    insertions: Vec<Insertion>,
+    value: RatFun,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RationalPotentialStatus {
+    NeedsDegree,
+    Unsupported(String),
+    Computed(SeriesResult),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct TikzPoint {
     x: f64,
@@ -220,6 +235,9 @@ impl FormulaSkeleton {
                 FormulaBasisMode::Rational => self.render_rational_glossary(&mut out),
             }
         }
+        if self.request.basis == FormulaBasisMode::Rational {
+            self.render_rational_bounded_potential_text(&mut out);
+        }
         self.render_graphs(&mut out);
         out
     }
@@ -245,6 +263,9 @@ impl FormulaSkeleton {
                 FormulaBasisMode::Resolvent => self.render_tex_resolvent_glossary(&mut out),
                 FormulaBasisMode::Rational => self.render_tex_rational_glossary(&mut out),
             }
+        }
+        if self.request.basis == FormulaBasisMode::Rational {
+            self.render_rational_bounded_potential_tex(&mut out);
         }
         self.render_tex_graphs(&mut out);
         out
@@ -516,6 +537,7 @@ impl FormulaSkeleton {
         out.push_str("This view contracts supported raw color/root sums through quotient-ring residue identities.\n");
         out.push_str("Currently implemented: ordinary P^n, genus 0, one vertex, no edges, three primary markings.\n");
         out.push_str("For that graph, sum_{P(u)=0} f(u)/P'(u) is reduced as the H^n coefficient of f(H) modulo prod_a(H-lambda_a)-q.\n");
+        out.push_str("When --d is supplied for ordinary P^n, this mode also prints the fully S/R/T-contracted bounded descendant potential for the requested fixed number of markings.\n");
         out.push_str("Unsupported graphs are printed explicitly as not yet reduced instead of falling back to raw root-sum notation.\n");
     }
 
@@ -561,7 +583,133 @@ impl FormulaSkeleton {
         out.push_str("\\[\n");
         out.push_str("\\sum_{P(u)=0}\\frac{f(u)}{P'(u)}=[H^n]\\,f(H)\\bmod P(H),\\qquad P(H)=\\prod_{a=0}^{n}(H-\\lambda_a)-q.\n");
         out.push_str("\\]\n");
+        out.push_str("When $q$-degree is supplied, rational mode also prints the fully $S/R/T$-contracted bounded descendant potential for the requested fixed marking count.\n");
         out.push_str("Unsupported graphs are reported as not yet reduced.\n");
+    }
+
+    fn render_rational_bounded_potential_text(&self, out: &mut String) {
+        out.push('\n');
+        out.push_str("Contracted bounded rational potential\n");
+        out.push_str("-------------------------------------\n");
+        match self.rational_bounded_potential() {
+            Ok(RationalPotentialStatus::Computed(result)) => {
+                let terms = fixed_marking_terms(&result, self.request.markings);
+                out.push_str(&format!(
+                    "This is the full S/R/T stable-graph sum for m={} marking(s), truncated to q^{} and descendant powers <= {}.\n",
+                    self.request.markings,
+                    self.request.q_degree.unwrap_or(0),
+                    self.request.max_descendant_power
+                ));
+                if terms.is_empty() {
+                    out.push_str("  F^rational = 0 in this bounded range.\n");
+                } else {
+                    out.push_str("  F^rational =\n");
+                    for (index, coefficient) in terms.iter().enumerate() {
+                        let prefix = if index == 0 { "    " } else { "  + " };
+                        out.push_str(prefix);
+                        out.push_str(&series_coefficient_text(coefficient));
+                        out.push('\n');
+                    }
+                }
+                out.push_str("Graph sections below remain graph-local: they show which individual graph reductions are available today.\n");
+            }
+            Ok(RationalPotentialStatus::NeedsDegree) => {
+                out.push_str(
+                    "Pass --d to request the fully contracted q-truncated bounded potential.\n",
+                );
+            }
+            Ok(RationalPotentialStatus::Unsupported(reason)) => {
+                out.push_str(&format!("{reason}\n"));
+            }
+            Err(err) => {
+                out.push_str(&format!("Could not compute contracted potential: {err}\n"));
+            }
+        }
+    }
+
+    fn render_rational_bounded_potential_tex(&self, out: &mut String) {
+        out.push_str("\n\\section*{Contracted Bounded Rational Potential}\n");
+        match self.rational_bounded_potential() {
+            Ok(RationalPotentialStatus::Computed(result)) => {
+                let terms = fixed_marking_terms(&result, self.request.markings);
+                out.push_str(&format!(
+                    "This is the full $S/R/T$ stable-graph sum for $m={}$ marking(s), truncated to $q^{{{}}}$ and descendant powers at most ${}$.\n",
+                    self.request.markings,
+                    self.request.q_degree.unwrap_or(0),
+                    self.request.max_descendant_power
+                ));
+                if terms.is_empty() {
+                    out.push_str("\\[\nF^{\\mathrm{rat}}=0\n\\]\n");
+                } else {
+                    let items = terms
+                        .iter()
+                        .enumerate()
+                        .map(|(index, coefficient)| {
+                            let connector = if index == 0 {
+                                String::new()
+                            } else {
+                                "+".to_string()
+                            };
+                            (connector, series_coefficient_tex(coefficient))
+                        })
+                        .collect::<Vec<_>>();
+                    out.push_str(&tex_aligned_display_preserving_items(
+                        "F^{\\mathrm{rat}}={}&",
+                        &items,
+                        "",
+                        RATIONAL_TEX_LINE_BUDGET,
+                    ));
+                }
+                out.push_str("The graph sections below remain graph-local and report which individual graph reductions are available today.\n");
+            }
+            Ok(RationalPotentialStatus::NeedsDegree) => {
+                out.push_str("Pass \\texttt{--d} to request the fully contracted $q$-truncated bounded potential.\n");
+            }
+            Ok(RationalPotentialStatus::Unsupported(reason)) => {
+                out.push_str(&escape_tex_text(&reason));
+                out.push('\n');
+            }
+            Err(err) => {
+                out.push_str(&format!(
+                    "Could not compute contracted potential: {}.\n",
+                    escape_tex_text(&err.to_string())
+                ));
+            }
+        }
+    }
+
+    fn rational_bounded_potential(&self) -> Result<RationalPotentialStatus, GwError> {
+        let Some(q_degree) = self.request.q_degree else {
+            return Ok(RationalPotentialStatus::NeedsDegree);
+        };
+        let Some(FormulaExpansion::ProjectiveSpace { n, equivariant }) = &self.request.expansion
+        else {
+            return Ok(RationalPotentialStatus::Unsupported(
+                "The contracted bounded potential is currently implemented for ordinary P^n expansion data only."
+                    .to_string(),
+            ));
+        };
+        if self.request.colors != n + 1 {
+            return Ok(RationalPotentialStatus::Unsupported(format!(
+                "The formula color count {} does not match P^{} rank {}.",
+                self.request.colors,
+                n,
+                n + 1
+            )));
+        }
+
+        let req = SeriesRequest {
+            n: *n,
+            genus: self.request.genus,
+            degree_max: q_degree,
+            max_markings: self.request.markings,
+            max_descendant_power: self.request.max_descendant_power,
+            include_zero: false,
+            equivariant: *equivariant,
+            mode: ComputeMode::Givental,
+            truncation: None,
+        };
+        compute_series(req).map(RationalPotentialStatus::Computed)
     }
 
     fn render_tex_graphs(&self, out: &mut String) {
@@ -1561,6 +1709,124 @@ fn rational_primary_terms_text(terms: &[RationalPrimaryTerm]) -> String {
         .join(" + ")
 }
 
+fn fixed_marking_terms(result: &SeriesResult, markings: usize) -> Vec<RationalPotentialTerm> {
+    let mut terms = Vec::new();
+    for coefficient in result
+        .coefficients
+        .iter()
+        .filter(|coefficient| coefficient.insertions.len() == markings)
+    {
+        for insertions in distinct_insertion_permutations(&coefficient.insertions) {
+            terms.push(RationalPotentialTerm {
+                degree: coefficient.degree,
+                insertions,
+                value: coefficient.value.clone(),
+            });
+        }
+    }
+    terms
+}
+
+fn distinct_insertion_permutations(insertions: &[Insertion]) -> Vec<Vec<Insertion>> {
+    fn rec(
+        insertions: &[Insertion],
+        used: &mut [bool],
+        current: &mut Vec<Insertion>,
+        out: &mut Vec<Vec<Insertion>>,
+    ) {
+        if current.len() == insertions.len() {
+            out.push(current.clone());
+            return;
+        }
+
+        let mut seen_at_depth = Vec::<String>::new();
+        for idx in 0..insertions.len() {
+            if used[idx] {
+                continue;
+            }
+            let signature = insertion_variable_signature(&insertions[idx]);
+            if seen_at_depth.contains(&signature) {
+                continue;
+            }
+            seen_at_depth.push(signature);
+            used[idx] = true;
+            current.push(insertions[idx].clone());
+            rec(insertions, used, current, out);
+            current.pop();
+            used[idx] = false;
+        }
+    }
+
+    if insertions.is_empty() {
+        return vec![Vec::new()];
+    }
+    let mut used = vec![false; insertions.len()];
+    let mut out = Vec::new();
+    rec(insertions, &mut used, &mut Vec::new(), &mut out);
+    out
+}
+
+fn insertion_variable_signature(insertion: &Insertion) -> String {
+    format!(
+        "{}:{}",
+        insertion.descendant_power,
+        insertion
+            .class
+            .pure_power()
+            .map(|power| power.to_string())
+            .unwrap_or_else(|| "?".to_string())
+    )
+}
+
+fn series_coefficient_text(coefficient: &RationalPotentialTerm) -> String {
+    let mut factors = Vec::new();
+    factors.push(format!("q^{}", coefficient.degree));
+    if !coefficient.value.is_one() {
+        factors.push(format!("({})", coefficient.value));
+    }
+    factors.extend(
+        coefficient
+            .insertions
+            .iter()
+            .enumerate()
+            .map(|(marking, insertion)| {
+                let class = insertion
+                    .class
+                    .pure_power()
+                    .map(|power| power.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("x_{{{},{},{}}}", marking, insertion.descendant_power, class)
+            }),
+    );
+    join_factors(&factors)
+}
+
+fn series_coefficient_tex(coefficient: &RationalPotentialTerm) -> String {
+    let mut factors = Vec::new();
+    factors.push(format!("q^{{{}}}", coefficient.degree));
+    if !coefficient.value.is_one() {
+        factors.push(format!(
+            "\\bigl({}\\bigr)",
+            algebra_fragment_tex(&coefficient.value.to_string())
+        ));
+    }
+    factors.extend(
+        coefficient
+            .insertions
+            .iter()
+            .enumerate()
+            .map(|(marking, insertion)| {
+                let class = insertion
+                    .class
+                    .pure_power()
+                    .map(|power| power.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                format!("x_{{{},{},{}}}", marking, insertion.descendant_power, class)
+            }),
+    );
+    join_tex_product(&factors)
+}
+
 fn rational_primary_terms_tex_items(terms: &[RationalPrimaryTerm]) -> Vec<(String, String)> {
     let mut items = Vec::new();
     for term in terms {
@@ -2550,6 +2816,23 @@ mod tests {
         assert!(rendered_tex.contains(
             "\\lambda_0\\mathbin{\\cdot}\\gamma_{0,0}\\mathbin{\\cdot}\\gamma_{1,1}\\mathbin{\\cdot}\\gamma_{2,2}"
         ));
+    }
+
+    #[test]
+    fn rational_basis_with_degree_prints_labelled_bounded_potential() {
+        let mut request = FormulaRequest::new(0, 3, 3);
+        request.basis = FormulaBasisMode::Rational;
+        request.q_degree = Some(1);
+        request.expansion = Some(FormulaExpansion::ProjectiveSpace {
+            n: 2,
+            equivariant: false,
+        });
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_text();
+        assert!(rendered.contains("Contracted bounded rational potential"));
+        assert!(rendered.contains("full S/R/T stable-graph sum"));
+        assert!(rendered.contains("q^0 * x_{0,0,2} * x_{1,0,0} * x_{2,0,0}"));
+        assert!(rendered.contains("q^1 * x_{0,0,2} * x_{1,0,2} * x_{2,0,1}"));
     }
 
     #[test]

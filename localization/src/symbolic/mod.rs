@@ -13,7 +13,7 @@ pub mod univariate;
 
 pub use projective::{
     projective_quotient, projective_relation, projective_residue_monomial,
-    projective_trace_monomial,
+    projective_residue_polynomial, projective_trace_monomial, projective_trace_polynomial,
 };
 pub use quotient::OneGeneratorQuotient;
 pub use univariate::UniPoly;

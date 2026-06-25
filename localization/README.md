@@ -195,7 +195,11 @@ number of markings. This is an explanatory tool with four formula bases:
   one-vertex graph, where the color sum is contracted by
   `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. Other
   graph shapes currently print an explicit "not implemented for this graph"
-  message rather than falling back to raw root-sum notation.
+  message rather than falling back to raw root-sum notation. When `--d` is
+  supplied for ordinary `P^n`, rational mode also prints the fully S/R/T
+  contracted bounded descendant potential for the requested fixed marking
+  count, with labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking
+  `ell`.
 
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
 now just requests the same engine dictionary that raw mode uses by default.
@@ -214,6 +218,7 @@ For the currently supported quotient-reduced rational-basis case:
 ```bash
 cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
   --basis rational \
+  --d 1 \
   --format text
 ```
 

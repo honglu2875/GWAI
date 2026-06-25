@@ -41,9 +41,12 @@ the same after reading those kernels in the ordinary or twisted calibration.
 The rational basis is the quotient-reduction path.  Its first implemented case
 is the ordinary `P^n` genus-zero three-primary one-vertex graph: the root sum
 `sum_{P(u)=0} f(u)/P'(u)` is reduced as the top coefficient of `f(H)` modulo
-`prod_a(H-lambda_a)-q`.  More general graph-wise `q`-series contractions remain
-future work, and unsupported graphs are reported explicitly instead of being
-silently displayed in raw notation.
+`prod_a(H-lambda_a)-q`.  When a q-degree is supplied with `--d`, rational mode
+also prints the fully S/R/T-contracted bounded descendant potential for the
+requested fixed marking count, using labelled variables `x_{ell,k,a}` for
+`tau_k(H^a)` at marking `ell`.  More general per-graph `q`-series contractions
+remain future work, and unsupported graph-local reductions are reported
+explicitly instead of being silently displayed in raw notation.
 
 Sample commands:
 
@@ -73,5 +76,6 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 # Quotient-reduced ordinary P^2 primary three-point expression.
 cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
   --basis rational \
+  --d 1 \
   --format text
 ```

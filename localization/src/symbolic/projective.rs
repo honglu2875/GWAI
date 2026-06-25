@@ -25,16 +25,26 @@ pub fn projective_quotient(n: usize) -> Result<OneGeneratorQuotient, GwError> {
     OneGeneratorQuotient::new_monic(projective_relation(n))
 }
 
+/// Contract `sum_i f(u_i) / P'(u_i)` for an arbitrary polynomial `f`.
+pub fn projective_residue_polynomial(n: usize, polynomial: &UniPoly) -> Result<RatFun, GwError> {
+    let quotient = projective_quotient(n)?;
+    quotient.residue_sum(polynomial)
+}
+
 /// Convenience wrapper for `sum_i u_i^power / P'(u_i)`.
 pub fn projective_residue_monomial(n: usize, power: usize) -> Result<RatFun, GwError> {
+    projective_residue_polynomial(n, &UniPoly::variable().pow_usize(power))
+}
+
+/// Contract `sum_i f(u_i)` for an arbitrary polynomial `f`.
+pub fn projective_trace_polynomial(n: usize, polynomial: &UniPoly) -> Result<RatFun, GwError> {
     let quotient = projective_quotient(n)?;
-    quotient.residue_sum(&UniPoly::variable().pow_usize(power))
+    quotient.trace(polynomial)
 }
 
 /// Convenience wrapper for `sum_i u_i^power`.
 pub fn projective_trace_monomial(n: usize, power: usize) -> Result<RatFun, GwError> {
-    let quotient = projective_quotient(n)?;
-    quotient.trace(&UniPoly::variable().pow_usize(power))
+    projective_trace_polynomial(n, &UniPoly::variable().pow_usize(power))
 }
 
 #[cfg(test)]
@@ -59,6 +69,17 @@ mod tests {
     fn projective_residue_sees_lambda_symmetric_coefficient() {
         let expected = &(&lambda(0) + &lambda(1)) + &lambda(2);
         assert_eq!(projective_residue_monomial(2, 3).unwrap(), expected);
+    }
+
+    #[test]
+    fn projective_residue_accepts_general_polynomials() {
+        let x = UniPoly::variable();
+        let polynomial = x.pow_usize(2).add(&x.pow_usize(3));
+        let expected = &RatFun::one() + &(&(&lambda(0) + &lambda(1)) + &lambda(2));
+        assert_eq!(
+            projective_residue_polynomial(2, &polynomial).unwrap(),
+            expected
+        );
     }
 
     #[test]

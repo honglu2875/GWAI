@@ -1,9 +1,12 @@
 # Symbolic rationalization engine
 
 This module is intentionally separate from the production Givental graph
-evaluator.  It is the beginning of the future `formula --basis rational` path:
-take raw graph expressions, substitute engine calibration data, contract
-canonical-root sums, and simplify the result to graph-wise rational `q`-series.
+evaluator.  It provides the quotient-reduction layer used by
+`formula --basis rational`: take raw graph expressions, substitute engine
+calibration data, contract canonical-root sums, and simplify the result to
+graph-wise rational expressions.  The formula command also has a separate
+bounded-potential view, enabled by `--d`, that calls the production S/R/T graph
+evaluator and formats the resulting q-truncated descendant potential.
 
 Implemented now:
 
@@ -13,6 +16,8 @@ Implemented now:
   by Euclidean Bezout, trace sums, and residue-weighted root sums.
 - `projective_relation(n)`: the ordinary equivariant `P^n` relation
   `prod_a(x-lambda_a)-q`.
+- `projective_residue_polynomial` / `projective_trace_polynomial`: convenience
+  contractions for ordinary `P^n` without materializing canonical roots.
 
 The core identities are:
 
