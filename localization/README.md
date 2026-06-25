@@ -179,19 +179,25 @@ Notes:
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
-number of markings. This is an explanatory tool with three formula bases:
+number of markings. This is an explanatory tool with four formula bases:
 
-- `--basis raw`: the crude coefficient basis `R_k`, `S_k`, `T_k`, `Psi`, `Delta`,
-  and point-theory psi integrals.
+- `--basis raw`: the default engine-specialized symbolic graph formula. It
+  substitutes the projective-space or twisted calibration into the packed graph
+  kernels, leaving color/root sums, `R^{-1}`, `S`, `Psi`, `Delta`, and `eta`
+  visible.
 - `--basis resolvent`: packed kernels with insertions left as
   `gamma_l/(z_l-psi_l)`, so coefficient extraction in `z_l` recovers
   individual descendants.
-- `--basis rational`: the same packed graph formula, but with ordinary `P^n` or
-  negative split-bundle calibration data displayed as q-truncated
-  rational/root-sum expressions.
+- `--basis coefficients`: the legacy fully unrolled coefficient basis in
+  `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
+- `--basis rational`: reserved for the planned concrete graph-wise `q`-series
+  basis, where the hypergeometric calibration is expanded, color/root sums are
+  contracted, and each graph contribution is simplified enough that
+  `z`-coefficients can be read directly. The command currently reports this as
+  not implemented instead of printing the old raw root-sum display.
 
-The default is `--basis raw`.  The older `--expand` flag is kept as a shortcut
-for `--basis rational` when no explicit `--basis` is passed.
+The default is `--basis raw`.  The older `--expand` flag is still accepted; it
+now just requests the same engine dictionary that raw mode uses by default.
 
 Use `--n` for `P^n` color count, or `--colors` for a provider-independent
 semisimple CohFT skeleton:
@@ -214,11 +220,13 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 Use `--format tex-fragment` when embedding the formula into an existing
 document that already loads `amsmath`, `mathtools`, and `tikz`.
 
-Formula output is universal by default. The `--twist` flag is accepted in this
-raw mode but ignored, so the stable-graph skeleton remains provider-independent:
+Use `--basis coefficients` for the provider-independent coefficient expansion.
+The `--twist` flag is accepted in this mode but ignored, so the stable-graph
+skeleton remains provider-independent:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --basis coefficients \
   --twist -3 \
   --format tex-fragment
 ```
@@ -232,26 +240,26 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --format tex-fragment
 ```
 
-Use `--basis rational` to specialize the resolvent kernels to a concrete
+Use `--basis raw` to specialize the resolvent kernels to the current
 projective-space or twisted calibration. Without `--twist`, this is ordinary
 `P^n`; with `--twist`, this is the negative split backend:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis rational \
+  --basis raw \
   --format tex
 
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
-  --basis rational \
+  --basis raw \
   --format tex
 ```
 
-The output defines the raw basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`,
-`EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
-truncation orders, and expanded graph terms. Marking and edge factors are
-expanded directly in those basis elements rather than kept as separate composite
-basis elements. The resolvent and rational bases instead print one compact
+The coefficient output defines the basis elements `S`, `PsiInv`, `RInv`, `T`,
+`Delta`, `EtaInv`, and point-theory psi integrals, then lists the finite stable
+graphs, truncation orders, and expanded graph terms. Marking and edge factors
+are expanded directly in those basis elements rather than kept as separate
+composite basis elements. The raw and resolvent bases instead print one compact
 graph expression per stable graph, with the leg and edge kernel formulas
 substituted directly into the graph bracket while descendant insertions stay
 packed in the variables `z_l`.

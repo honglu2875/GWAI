@@ -40,29 +40,27 @@ impl FormulaExpansion {
         }
     }
 
-    pub fn render_rational_text(&self) -> String {
+    pub fn render_raw_text(&self) -> String {
         match self {
             Self::ProjectiveSpace { n, equivariant } => {
-                render_projective_rational_text(*n, *equivariant)
+                render_projective_raw_text(*n, *equivariant)
             }
             Self::NegativeSplitTwisted {
                 n,
                 degrees,
                 equivariant,
-            } => render_twisted_rational_text(*n, degrees, *equivariant),
+            } => render_twisted_raw_text(*n, degrees, *equivariant),
         }
     }
 
-    pub fn render_rational_tex(&self) -> String {
+    pub fn render_raw_tex(&self) -> String {
         match self {
-            Self::ProjectiveSpace { n, equivariant } => {
-                render_projective_rational_tex(*n, *equivariant)
-            }
+            Self::ProjectiveSpace { n, equivariant } => render_projective_raw_tex(*n, *equivariant),
             Self::NegativeSplitTwisted {
                 n,
                 degrees,
                 equivariant,
-            } => render_twisted_rational_tex(*n, degrees, *equivariant),
+            } => render_twisted_raw_tex(*n, degrees, *equivariant),
         }
     }
 }
@@ -127,10 +125,10 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
     out
 }
 
-fn render_projective_rational_text(n: usize, equivariant: bool) -> String {
+fn render_projective_raw_text(n: usize, equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("Rational basis specialization: ordinary projective space\n");
-    out.push_str("--------------------------------------------------------\n");
+    out.push_str("Raw basis specialization: ordinary projective space\n");
+    out.push_str("---------------------------------------------------\n");
     out.push_str(&format!("Target: P^{n}\n"));
     if equivariant {
         out.push_str("Equivariant parameters lambda_0,...,lambda_n are kept symbolic.\n");
@@ -142,18 +140,18 @@ fn render_projective_rational_text(n: usize, equivariant: bool) -> String {
     out.push_str("Flat-to-canonical transition:\n");
     out.push_str("  E_{i,a}=u_i^a,  PsiInv_{i,a}=Delta_i^{-1/2} E_{i,a}.\n");
     out.push_str("Packed kernels:\n");
-    out.push_str("  L_i^rat(z,psi)=sum_{j,a,b} RInv_ij^rat(psi) Delta_j^(-1/2) u_j^b S^rat(z)_{b,a} gamma_a/(z-psi).\n");
+    out.push_str("  L_i^raw(z,psi)=sum_{j,a,b} RInv_ij^raw(psi) Delta_j^(-1/2) u_j^b S^raw(z)_{b,a} gamma_a/(z-psi).\n");
     out.push_str(
-        "  E_ij^rat(psi,phi)=(delta_ij-sum_nu RInv_i,nu^rat(psi) RInv_j,nu^rat(phi))/(psi+phi).\n",
+        "  E_ij^raw(psi,phi)=(delta_ij-sum_nu RInv_i,nu^raw(psi) RInv_j,nu^raw(phi))/(psi+phi).\n",
     );
     out.push_str("Here S is computed from the small J-function by the quantum-minus-classical H recursion, and RInv/T are solved from the canonical flatness equation.  All q-series are read only to the requested q-degree.\n");
     out
 }
 
-fn render_twisted_rational_text(n: usize, degrees: &[usize], equivariant: bool) -> String {
+fn render_twisted_raw_text(n: usize, degrees: &[usize], equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("Rational basis specialization: negative split twist\n");
-    out.push_str("---------------------------------------------------\n");
+    out.push_str("Raw basis specialization: negative split twist\n");
+    out.push_str("----------------------------------------------\n");
     out.push_str(&format!("Base: P^{n}\n"));
     out.push_str(&format!(
         "Twist: {}\n",
@@ -164,7 +162,7 @@ fn render_twisted_rational_text(n: usize, degrees: &[usize], equivariant: bool) 
             .join(" + ")
     ));
     if equivariant {
-        out.push_str("Full symbolic equivariant negative-split rational output is a planned extension; the displayed formulas describe the specialized calibration data.\n");
+        out.push_str("Full symbolic equivariant negative-split raw output is a planned extension; the displayed formulas describe the specialized calibration data.\n");
     } else {
         out.push_str("The implemented twisted backend uses a generic rational lambda-line specialization with a non-equivariant limit when available.\n");
     }
@@ -267,9 +265,9 @@ U^{{\\mathrm{{tw}}}}&=\\operatorname{{diag}}(u_0^{{\\mathrm{{tw}}}},\\ldots,u_{n
     out
 }
 
-fn render_projective_rational_tex(n: usize, equivariant: bool) -> String {
+fn render_projective_raw_tex(n: usize, equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("\\section*{Rational Basis: Ordinary Projective Space}\n");
+    out.push_str("\\section*{Raw Basis: Ordinary Projective Space}\n");
     out.push_str(&format!("Target: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
     if equivariant {
         out.push_str("The parameters $\\lambda_0,\\ldots,\\lambda_n$ are kept symbolic.\n\n");
@@ -284,23 +282,25 @@ fn render_projective_rational_tex(n: usize, equivariant: bool) -> String {
         "E_{i\\alpha}&=u_i^\\alpha, & (\\Psi^{-1})_{i\\alpha}&=\\Delta_i^{-1/2}E_{i\\alpha}, & \\eta^{ij}&=\\delta^{ij}.\n",
     );
     out.push_str("\\end{align*}\n");
-    out.push_str("The graph formula substitutes the following $q$-truncated rational/root-sum expressions inline:\n");
+    out.push_str(
+        "The graph formula substitutes the following $q$-truncated root-sum expressions inline:\n",
+    );
     out.push_str("\\begin{align*}\n");
     out.push_str(
-        "\\mathcal L_i^{\\mathrm{rat},\\gamma}(z,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{\\mathrm{rat},-1}(\\psi))_{ij}\\Delta_j^{-1/2}u_j^\\beta S^{\\mathrm{rat}}(z)_{\\beta\\alpha}\\frac{\\gamma_\\alpha}{z-\\psi},\\\\\n",
+        "\\mathcal L_i^{\\mathrm{raw},\\gamma}(z,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{\\mathrm{raw},-1}(\\psi))_{ij}\\Delta_j^{-1/2}u_j^\\beta S^{\\mathrm{raw}}(z)_{\\beta\\alpha}\\frac{\\gamma_\\alpha}{z-\\psi},\\\\\n",
     );
     out.push_str(
-        "\\mathcal E_{ij}^{\\mathrm{rat}}(\\psi,\\phi)&=\\frac{\\delta_{ij}-\\sum_\\nu(R^{\\mathrm{rat},-1}(\\psi))_{i\\nu}(R^{\\mathrm{rat},-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
+        "\\mathcal E_{ij}^{\\mathrm{raw}}(\\psi,\\phi)&=\\frac{\\delta_{ij}-\\sum_\\nu(R^{\\mathrm{raw},-1}(\\psi))_{i\\nu}(R^{\\mathrm{raw},-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
     );
-    out.push_str("\\Theta_{g,n}^{\\mathrm{rat}}(i)&=P'(u_i)^{g-1}\\bigl(P'(u_i)^{1/2}\\bigr)^n.\n");
+    out.push_str("\\Theta_{g,n}^{\\mathrm{raw}}(i)&=P'(u_i)^{g-1}\\bigl(P'(u_i)^{1/2}\\bigr)^n.\n");
     out.push_str("\\end{align*}\n");
     out.push_str("Here $S$ comes from the small $J$-function recursion and $R^{-1},T$ from the canonical flatness equation; all series are truncated at the requested $q$-degree.\n");
     out
 }
 
-fn render_twisted_rational_tex(n: usize, degrees: &[usize], equivariant: bool) -> String {
+fn render_twisted_raw_tex(n: usize, degrees: &[usize], equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("\\section*{Rational Basis: Negative Split Twist}\n");
+    out.push_str("\\section*{Raw Basis: Negative Split Twist}\n");
     out.push_str(&format!("Base: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
     let twist = degrees
         .iter()
@@ -309,7 +309,7 @@ fn render_twisted_rational_tex(n: usize, degrees: &[usize], equivariant: bool) -
         .join("\\oplus ");
     out.push_str(&format!("Twist: ${twist}$.\n\n"));
     if equivariant {
-        out.push_str("Full symbolic equivariant negative-split rational output is a planned extension; this display records the specialized calibration data.\n\n");
+        out.push_str("Full symbolic equivariant negative-split raw output is a planned extension; this display records the specialized calibration data.\n\n");
     } else {
         out.push_str("The implemented twisted backend uses a generic rational $\\lambda$-line specialization with a non-equivariant limit when available.\n\n");
     }

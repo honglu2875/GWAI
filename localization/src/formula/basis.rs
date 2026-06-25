@@ -97,8 +97,8 @@ impl BasisKind {
 
 pub fn basis_glossary() -> String {
     let mut out = String::new();
-    out.push_str("Raw basis glossary\n");
-    out.push_str("------------------\n");
+    out.push_str("Coefficient basis glossary\n");
+    out.push_str("--------------------------\n");
     out.push_str("Indices: a,b are flat-basis indices; i,j are canonical colors; r,s,p are z/psi orders.\n\n");
     for basis in all_basis_kinds() {
         out.push_str("- ");

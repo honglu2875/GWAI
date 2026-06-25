@@ -15,8 +15,8 @@
 //!
 //! ```text
 //! gw-pn formula --n 2 --g 2 --markings 1 --format tex-fragment
-//! gw-pn formula --n 2 --g 2 --markings 1 --expand --format tex
-//! gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --expand --format tex
+//! gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex
+//! gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex
 //! ```
 
 pub mod basis;

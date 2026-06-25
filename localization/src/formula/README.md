@@ -12,18 +12,18 @@ help humans trace definitions and intermediate formulas.
 
 Main files:
 
-- `basis.rs`: glossary for the raw components `S`, `PsiInv`, `RInv`,
+- `basis.rs`: glossary for the coefficient components `S`, `PsiInv`, `RInv`,
   translation `T`, `Delta`, `EtaInv`, and point-theory psi integrals.
 - `expansion.rs`: optional engine-specific dictionaries that explain how the
   universal basis elements are read for ordinary `P^n` or negative split
-  twists.  The rational basis uses these dictionaries to display calibration
-  data such as canonical roots, hypergeometric/Birkhoff `S`, twisted pairings,
-  and QRR `R`-recursions.
+  twists.  The raw basis uses these dictionaries to display calibration data
+  such as canonical roots, hypergeometric/Birkhoff `S`, twisted pairings, and
+  QRR `R`-recursions.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
-  orders, stable graph metadata, and expanded graph terms using raw basis
-  coefficients or packed resolvent/rational kernels.  Marking factors in raw
-  mode are expanded into `S/PsiInv/RInv`, and edge factors are expanded into
-  `RInv/EtaInv`.  The same skeleton can be rendered
+  orders, stable graph metadata, and expanded graph terms using the legacy
+  coefficient basis or packed raw/resolvent kernels.  Marking factors in
+  coefficient mode are expanded into `S/PsiInv/RInv`, and edge factors are
+  expanded into `RInv/EtaInv`.  The same skeleton can be rendered
   as plain text, as a TeX fragment, or as a standalone TeX document using
   standard symbols
   \(S_s\), \(R_r^{-1}\), \(\Psi^{-1}\), \((T_p)_i\), \(\Delta_i\), and
@@ -34,17 +34,20 @@ Main files:
   basis sums use a page-breakable `align*`, so nothing runs past the margin or
   off the bottom of a page.  It avoids giant `\left...\right` delimiter pairs.
 
-The raw basis deliberately keeps the coefficient data symbolic.  The resolvent
-basis keeps descendant variables packed but substitutes the leg and edge kernel
-formulas into each graph bracket.  The rational basis does the same after
-reading those kernels in the ordinary or twisted calibration.
+The coefficient basis deliberately keeps the lowest-level coefficient data
+symbolic.  The resolvent basis keeps descendant variables packed but substitutes
+the leg and edge kernel formulas into each graph bracket.  The raw basis does
+the same after reading those kernels in the ordinary or twisted calibration.
+The rational basis name is reserved for a future concrete graph-wise `q`-series
+renderer that contracts color/root sums and simplifies the resulting rational
+expressions.
 
 Sample commands:
 
 ```bash
-# Universal raw graph formula.  --twist is accepted but ignored in this mode.
+# Legacy coefficient graph formula.  --twist is accepted but ignored in this mode.
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis raw \
+  --basis coefficients \
   --twist -3 \
   --format tex-fragment
 
@@ -53,14 +56,14 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --basis resolvent \
   --format tex-fragment
 
-# Standalone TeX document with ordinary P^2 rational/root-sum calibration.
+# Standalone TeX document with ordinary P^2 raw root-sum calibration.
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis rational \
+  --basis raw \
   --format tex
 
-# Standalone TeX document with local P^2 = O(-3) over P^2 rational calibration.
+# Standalone TeX document with local P^2 = O(-3) over P^2 raw calibration.
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
-  --basis rational \
+  --basis raw \
   --format tex
 ```

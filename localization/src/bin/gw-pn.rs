@@ -309,18 +309,13 @@ fn formula_expansion_from_args(
 
 fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
     match parse_string_flag(args, "--basis")?.as_deref() {
-        None => {
-            if has_flag(args, "--expand") {
-                Ok(FormulaBasisMode::Rational)
-            } else {
-                Ok(FormulaBasisMode::Raw)
-            }
-        }
+        None => Ok(FormulaBasisMode::Raw),
+        Some("coefficients") | Some("coefficient") => Ok(FormulaBasisMode::Coefficients),
         Some("raw") => Ok(FormulaBasisMode::Raw),
         Some("resolvent") => Ok(FormulaBasisMode::Resolvent),
         Some("rational") => Ok(FormulaBasisMode::Rational),
         Some(other) => Err(GwError::ParseError(format!(
-            "invalid --basis `{other}`; expected raw, resolvent, or rational"
+            "invalid --basis `{other}`; expected coefficients, raw, resolvent, or rational"
         ))),
     }
 }
@@ -1023,8 +1018,8 @@ Commands:\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --basis resolvent --format tex-fragment\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --basis rational --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis rational --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
@@ -1123,13 +1118,13 @@ mod tests {
     }
 
     #[test]
-    fn formula_basis_rational_forces_expansion() {
+    fn formula_basis_raw_forces_expansion() {
         assert_eq!(
-            parse_formula_basis(&args(&["--basis", "rational"])).unwrap(),
-            FormulaBasisMode::Rational
+            parse_formula_basis(&args(&["--basis", "raw"])).unwrap(),
+            FormulaBasisMode::Raw
         );
         let expansion =
-            formula_expansion_from_args(&args(&["--basis", "rational"]), Some(2), 3, true).unwrap();
+            formula_expansion_from_args(&args(&["--basis", "raw"]), Some(2), 3, true).unwrap();
         assert!(matches!(
             expansion,
             Some(FormulaExpansion::ProjectiveSpace {
@@ -1137,5 +1132,13 @@ mod tests {
                 equivariant: false
             })
         ));
+    }
+
+    #[test]
+    fn formula_basis_coefficients_is_legacy_unrolled_mode() {
+        assert_eq!(
+            parse_formula_basis(&args(&["--basis", "coefficients"])).unwrap(),
+            FormulaBasisMode::Coefficients
+        );
     }
 }
