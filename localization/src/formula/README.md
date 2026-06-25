@@ -29,7 +29,9 @@ Main files:
   \(S_s\), \(R_r^{-1}\), \(\Psi^{-1}\), \((T_p)_i\), \(\Delta_i\), and
   point-theory intersection brackets.  TeX graph sections include TikZ
   drawings generated directly from the stable-graph vertices, edges, loops,
-  and labelled markings.
+  and labelled markings.  Graph contribution formulas use `align*`, break
+  product factors and long leg/edge summands across lines, and avoid boxing the
+  whole expression in one large delimiter.
 
 The first renderer deliberately keeps calibration data symbolic.  Later stages
 can add substitution modes that print actual truncated `R_k`, `S_k`, `T_k`,

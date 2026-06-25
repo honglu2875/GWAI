@@ -241,7 +241,11 @@ basis elements.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and
-`\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`.
+`\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`. Graph
+contributions are rendered as `align*` displays.  The TeX renderer inserts
+explicit breaks at product boundaries and inside the longer leg and edge
+summands, so compiled PDFs do not depend on an oversized full-expression
+delimiter to fit on the page.
 
 ## `degree-series`
 
