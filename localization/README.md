@@ -179,8 +179,8 @@ Notes:
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
-number of markings. This is an explanatory tool: it keeps the atoms symbolic
-instead of substituting projective-space or twisted calibration data.
+number of markings. This is an explanatory tool: it keeps the basis elements
+symbolic unless `--expand` asks for a backend-specific calibration dictionary.
 
 Use `--n` for `P^n` color count, or `--colors` for a provider-independent
 semisimple CohFT skeleton:
@@ -203,30 +203,41 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 Use `--format tex-fragment` when embedding the formula into an existing
 document that already loads `amsmath` and `tikz`.
 
-Formula output is universal by default. To attach an engine-specific
-calibration dictionary, use `--specialize projective` for ordinary `P^n`, or
-pass a negative split twist:
+Formula output is universal by default. The `--twist` flag is accepted in this
+raw mode but ignored, so the stable-graph skeleton remains provider-independent:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --specialize projective \
+  --twist -3 \
+  --format tex-fragment
+```
+
+Add `--expand` to attach an engine-specific basis dictionary. Without `--twist`
+the expansion is ordinary `P^n`; with `--twist`, the expansion is the negative
+split backend:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --expand \
   --format tex
 
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
+  --expand \
   --format tex
 ```
 
-These specialization sections do not change the stable graph expansion. They
-explain how the universal atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`, and
+These expansion sections do not change the stable graph expansion. They explain
+how the universal basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`, and
 `EtaInv` are read in the chosen engine: ordinary `P^n` via canonical roots of
 `\prod_a(x-\lambda_a)-q`, or negative split twists via the
 hypergeometric/Birkhoff `S` and QRR `R` calibration.
 
-The output defines the primitive atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`,
+The output defines the primitive basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 `EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
 truncation orders, and expanded graph terms. Marking and edge factors are
-expanded directly in those atoms rather than kept as separate composite atoms.
+expanded directly in those basis elements rather than kept as separate composite
+basis elements.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and

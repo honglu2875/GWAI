@@ -4,6 +4,16 @@
 //! The crate is intentionally staged.  The public computation path is the
 //! Givental/S/R graph pipeline, while validation-only backends preserve older
 //! convention checks and independent oracle comparisons.
+//!
+//! The `formula` command is the human-facing explanation path.  It renders the
+//! universal stable-graph formula in text or TeX, and `--expand` adds a
+//! backend-specific basis dictionary:
+//!
+//! ```text
+//! gw-pn formula --n 2 --g 2 --markings 1 --format tex-fragment
+//! gw-pn formula --n 2 --g 2 --markings 1 --expand --format tex
+//! gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --expand --format tex
+//! ```
 
 pub mod algebra;
 pub mod error;

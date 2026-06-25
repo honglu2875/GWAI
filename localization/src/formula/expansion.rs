@@ -1,11 +1,11 @@
-//! Engine-specific explanations for the universal formula atoms.
+//! Engine-specific expansions of the universal formula basis elements.
 //!
 //! The stable-graph skeleton is independent of the target CohFT.  This module
 //! records how the same symbols are read when the calibration comes from one
 //! of the implemented providers.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FormulaSpecialization {
+pub enum FormulaExpansion {
     ProjectiveSpace {
         n: usize,
         equivariant: bool,
@@ -17,7 +17,7 @@ pub enum FormulaSpecialization {
     },
 }
 
-impl FormulaSpecialization {
+impl FormulaExpansion {
     pub fn render_text(&self) -> String {
         match self {
             Self::ProjectiveSpace { n, equivariant } => render_projective_text(*n, *equivariant),
@@ -43,8 +43,8 @@ impl FormulaSpecialization {
 
 fn render_projective_text(n: usize, equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("Specialization: ordinary projective space\n");
-    out.push_str("-----------------------------------------\n");
+    out.push_str("Basis expansion: ordinary projective space\n");
+    out.push_str("------------------------------------------\n");
     out.push_str(&format!("Target: P^{n}\n"));
     if equivariant {
         out.push_str("Engine: symbolic equivariant projective-space calibration.\n");
@@ -70,8 +70,8 @@ fn render_projective_text(n: usize, equivariant: bool) -> String {
 
 fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("Specialization: negative split twist\n");
-    out.push_str("------------------------------------\n");
+    out.push_str("Basis expansion: negative split twist\n");
+    out.push_str("-------------------------------------\n");
     out.push_str(&format!("Base: P^{n}\n"));
     out.push_str(&format!(
         "Twist: {}\n",
@@ -87,7 +87,7 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
         );
     } else {
         out.push_str(
-            "Engine: negative-split hypergeometric/Birkhoff S plus QRR R backend with the generic rational lambda-line specialization.\n",
+            "Engine: negative-split hypergeometric/Birkhoff S plus QRR R backend with the generic rational lambda-line evaluation.\n",
         );
     }
     out.push_str("Smaller calibration primitives:\n");
@@ -103,7 +103,7 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
 
 fn render_projective_tex(n: usize, equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("\\section*{Specialization: Ordinary Projective Space}\n");
+    out.push_str("\\section*{Basis Expansion: Ordinary Projective Space}\n");
     out.push_str(&format!("Target: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
     if equivariant {
         out.push_str("Engine: symbolic equivariant projective-space calibration.\n\n");
@@ -112,7 +112,7 @@ fn render_projective_tex(n: usize, equivariant: bool) -> String {
             "Engine: ordinary projective-space Givental backend with the generic $\\lambda$-line calibration.\n\n",
         );
     }
-    out.push_str("The universal atoms in the graph formulas are read through the following smaller calibration data:\n");
+    out.push_str("The universal basis elements in the graph formulas are read through the following smaller calibration data:\n");
     out.push_str("\\begin{align*}\n");
     out.push_str(&format!(
         "P(x)&=\\prod_{{a=0}}^{{{n}}}(x-\\lambda_a)-q, &
@@ -136,7 +136,7 @@ U&=\\operatorname{{diag}}(u_0,\\ldots,u_{n}).\n",
     );
     out.push_str("\\]\n");
     out.push_str(
-        "The $R$-matrix is solved from the canonical flatness equation using $U$, $\\Psi$, and $\\Delta$.  The displayed atoms $R^{-1}$, $(T_p)_i$, and the edge propagator are then universal consequences of this $R$:\n",
+        "The $R$-matrix is solved from the canonical flatness equation using $U$, $\\Psi$, and $\\Delta$.  The displayed basis elements $R^{-1}$, $(T_p)_i$, and the edge propagator are then universal consequences of this $R$:\n",
     );
     out.push_str("\\[\n");
     out.push_str("T(z)=z(1-R(z)^{-1})\\mathbf 1,\\qquad \\mathbf 1_i=\\Delta_i^{-1/2}.\n");
@@ -146,7 +146,7 @@ U&=\\operatorname{{diag}}(u_0,\\ldots,u_{n}).\n",
 
 fn render_twisted_tex(n: usize, degrees: &[usize], equivariant: bool) -> String {
     let mut out = String::new();
-    out.push_str("\\section*{Specialization: Negative Split Twist}\n");
+    out.push_str("\\section*{Basis Expansion: Negative Split Twist}\n");
     out.push_str(&format!("Base: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
     let twist = degrees
         .iter()
@@ -156,14 +156,16 @@ fn render_twisted_tex(n: usize, degrees: &[usize], equivariant: bool) -> String 
     out.push_str(&format!("Twist: ${twist}$.\n\n"));
     if equivariant {
         out.push_str(
-            "Engine note: full symbolic equivariant negative-split output is not yet a compute backend; this document records the calibration primitives it would specialize to.\n\n",
+            "Engine note: full symbolic equivariant negative-split output is not yet a compute backend; this document records the calibration primitives it would expand to.\n\n",
         );
     } else {
         out.push_str(
-            "Engine: negative-split hypergeometric/Birkhoff $S$ plus QRR $R$ backend with the generic rational $\\lambda$-line specialization.\n\n",
+            "Engine: negative-split hypergeometric/Birkhoff $S$ plus QRR $R$ backend with the generic rational $\\lambda$-line evaluation.\n\n",
         );
     }
-    out.push_str("The universal atoms are read through the following smaller calibration data:\n");
+    out.push_str(
+        "The universal basis elements are read through the following smaller calibration data:\n",
+    );
     out.push_str("\\begin{align*}\n");
     out.push_str(&format!(
         "I^{{\\mathrm{{tw}}}}(q,z)&=\\sum_{{d\\ge0}}q^d I_d^{{\\mathbb P^{n}}}(z)\\,\\mathcal E_d^{{\\mathrm{{conc}}}}, &
@@ -195,27 +197,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn projective_specialization_mentions_canonical_roots() {
-        let rendered = FormulaSpecialization::ProjectiveSpace {
+    fn projective_expansion_mentions_canonical_roots() {
+        let rendered = FormulaExpansion::ProjectiveSpace {
             n: 2,
             equivariant: false,
         }
         .render_tex();
-        assert!(rendered.contains("Specialization: Ordinary Projective Space"));
+        assert!(rendered.contains("Basis Expansion: Ordinary Projective Space"));
         assert!(rendered.contains("P(x)&=\\prod_{a=0}^{2}(x-\\lambda_a)-q"));
         assert!(rendered.contains("\\Delta_i&=P'(u_i)"));
         assert!(rendered.contains("q\\partial_q S_{s+1}"));
     }
 
     #[test]
-    fn twisted_specialization_mentions_hypergeometric_birkhoff_qrr() {
-        let rendered = FormulaSpecialization::NegativeSplitTwisted {
+    fn twisted_expansion_mentions_hypergeometric_birkhoff_qrr() {
+        let rendered = FormulaExpansion::NegativeSplitTwisted {
             n: 2,
             degrees: vec![3],
             equivariant: false,
         }
         .render_tex();
-        assert!(rendered.contains("Specialization: Negative Split Twist"));
+        assert!(rendered.contains("Basis Expansion: Negative Split Twist"));
         assert!(rendered.contains("\\mathcal{O}(-3)"));
         assert!(rendered.contains("I^{\\mathrm{tw}}(q,z)"));
         assert!(rendered.contains("S^{\\mathrm{tw}}(z)&=\\operatorname{Birkhoff}"));

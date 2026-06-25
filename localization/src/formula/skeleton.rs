@@ -6,8 +6,8 @@ use std::f64::consts::PI;
 use crate::error::GwError;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
 
-use super::atoms::atom_glossary;
-use super::specialization::FormulaSpecialization;
+use super::basis::basis_glossary;
+use super::expansion::FormulaExpansion;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormulaRequest {
@@ -17,7 +17,7 @@ pub struct FormulaRequest {
     pub max_descendant_power: usize,
     pub q_degree: Option<usize>,
     pub include_glossary: bool,
-    pub specialization: Option<FormulaSpecialization>,
+    pub expansion: Option<FormulaExpansion>,
 }
 
 impl FormulaRequest {
@@ -29,7 +29,7 @@ impl FormulaRequest {
             max_descendant_power: 0,
             q_degree: None,
             include_glossary: true,
-            specialization: None,
+            expansion: None,
         }
     }
 
@@ -152,13 +152,13 @@ impl FormulaSkeleton {
         self.render_header(&mut out);
         self.render_finite_orders(&mut out);
         self.render_formula_convention(&mut out);
-        if let Some(specialization) = &self.request.specialization {
+        if let Some(expansion) = &self.request.expansion {
             out.push('\n');
-            out.push_str(&specialization.render_text());
+            out.push_str(&expansion.render_text());
         }
         if self.request.include_glossary {
             out.push('\n');
-            out.push_str(&atom_glossary());
+            out.push_str(&basis_glossary());
         }
         self.render_graphs(&mut out);
         out
@@ -169,9 +169,9 @@ impl FormulaSkeleton {
         self.render_tex_header(&mut out);
         self.render_tex_finite_orders(&mut out);
         self.render_tex_formula_convention(&mut out);
-        if let Some(specialization) = &self.request.specialization {
+        if let Some(expansion) = &self.request.expansion {
             out.push('\n');
-            out.push_str(&specialization.render_tex());
+            out.push_str(&expansion.render_tex());
         }
         if self.request.include_glossary {
             out.push('\n');
@@ -254,15 +254,15 @@ impl FormulaSkeleton {
 
     fn render_formula_convention(&self, out: &mut String) {
         out.push('\n');
-        out.push_str("How the atoms assemble\n");
-        out.push_str("----------------------\n");
+        out.push_str("How the basis elements assemble\n");
+        out.push_str("--------------------------------\n");
         out.push_str("For a formal insertion at marking ell,\n");
         out.push_str("  gamma_ell = sum_{k<=K,a} x_{ell,k,a} tau_k(phi_a),\n");
         out.push_str("each marking factor is expanded directly as finite sums of\n");
         out.push_str("  x_{ell,k,a} * S_s[b,a] * PsiInv[j,b] * RInv_r[i,j]\n");
         out.push_str("with p = k - s + r.  Internal edges are also expanded directly in\n");
         out.push_str(
-            "RInv and EtaInv, so the graph terms below use only primitive calibration atoms.\n\n",
+            "RInv and EtaInv, so the graph terms below use only primitive calibration basis elements.\n\n",
         );
         out.push_str(
             "For a vertex of genus h and color i, the base half-edge/marking powers and\n",
@@ -358,7 +358,7 @@ impl FormulaSkeleton {
     }
 
     fn render_tex_glossary(&self, out: &mut String) {
-        out.push_str("\\subsection*{Primitive Atoms}\n");
+        out.push_str("\\subsection*{Primitive Basis Elements}\n");
         out.push_str("\\begin{itemize}\n");
         out.push_str(
             "\\item $(S_s)_{\\beta\\alpha}$: coefficient of $z^{-s}$ in the descendant-to-ancestor $S$-calibration.\n",
@@ -586,7 +586,7 @@ impl GraphFormulaSkeleton {
 
     fn render_expanded_expression(&self, out: &mut String, request: &FormulaRequest) {
         let terms = self.expanded_terms(request);
-        out.push_str("  Expanded contribution in atom coefficients:\n");
+        out.push_str("  Expanded contribution in basis coefficients:\n");
         out.push_str(&format!("    C_{} = ", self.index));
         if terms.is_empty() {
             out.push_str("0\n");
@@ -1376,14 +1376,14 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         assert_eq!(skeleton.graphs.len(), 1);
         assert_eq!(skeleton.graphs[0].automorphism_order, 1);
-        assert!(skeleton.render_text().contains("Atom glossary"));
+        assert!(skeleton.render_text().contains("Basis glossary"));
     }
 
     #[test]
-    fn graph_renderer_unravels_atom_coefficients() {
+    fn graph_renderer_unravels_basis_coefficients() {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_text();
-        assert!(rendered.contains("Expanded contribution in atom coefficients"));
+        assert!(rendered.contains("Expanded contribution in basis coefficients"));
         assert!(rendered.contains("x_{0,0,alpha}"));
         assert!(rendered.contains("RInv_0[i0,j]"));
         assert!(rendered.contains("S_0[beta,alpha]"));

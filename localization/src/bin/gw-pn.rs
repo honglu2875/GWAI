@@ -1,5 +1,5 @@
 use gw_pn::error::GwError;
-use gw_pn::formula::{build_formula_skeleton, FormulaRequest, FormulaSpecialization};
+use gw_pn::formula::{build_formula_skeleton, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
@@ -217,9 +217,9 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--d"),
             CliFlag::value("--degree"),
             CliFlag::value("--format"),
-            CliFlag::value("--specialize"),
             CliFlag::value("--twist"),
             CliFlag::switch("--equivariant"),
+            CliFlag::switch("--expand"),
             CliFlag::switch("--no-glossary"),
             CliFlag::switch("--tex"),
         ],
@@ -245,7 +245,7 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
         first_usize_flag(args, &["--max-descendant", "--k-max"])?.unwrap_or(0);
     request.q_degree = first_usize_flag(args, &["--d", "--degree"])?;
     request.include_glossary = !has_flag(args, "--no-glossary");
-    request.specialization = formula_specialization_from_args(args, n_flag, colors)?;
+    request.expansion = formula_expansion_from_args(args, n_flag, colors)?;
     let skeleton = build_formula_skeleton(request)?;
     let format = match (
         parse_string_flag(args, "--format")?,
@@ -273,69 +273,34 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
-fn formula_specialization_from_args(
+fn formula_expansion_from_args(
     args: &[String],
     n_flag: Option<usize>,
     colors: usize,
-) -> Result<Option<FormulaSpecialization>, GwError> {
-    let twist = parse_negative_twist_flag(args, "--twist")?;
-    let equivariant = has_flag(args, "--equivariant");
-    let specialize_raw = parse_string_flag(args, "--specialize")?;
-    let mode = specialize_raw.as_deref().unwrap_or(if twist.is_some() {
-        "twisted"
-    } else {
-        "universal"
-    });
-    match mode {
-        "none" | "universal" => {
-            if twist.is_some() {
-                return Err(GwError::ParseError(
-                    "--twist implies --specialize twisted; omit --twist for universal formulas"
-                        .to_string(),
-                ));
-            }
-            Ok(None)
-        }
-        "projective" | "untwisted" | "pn" | "p-n" => {
-            if twist.is_some() {
-                return Err(GwError::ParseError(
-                    "ordinary projective specialization cannot also use --twist".to_string(),
-                ));
-            }
-            let n = match n_flag {
-                Some(n) => n,
-                None => colors.checked_sub(1).ok_or_else(|| {
-                    GwError::ParseError(
-                        "projective formula specialization needs --n or positive --colors"
-                            .to_string(),
-                    )
-                })?,
-            };
-            Ok(Some(FormulaSpecialization::ProjectiveSpace {
-                n,
-                equivariant,
-            }))
-        }
-        "twisted" | "negative-split" | "local" => {
-            let degrees = twist.ok_or_else(|| {
-                GwError::ParseError(
-                    "twisted formula specialization needs --twist, for example --twist -3"
-                        .to_string(),
-                )
-            })?;
-            let n = n_flag.ok_or_else(|| {
-                GwError::ParseError("twisted formula specialization needs --n".to_string())
-            })?;
-            Ok(Some(FormulaSpecialization::NegativeSplitTwisted {
-                n,
-                degrees,
-                equivariant,
-            }))
-        }
-        other => Err(GwError::ParseError(format!(
-            "invalid --specialize `{other}`; expected universal, projective, or twisted"
-        ))),
+) -> Result<Option<FormulaExpansion>, GwError> {
+    if !has_flag(args, "--expand") {
+        return Ok(None);
     }
+    let equivariant = has_flag(args, "--equivariant");
+    if let Some(degrees) = parse_negative_twist_flag(args, "--twist")? {
+        let n = n_flag.ok_or_else(|| {
+            GwError::ParseError("twisted formula expansion needs --n".to_string())
+        })?;
+        return Ok(Some(FormulaExpansion::NegativeSplitTwisted {
+            n,
+            degrees,
+            equivariant,
+        }));
+    }
+    let n = match n_flag {
+        Some(n) => n,
+        None => colors.checked_sub(1).ok_or_else(|| {
+            GwError::ParseError(
+                "projective formula expansion needs --n or positive --colors".to_string(),
+            )
+        })?,
+    };
+    Ok(Some(FormulaExpansion::ProjectiveSpace { n, equivariant }))
 }
 
 fn run_degree_series(args: &[String]) -> Result<(), GwError> {
@@ -1035,8 +1000,8 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --specialize projective --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --expand --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --expand --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
@@ -1097,5 +1062,37 @@ mod tests {
     fn flag_validation_rejects_unused_positional_arguments() {
         let err = validate_flags(&args(&["extra"]), &[]).unwrap_err();
         assert!(err.to_string().contains("unexpected argument `extra`"));
+    }
+
+    #[test]
+    fn formula_expansion_ignores_twist_without_expand() {
+        let expansion = formula_expansion_from_args(&args(&["--twist", "-3"]), Some(2), 3).unwrap();
+        assert_eq!(expansion, None);
+    }
+
+    #[test]
+    fn formula_expansion_infers_projective_with_expand() {
+        let expansion = formula_expansion_from_args(&args(&["--expand"]), Some(2), 3).unwrap();
+        assert_eq!(
+            expansion,
+            Some(FormulaExpansion::ProjectiveSpace {
+                n: 2,
+                equivariant: false,
+            })
+        );
+    }
+
+    #[test]
+    fn formula_expansion_infers_twisted_with_expand_and_twist() {
+        let expansion =
+            formula_expansion_from_args(&args(&["--expand", "--twist", "-3"]), Some(2), 3).unwrap();
+        assert_eq!(
+            expansion,
+            Some(FormulaExpansion::NegativeSplitTwisted {
+                n: 2,
+                degrees: vec![3],
+                equivariant: false,
+            })
+        );
     }
 }

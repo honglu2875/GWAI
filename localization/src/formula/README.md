@@ -12,15 +12,16 @@ help humans trace definitions and intermediate formulas.
 
 Main files:
 
-- `atoms.rs`: glossary for the primitive components `S`, `PsiInv`, `RInv`,
+- `basis.rs`: glossary for the primitive components `S`, `PsiInv`, `RInv`,
   translation `T`, `Delta`, `EtaInv`, and point-theory psi integrals.
-- `specialization.rs`: optional engine-specific dictionaries that explain how
-  the universal atoms are read for ordinary `P^n` or negative split twists.
-  These dictionaries reduce graph atoms to calibration primitives such as
+- `expansion.rs`: optional engine-specific dictionaries that explain how
+  the universal basis elements are read for ordinary `P^n` or negative split
+  twists.  These dictionaries reduce graph basis elements to calibration
+  primitives such as
   canonical roots, hypergeometric/Birkhoff `S`, twisted pairings, and QRR
   `R`-recursions.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
-  orders, stable graph metadata, and expanded graph terms using primitive atom
+  orders, stable graph metadata, and expanded graph terms using primitive basis
   coefficients.  Marking factors are expanded into `S/PsiInv/RInv`, and edge
   factors are expanded into `RInv/EtaInv`.  The same skeleton can be rendered
   as plain text, as a TeX fragment, or as a standalone TeX document using
@@ -33,3 +34,23 @@ Main files:
 The first renderer deliberately keeps calibration data symbolic.  Later stages
 can add substitution modes that print actual truncated `R_k`, `S_k`, `T_k`,
 `Psi`, and `Delta` data for the ordinary or twisted providers.
+
+Sample commands:
+
+```bash
+# Universal raw graph formula.  --twist is accepted but ignored in this mode.
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --twist -3 \
+  --format tex-fragment
+
+# Standalone TeX document with ordinary P^2 basis expansion.
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --expand \
+  --format tex
+
+# Standalone TeX document with local P^2 = O(-3) over P^2 basis expansion.
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --twist -3 \
+  --expand \
+  --format tex
+```
