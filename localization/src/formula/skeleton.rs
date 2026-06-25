@@ -88,6 +88,20 @@ pub struct VertexFormulaSlot {
     pub psi_dimension_cap: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PowerVariable {
+    Leg { marking: usize, vertex: usize },
+    EdgeLeft { edge: usize, vertex: usize },
+    EdgeRight { edge: usize, vertex: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PowerAssignment {
+    leg_powers: Vec<usize>,
+    edge_powers: Vec<(usize, usize)>,
+    vertex_powers: Vec<Vec<usize>>,
+}
+
 pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton, GwError> {
     request.validate()?;
     let graphs = stable_graphs(request.genus, request.markings)
@@ -277,108 +291,344 @@ impl GraphFormulaSkeleton {
             self.automorphism_order,
             request.colors - 1
         ));
-        self.render_unravelled_formula(out, request);
+        self.render_expanded_expression(out, request);
     }
 
-    fn render_unravelled_formula(&self, out: &mut String, request: &FormulaRequest) {
-        out.push_str("  Unravelled coefficient formula:\n");
-        out.push_str(&format!(
-            "    C_G = (1/{}) * sum_{{i_v=0..{}}} sum_{{finite powers satisfying vertex caps}}\n",
-            self.automorphism_order,
-            request.colors - 1
-        ));
-        out.push_str("          [prod markings Leg_{ell,i_{v(ell)}}^{p_ell}]\n");
-        out.push_str("          [prod edges Edge_{i_{v(e-)},i_{v(e+)}}^{a_e,b_e}]\n");
-        out.push_str("          [prod vertices Vertex_{h_v,i_v}(P_v)].\n");
-        self.render_power_variables(out, request);
-        self.render_vertex_power_sets(out);
-        self.render_atom_expansions(out, request);
-    }
-
-    fn render_power_variables(&self, out: &mut String, request: &FormulaRequest) {
-        out.push_str("    Power variables:\n");
-        if self.graph.legs.is_empty() {
-            out.push_str("      no external leg powers\n");
+    fn render_expanded_expression(&self, out: &mut String, request: &FormulaRequest) {
+        let terms = self.expanded_terms(request);
+        out.push_str("  Expanded contribution in atom coefficients:\n");
+        out.push_str(&format!("    C_{} = ", self.index));
+        if terms.is_empty() {
+            out.push_str("0\n");
         } else {
-            let leg_vars = (0..self.graph.legs.len())
-                .map(|marking| format!("p_{marking}"))
-                .collect::<Vec<_>>()
-                .join(", ");
             out.push_str(&format!(
-                "      leg powers: {leg_vars}, each kept only when the endpoint vertex cap allows it\n"
+                "(1/{}) * {} (\n",
+                self.automorphism_order,
+                self.color_sum_label(request.colors)
             ));
-        }
-        if self.graph.edges.is_empty() {
-            out.push_str("      no edge powers\n");
-        } else {
-            let edge_vars = (0..self.graph.edges.len())
-                .map(|edge| format!("(a_{edge},b_{edge})"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            out.push_str(&format!(
-                "      edge powers: {edge_vars}, with 0 <= a_e,b_e <= D={}\n",
-                request.edge_power_max()
-            ));
-        }
-    }
-
-    fn render_vertex_power_sets(&self, out: &mut String) {
-        out.push_str("    Vertex power multisets and caps:\n");
-        for vertex in &self.vertices {
-            let powers = self.vertex_power_labels(vertex.index);
-            let powers_label = if powers.is_empty() {
-                "empty".to_string()
-            } else {
-                powers.join(", ")
-            };
-            out.push_str(&format!(
-                "      P_v{} = {{{}}}; keep terms with sum(P_v{}) <= {}\n",
-                vertex.index, powers_label, vertex.index, vertex.psi_dimension_cap
-            ));
-        }
-    }
-
-    fn vertex_power_labels(&self, vertex: usize) -> Vec<String> {
-        let mut powers = Vec::new();
-        for (marking, &leg_vertex) in self.graph.legs.iter().enumerate() {
-            if leg_vertex == vertex {
-                powers.push(format!("p_{marking}"));
+            for (idx, term) in terms.iter().enumerate() {
+                let sign = if idx == 0 { "  " } else { "+ " };
+                out.push_str("      ");
+                out.push_str(sign);
+                out.push_str(term);
+                out.push('\n');
             }
+            out.push_str("    )\n");
         }
-        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
-            if edge.a == vertex {
-                powers.push(format!("a_{edge_index}"));
-            }
-            if edge.b == vertex {
-                powers.push(format!("b_{edge_index}"));
-            }
-        }
-        powers
-    }
-
-    fn render_atom_expansions(&self, out: &mut String, request: &FormulaRequest) {
-        out.push_str("    Coefficient atoms used in this graph:\n");
+        out.push_str("    Here L_{ell,i}^p is the descendant leg coefficient\n");
         out.push_str(&format!(
-            "      Leg_{{ell,i}}^p = sum_{{0<=k<=K={}, 0<=alpha,beta,j<{}, 0<=s<=k, 0<=r<=D+1={}, p=k-s+r}}\n",
+            "      L_{{ell,i}}^p = sum_{{0<=k<=K={}, 0<=alpha,beta,j<{}, 0<=s<=k, 0<=r<=D+1={}, p=k-s+r}}\n",
             request.max_descendant_power,
             request.colors,
             request.inverse_r_order()
         ));
         out.push_str("        x_{ell,k,alpha} * RInv_r[i,j] * PsiInv[j,beta] * S_s[beta,alpha].\n");
-        out.push_str("      Edge_{i,j}^{a,b} = sum_{t=0}^{b} (-1)^{t+1} sum_nu RInv_{a+1+t}[i,nu] * EtaInv_nu * RInv_{b-t}[j,nu].\n");
-        out.push_str(
-            "        Terms with RInv order outside 0..D+1 vanish under this truncation.\n",
-        );
-        out.push_str("      T_i^p = - sum_j RInv_{p-1}[i,j] * Unit_j for p>=2; T_i^0=T_i^1=0.\n");
-        out.push_str(
-            "      Vertex_{h,i}(P) = translation-completed TFT_i(h,N) * PsiInt(h; powers):\n",
-        );
-        out.push_str("        let excess = 3h-3+|P| - sum(P). If excess<0 the vertex term is 0.\n");
-        out.push_str("        if excess=0, add TFT_i(h,|P|) * PsiInt(h; P).\n");
-        out.push_str("        for each partition excess=sum_e c_e*e, add\n");
-        out.push_str("          [prod_e (T_i^{e+1})^{c_e}/c_e!] * TFT_i(h,|P|+sum_e c_e) * PsiInt(h; P, (e+1) repeated c_e).\n");
-        out.push_str("        TFT_i(0,N)=DeltaInv_i*RelSqrtDelta_i^N; TFT_i(h>0,N)=Delta_i^{h-1}*RelSqrtDelta_i^N.\n");
     }
+
+    fn color_sum_label(&self, colors: usize) -> String {
+        if self.graph.vertices.len() == 1 {
+            format!("sum_{{i0=0..{}}}", colors - 1)
+        } else {
+            let variables = (0..self.graph.vertices.len())
+                .map(|vertex| format!("i{vertex}=0..{}", colors - 1))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("sum_{{{variables}}}")
+        }
+    }
+
+    fn expanded_terms(&self, request: &FormulaRequest) -> Vec<String> {
+        let assignments = self.power_assignments(request);
+        let mut terms = Vec::new();
+        for assignment in assignments {
+            let mut fixed_factors = Vec::new();
+            for (marking, &power) in assignment.leg_powers.iter().enumerate() {
+                let vertex = self.graph.legs[marking];
+                fixed_factors.push(format!("L_{{{marking},i{vertex}}}^{power}"));
+            }
+            for (edge_index, &(left_power, right_power)) in
+                assignment.edge_powers.iter().enumerate()
+            {
+                let edge = &self.graph.edges[edge_index];
+                fixed_factors.push(format!(
+                    "Edge_{{i{},i{}}}^{{{left_power},{right_power}}}",
+                    edge.a, edge.b
+                ));
+            }
+
+            let vertex_terms = self
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    vertex_expanded_terms(
+                        vertex.genus,
+                        &format!("i{}", vertex.index),
+                        &assignment.vertex_powers[vertex.index],
+                    )
+                })
+                .collect::<Vec<_>>();
+            append_distributed_terms(
+                &fixed_factors,
+                &vertex_terms,
+                0,
+                &mut Vec::new(),
+                &mut terms,
+            );
+        }
+        terms
+    }
+
+    fn power_assignments(&self, request: &FormulaRequest) -> Vec<PowerAssignment> {
+        let variables = self.power_variables();
+        let mut assignment = PowerAssignment {
+            leg_powers: vec![0; self.graph.legs.len()],
+            edge_powers: vec![(0, 0); self.graph.edges.len()],
+            vertex_powers: vec![Vec::new(); self.graph.vertices.len()],
+        };
+        let mut vertex_sums = vec![0usize; self.graph.vertices.len()];
+        let mut out = Vec::new();
+        self.collect_power_assignments(
+            request,
+            &variables,
+            0,
+            0,
+            &mut vertex_sums,
+            &mut assignment,
+            &mut out,
+        );
+        out
+    }
+
+    fn power_variables(&self) -> Vec<PowerVariable> {
+        let mut variables = Vec::new();
+        for (marking, &leg_vertex) in self.graph.legs.iter().enumerate() {
+            variables.push(PowerVariable::Leg {
+                marking,
+                vertex: leg_vertex,
+            });
+        }
+        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            variables.push(PowerVariable::EdgeLeft {
+                edge: edge_index,
+                vertex: edge.a,
+            });
+            variables.push(PowerVariable::EdgeRight {
+                edge: edge_index,
+                vertex: edge.b,
+            });
+        }
+        variables
+    }
+
+    fn collect_power_assignments(
+        &self,
+        request: &FormulaRequest,
+        variables: &[PowerVariable],
+        variable_index: usize,
+        total_power: usize,
+        vertex_sums: &mut [usize],
+        assignment: &mut PowerAssignment,
+        out: &mut Vec<PowerAssignment>,
+    ) {
+        if variable_index == variables.len() {
+            out.push(assignment.clone());
+            return;
+        }
+
+        let variable = variables[variable_index];
+        let vertex = variable.vertex();
+        let vertex_cap = self.vertices[vertex].psi_dimension_cap;
+        let remaining_vertex = vertex_cap - vertex_sums[vertex];
+        let remaining_total = request.graph_dimension() - total_power;
+        let max_power = remaining_vertex.min(remaining_total);
+        for power in 0..=max_power {
+            variable.write_power(power, assignment);
+            vertex_sums[vertex] += power;
+            assignment.vertex_powers[vertex].push(power);
+            self.collect_power_assignments(
+                request,
+                variables,
+                variable_index + 1,
+                total_power + power,
+                vertex_sums,
+                assignment,
+                out,
+            );
+            assignment.vertex_powers[vertex].pop();
+            vertex_sums[vertex] -= power;
+        }
+    }
+}
+
+impl PowerVariable {
+    fn vertex(self) -> usize {
+        match self {
+            PowerVariable::Leg { vertex, .. }
+            | PowerVariable::EdgeLeft { vertex, .. }
+            | PowerVariable::EdgeRight { vertex, .. } => vertex,
+        }
+    }
+
+    fn write_power(self, power: usize, assignment: &mut PowerAssignment) {
+        match self {
+            PowerVariable::Leg { marking, .. } => assignment.leg_powers[marking] = power,
+            PowerVariable::EdgeLeft { edge, .. } => assignment.edge_powers[edge].0 = power,
+            PowerVariable::EdgeRight { edge, .. } => assignment.edge_powers[edge].1 = power,
+        }
+    }
+}
+
+fn append_distributed_terms(
+    fixed_factors: &[String],
+    vertex_terms: &[Vec<String>],
+    vertex_index: usize,
+    current_vertex_factors: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
+    if vertex_index == vertex_terms.len() {
+        let mut factors = fixed_factors.to_vec();
+        factors.extend(current_vertex_factors.iter().cloned());
+        out.push(join_factors(&factors));
+        return;
+    }
+
+    for term in &vertex_terms[vertex_index] {
+        current_vertex_factors.push(term.clone());
+        append_distributed_terms(
+            fixed_factors,
+            vertex_terms,
+            vertex_index + 1,
+            current_vertex_factors,
+            out,
+        );
+        current_vertex_factors.pop();
+    }
+}
+
+fn vertex_expanded_terms(genus: usize, color: &str, base_powers: &[usize]) -> Vec<String> {
+    let dimension = 3 * genus + base_powers.len() - 3;
+    let power_sum = base_powers.iter().sum::<usize>();
+    if power_sum > dimension {
+        return Vec::new();
+    }
+
+    let excess = dimension - power_sum;
+    if excess == 0 {
+        return vec![join_factors(&[
+            tft_factor(genus, color, base_powers.len()),
+            psi_integral_factor(genus, base_powers),
+        ])];
+    }
+
+    translation_partitions(excess)
+        .into_iter()
+        .map(|partition| {
+            let translation_count = partition
+                .iter()
+                .map(|(_, multiplicity)| *multiplicity)
+                .sum::<usize>();
+            let mut powers = base_powers.to_vec();
+            let mut factors = Vec::new();
+            let mut symmetry = 1usize;
+            for (translation_excess, multiplicity) in partition {
+                let translation_power = translation_excess + 1;
+                powers.extend(std::iter::repeat(translation_power).take(multiplicity));
+                factors.push(powered_factor(
+                    &format!("T_{{{color}}}^{translation_power}"),
+                    multiplicity,
+                ));
+                symmetry *= factorial(multiplicity);
+            }
+            if symmetry > 1 {
+                factors.push(format!("1/{symmetry}"));
+            }
+            factors.push(tft_factor(
+                genus,
+                color,
+                base_powers.len() + translation_count,
+            ));
+            factors.push(psi_integral_factor(genus, &powers));
+            join_factors(&factors)
+        })
+        .collect()
+}
+
+fn tft_factor(genus: usize, color: &str, valence: usize) -> String {
+    let mut factors = Vec::new();
+    if genus == 0 {
+        factors.push(format!("DeltaInv_{{{color}}}"));
+    } else if genus > 1 {
+        factors.push(powered_factor(&format!("Delta_{{{color}}}"), genus - 1));
+    }
+    factors.push(powered_factor(
+        &format!("RelSqrtDelta_{{{color}}}"),
+        valence,
+    ));
+    join_factors(&factors)
+}
+
+fn psi_integral_factor(genus: usize, powers: &[usize]) -> String {
+    if powers.is_empty() {
+        format!("PsiInt({genus};)")
+    } else {
+        let powers = powers
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("PsiInt({genus};{powers})")
+    }
+}
+
+fn powered_factor(base: &str, exponent: usize) -> String {
+    match exponent {
+        0 => "1".to_string(),
+        1 => base.to_string(),
+        _ => format!("({base})^{exponent}"),
+    }
+}
+
+fn join_factors(factors: &[String]) -> String {
+    let nontrivial = factors
+        .iter()
+        .filter(|factor| factor.as_str() != "1")
+        .cloned()
+        .collect::<Vec<_>>();
+    if nontrivial.is_empty() {
+        "1".to_string()
+    } else {
+        nontrivial.join(" * ")
+    }
+}
+
+fn translation_partitions(total: usize) -> Vec<Vec<(usize, usize)>> {
+    fn rec(
+        next_excess: usize,
+        remaining: usize,
+        current: &mut Vec<(usize, usize)>,
+        out: &mut Vec<Vec<(usize, usize)>>,
+    ) {
+        if remaining == 0 {
+            out.push(current.clone());
+            return;
+        }
+        for excess in next_excess..=remaining {
+            let max_multiplicity = remaining / excess;
+            for multiplicity in 1..=max_multiplicity {
+                current.push((excess, multiplicity));
+                rec(excess + 1, remaining - excess * multiplicity, current, out);
+                current.pop();
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    rec(1, total, &mut Vec::new(), &mut out);
+    out
+}
+
+fn factorial(n: usize) -> usize {
+    (1..=n).product::<usize>().max(1)
 }
 
 #[cfg(test)]
@@ -408,10 +658,18 @@ mod tests {
     fn graph_renderer_unravels_atom_coefficients() {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_text();
-        assert!(rendered.contains("Unravelled coefficient formula"));
-        assert!(rendered.contains("Leg_{ell,i}^p"));
-        assert!(rendered.contains("Edge_{i,j}^{a,b}"));
-        assert!(rendered.contains("T_i^p"));
-        assert!(rendered.contains("Vertex_{h,i}(P)"));
+        assert!(rendered.contains("Expanded contribution in atom coefficients"));
+        assert!(rendered.contains("L_{0,i0}^0"));
+        assert!(rendered.contains("DeltaInv_{i0}"));
+        assert!(rendered.contains("PsiInt(0;0,0,0)"));
+        assert!(rendered.contains("L_{ell,i}^p"));
+    }
+
+    #[test]
+    fn vertex_terms_expand_translation_partitions() {
+        let terms = vertex_expanded_terms(1, "i0", &[0]);
+        assert_eq!(terms.len(), 1);
+        assert!(terms[0].contains("T_{i0}^2"));
+        assert!(terms[0].contains("PsiInt(1;0,2)"));
     }
 }
