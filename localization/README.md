@@ -179,24 +179,22 @@ Notes:
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
-number of markings. This is an explanatory tool with four formula bases:
+number of markings. This is an explanatory tool with three formula bases:
 
 - `--basis raw`: the default engine-specialized symbolic graph formula. It
   substitutes the projective-space or twisted calibration into the packed graph
   kernels, leaving color/root sums, `R^{-1}`, `S`, `Psi`, `Delta`, and `eta`
   visible.
-- `--basis resolvent`: packed kernels with insertions left as
-  `gamma_l/(z_l-psi_l)`, so coefficient extraction in `z_l` recovers
-  individual descendants.
 - `--basis coefficients`: the legacy fully unrolled coefficient basis in
   `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
-- `--basis rational`: quotient-reduced graph expressions where supported. The
-  symbolic no-`--d` seed is the ordinary `P^n` genus-zero three-primary
+- `--basis rational`: packed kernels with insertions left as
+  `gamma_l/(z_l-psi_l)`, so coefficient extraction in `z_l` recovers
+  individual descendants. Rational contractions are layered on where available.
+  The symbolic no-`--d` seed is the ordinary `P^n` genus-zero three-primary
   one-vertex graph, where the color sum is contracted by
   `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. When
-  `--d` is supplied for ordinary `P^n`, rational mode prints the fully S/R/T
-  contracted bounded descendant potential and each stable graph's q-truncated
-  graph-local contribution, with labelled variables `x_{ell,k,a}` for
+  `--d` is supplied for ordinary `P^n`, rational mode also prints bounded
+  coefficient extractions, with labelled variables `x_{ell,k,a}` for
   `tau_k(H^a)` at marking `ell`.
 
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
@@ -243,12 +241,12 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --format tex-fragment
 ```
 
-Use `--basis resolvent` to keep all descendants at each marking packed into one
+Use `--basis rational` to keep all descendants at each marking packed into one
 resolvent variable:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis resolvent \
+  --basis rational \
   --format tex-fragment
 ```
 
@@ -271,7 +269,7 @@ The coefficient output defines the basis elements `S`, `PsiInv`, `RInv`, `T`,
 `Delta`, `EtaInv`, and point-theory psi integrals, then lists the finite stable
 graphs, truncation orders, and expanded graph terms. Marking and edge factors
 are expanded directly in those basis elements rather than kept as separate
-composite basis elements. The raw and resolvent bases instead print one compact
+composite basis elements. The raw and rational bases instead print one compact
 graph expression per stable graph, with the leg and edge kernel formulas
 substituted directly into the graph bracket while descendant insertions stay
 packed in the variables `z_l`.

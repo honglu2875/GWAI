@@ -312,10 +312,13 @@ fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
         None => Ok(FormulaBasisMode::Raw),
         Some("coefficients") | Some("coefficient") => Ok(FormulaBasisMode::Coefficients),
         Some("raw") => Ok(FormulaBasisMode::Raw),
-        Some("resolvent") => Ok(FormulaBasisMode::Resolvent),
         Some("rational") => Ok(FormulaBasisMode::Rational),
+        Some("resolvent") => Err(GwError::ParseError(
+            "invalid --basis `resolvent`; the resolvent display was folded into --basis rational"
+                .to_string(),
+        )),
         Some(other) => Err(GwError::ParseError(format!(
-            "invalid --basis `{other}`; expected coefficients, raw, resolvent, or rational"
+            "invalid --basis `{other}`; expected coefficients, raw, or rational"
         ))),
     }
 }
@@ -1017,7 +1020,7 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --basis resolvent --format tex-fragment\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --basis rational --format tex-fragment\n\
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
@@ -1140,5 +1143,13 @@ mod tests {
             parse_formula_basis(&args(&["--basis", "coefficients"])).unwrap(),
             FormulaBasisMode::Coefficients
         );
+    }
+
+    #[test]
+    fn formula_basis_resolvent_points_to_rational() {
+        let err = parse_formula_basis(&args(&["--basis", "resolvent"])).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("resolvent display was folded into --basis rational"));
     }
 }

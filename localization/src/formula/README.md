@@ -21,7 +21,7 @@ Main files:
   QRR `R`-recursions.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
   orders, stable graph metadata, and expanded graph terms using the legacy
-  coefficient basis or packed raw/resolvent kernels.  Marking factors in
+  coefficient basis or packed raw/rational kernels.  Marking factors in
   coefficient mode are expanded into `S/PsiInv/RInv`, and edge factors are
   expanded into `RInv/EtaInv`.  The same skeleton can be rendered
   as plain text, as a TeX fragment, or as a standalone TeX document using
@@ -35,20 +35,19 @@ Main files:
   off the bottom of a page.  It avoids giant `\left...\right` delimiter pairs.
 
 The coefficient basis deliberately keeps the lowest-level coefficient data
-symbolic.  The resolvent basis keeps descendant variables packed but substitutes
-the leg and edge kernel formulas into each graph bracket.  The raw basis does
-the same after reading those kernels in the ordinary or twisted calibration.
-The rational basis is the quotient-reduction path.  Without a q-degree, its
-symbolic seed case is the ordinary `P^n` genus-zero three-primary one-vertex
-graph: the root sum `sum_{P(u)=0} f(u)/P'(u)` is reduced as the top coefficient
-of `f(H)` modulo `prod_a(H-lambda_a)-q`.  When a q-degree is supplied with
-`--d`, rational mode also prints the fully S/R/T-contracted bounded descendant
-potential for the requested fixed marking count, and each stable graph section
-prints that graph's q-truncated contribution.  These contracted expressions use
-labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking `ell`.
-Unsupported graph-local reductions, such as twisted theories without a
-projective-space contracted kernel, are reported explicitly instead of being
-silently displayed in raw notation.
+symbolic.  The raw and rational bases keep descendant variables packed as
+resolvent insertions and substitute the leg and edge kernel formulas into each
+graph bracket.  The raw basis emphasizes the selected ordinary or twisted
+calibration data.  The rational basis is the quotient-reduction path: every
+graph is displayed as a packed Laurent expression in the `z_l` variables, and
+additional rational contractions are layered on where implemented.  Without a
+q-degree, its symbolic seed case is the ordinary `P^n` genus-zero
+three-primary one-vertex graph: the root sum `sum_{P(u)=0} f(u)/P'(u)` is
+reduced as the top coefficient of `f(H)` modulo `prod_a(H-lambda_a)-q`.  When
+a q-degree is supplied with `--d`, rational mode also prints bounded
+coefficient extractions from the same S/R/T graph kernel.  These contracted
+expressions use labelled variables `x_{ell,k,a}` for `tau_k(H^a)` at marking
+`ell`.
 
 Sample commands:
 
@@ -59,9 +58,9 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
   --format tex-fragment
 
-# Packed descendants with insertion variables z_l.
+# Packed rational descendants with insertion variables z_l.
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --basis resolvent \
+  --basis rational \
   --format tex-fragment
 
 # Standalone TeX document with ordinary P^2 raw root-sum calibration.

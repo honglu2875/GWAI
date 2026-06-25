@@ -2,13 +2,13 @@
 
 This module is intentionally separate from the production Givental graph
 evaluator.  It provides the quotient-reduction layer used by
-`formula --basis rational`: take raw graph expressions, substitute engine
-calibration data, contract canonical-root sums, and simplify the result to
-graph-wise rational expressions.  The formula command also has a separate
-bounded-potential view, enabled by `--d`, that calls the production S/R/T graph
-evaluator and formats the resulting q-truncated descendant potential, both as
-the full stable-graph sum and as graph-local contributions in each graph
-section.
+`formula --basis rational`: start from packed resolvent graph expressions,
+substitute engine calibration data, contract canonical-root sums where
+available, and simplify the result to graph-wise rational expressions.  The
+formula command also has a bounded coefficient-extraction view, enabled by
+`--d`, that calls the production S/R/T graph evaluator and formats the
+resulting q-truncated descendant potential, both as the full stable-graph sum
+and as graph-local contributions in each graph section.
 
 Implemented now:
 

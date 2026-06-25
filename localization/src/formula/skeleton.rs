@@ -84,7 +84,6 @@ impl FormulaRequest {
 pub enum FormulaBasisMode {
     Coefficients,
     Raw,
-    Resolvent,
     Rational,
 }
 
@@ -93,7 +92,6 @@ impl FormulaBasisMode {
         match self {
             Self::Coefficients => "coefficients",
             Self::Raw => "raw",
-            Self::Resolvent => "resolvent",
             Self::Rational => "rational",
         }
     }
@@ -102,7 +100,6 @@ impl FormulaBasisMode {
         match self {
             Self::Coefficients => "Coefficient Basis",
             Self::Raw => "Raw Basis",
-            Self::Resolvent => "Resolvent Basis",
             Self::Rational => "Rational Basis",
         }
     }
@@ -111,7 +108,6 @@ impl FormulaBasisMode {
         match self {
             Self::Coefficients => "\\mathrm{coeff}",
             Self::Raw => "\\mathrm{raw}",
-            Self::Resolvent => "\\mathrm{res}",
             Self::Rational => "\\mathrm{rat}",
         }
     }
@@ -234,7 +230,6 @@ impl FormulaSkeleton {
             match self.request.basis {
                 FormulaBasisMode::Coefficients => out.push_str(&basis_glossary()),
                 FormulaBasisMode::Raw => self.render_raw_glossary(&mut out),
-                FormulaBasisMode::Resolvent => self.render_resolvent_glossary(&mut out),
                 FormulaBasisMode::Rational => self.render_rational_glossary(&mut out),
             }
         }
@@ -263,7 +258,6 @@ impl FormulaSkeleton {
             match self.request.basis {
                 FormulaBasisMode::Coefficients => self.render_tex_glossary(&mut out),
                 FormulaBasisMode::Raw => self.render_tex_raw_glossary(&mut out),
-                FormulaBasisMode::Resolvent => self.render_tex_resolvent_glossary(&mut out),
                 FormulaBasisMode::Rational => self.render_tex_rational_glossary(&mut out),
             }
         }
@@ -362,7 +356,7 @@ impl FormulaSkeleton {
         out.push('\n');
         if matches!(
             self.request.basis,
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent | FormulaBasisMode::Rational
+            FormulaBasisMode::Raw | FormulaBasisMode::Rational
         ) {
             out.push_str("Descendants are packed as gamma_ell/(z_ell-psi_ell); extracting the coefficient of z_ell^{-k-1} recovers tau_k at marking ell.\n");
             out.push_str("Leg kernel:\n");
@@ -466,7 +460,7 @@ impl FormulaSkeleton {
         ));
         if matches!(
             self.request.basis,
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent | FormulaBasisMode::Rational
+            FormulaBasisMode::Raw | FormulaBasisMode::Rational
         ) {
             self.render_tex_resolvent_convention(out);
             return;
@@ -514,9 +508,9 @@ impl FormulaSkeleton {
         out.push_str("\\end{itemize}\n");
     }
 
-    fn render_resolvent_glossary(&self, out: &mut String) {
-        out.push_str("Resolvent basis glossary\n");
-        out.push_str("------------------------\n");
+    fn render_resolvent_insertions_glossary(&self, out: &mut String) {
+        out.push_str("Resolvent insertion glossary\n");
+        out.push_str("----------------------------\n");
         out.push_str("This view keeps descendant insertions packed as resolvents 1/(z_ell-psi).\n");
         out.push_str("Coefficient extraction in z_ell^{-k-1} recovers tau_k at marking ell.\n");
         out.push_str("- L_i^ell(z,psi): packed leg kernel R^{-1}(psi) Psi^{-1} S(z)/(z-psi).\n");
@@ -529,19 +523,19 @@ impl FormulaSkeleton {
     fn render_raw_glossary(&self, out: &mut String) {
         out.push_str("Raw basis glossary\n");
         out.push_str("------------------\n");
-        out.push_str("This view uses the same packed graph expression as the resolvent basis, but the kernels are read in the selected projective or twisted calibration.\n");
+        out.push_str("This view uses the packed graph expression with resolvent insertions, and the kernels are read in the selected projective or twisted calibration.\n");
         out.push_str("For fixed q-degree, all displayed engine data are q-truncated root-sum expressions in canonical roots, equivariant weights, and z-variables.\n");
-        self.render_resolvent_glossary(out);
+        self.render_resolvent_insertions_glossary(out);
     }
 
     fn render_rational_glossary(&self, out: &mut String) {
         out.push_str("Rational basis glossary\n");
         out.push_str("-----------------------\n");
-        out.push_str("This view contracts supported raw color/root sums through quotient-ring residue identities.\n");
-        out.push_str("Currently implemented: ordinary P^n, genus 0, one vertex, no edges, three primary markings.\n");
-        out.push_str("For that graph, sum_{P(u)=0} f(u)/P'(u) is reduced as the H^n coefficient of f(H) modulo prod_a(H-lambda_a)-q.\n");
-        out.push_str("When --d is supplied for ordinary P^n, this mode also prints the fully S/R/T-contracted bounded descendant potential for the requested fixed number of markings.\n");
-        out.push_str("Unsupported graphs are printed explicitly as not yet reduced instead of falling back to raw root-sum notation.\n");
+        out.push_str("This is the packed-resolvent graph view with rational contractions layered on where they are implemented.\n");
+        out.push_str("Every graph is first displayed as C_i^rat(z) with insertions gamma_ell/(z_ell-psi_ell), so Laurent coefficients in the z variables recover descendant coefficients.\n");
+        out.push_str("Without --d, the currently implemented symbolic quotient seed is ordinary P^n, genus 0, one vertex, no edges, three primary markings: sum_{P(u)=0} f(u)/P'(u) is reduced as the H^n coefficient of f(H) modulo prod_a(H-lambda_a)-q.\n");
+        out.push_str("When --d is supplied for ordinary P^n, this mode also prints bounded coefficient extractions from the same S/R/T graph kernel.\n");
+        self.render_resolvent_insertions_glossary(out);
     }
 
     fn render_tex_resolvent_convention(&self, out: &mut String) {
@@ -562,8 +556,8 @@ impl FormulaSkeleton {
         );
     }
 
-    fn render_tex_resolvent_glossary(&self, out: &mut String) {
-        out.push_str("\\subsection*{Resolvent Basis Elements}\n");
+    fn render_tex_resolvent_insertions_glossary(&self, out: &mut String) {
+        out.push_str("\\subsection*{Resolvent Insertion Elements}\n");
         out.push_str("\\begin{itemize}\n");
         out.push_str("\\item $\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)$: packed descendant leg kernel; $[z_\\ell^{-k-1}]$ gives the $\\tau_k$ coefficient.\n");
         out.push_str("\\item $\\mathcal E_{ij}(\\psi,\\phi)$: regular edge propagator before coefficient extraction in the two half-edge psi classes.\n");
@@ -576,18 +570,18 @@ impl FormulaSkeleton {
 
     fn render_tex_raw_glossary(&self, out: &mut String) {
         out.push_str("\\subsection*{Raw Basis Elements}\n");
-        out.push_str("This view uses the resolvent graph expression with engine-specialized kernels substituted inline.  For fixed $q$-degree, these kernels are read as truncated root-sum expressions in canonical roots, equivariant weights, and insertion variables.\n");
-        self.render_tex_resolvent_glossary(out);
+        out.push_str("This view uses the packed graph expression with resolvent insertions and engine-specialized kernels substituted inline.  For fixed $q$-degree, these kernels are read as truncated root-sum expressions in canonical roots, equivariant weights, and insertion variables.\n");
+        self.render_tex_resolvent_insertions_glossary(out);
     }
 
     fn render_tex_rational_glossary(&self, out: &mut String) {
         out.push_str("\\subsection*{Rational Basis Elements}\n");
-        out.push_str("This view contracts supported raw color/root sums by quotient-ring residue identities.  Without a supplied $q$-degree, the currently symbolic quotient seed is ordinary $\\mathbb P^n$, genus $0$, one vertex, no edges, three primary markings.  There the color sum is reduced by\n");
+        out.push_str("This is the packed-resolvent graph view with rational contractions layered on where they are implemented.  Every graph is first displayed as $C_i^{\\mathrm{rat}}(\\mathbf z)$ with insertions $\\gamma_\\ell/(z_\\ell-\\bar\\psi_\\ell)$, so Laurent coefficients in the $z$ variables recover descendant coefficients.  Without a supplied $q$-degree, the currently symbolic quotient seed is ordinary $\\mathbb P^n$, genus $0$, one vertex, no edges, three primary markings.  There the color sum is reduced by\n");
         out.push_str("\\[\n");
         out.push_str("\\sum_{P(u)=0}\\frac{f(u)}{P'(u)}=[H^n]\\,f(H)\\bmod P(H),\\qquad P(H)=\\prod_{a=0}^{n}(H-\\lambda_a)-q.\n");
         out.push_str("\\]\n");
-        out.push_str("When $q$-degree is supplied for ordinary $\\mathbb P^n$, rational mode also prints the fully $S/R/T$-contracted bounded descendant potential and each stable graph's $q$-truncated graph-local contribution for the requested fixed marking count.\n");
-        out.push_str("Unsupported reductions, including twisted graph-local rational contractions, are reported explicitly.\n");
+        out.push_str("When $q$-degree is supplied for ordinary $\\mathbb P^n$, rational mode also prints bounded coefficient extractions from the same $S/R/T$ graph kernel.\n");
+        self.render_tex_resolvent_insertions_glossary(out);
     }
 
     fn render_rational_bounded_potential_text(&self, out: &mut String) {
@@ -614,7 +608,7 @@ impl FormulaSkeleton {
                         out.push('\n');
                     }
                 }
-                out.push_str("Graph sections below remain graph-local: they show which individual graph reductions are available today.\n");
+                out.push_str("Graph sections below remain graph-local: they show the packed resolvent contribution and any bounded coefficient extraction available for that graph.\n");
             }
             Ok(RationalPotentialStatus::NeedsDegree) => {
                 out.push_str(
@@ -663,7 +657,7 @@ impl FormulaSkeleton {
                         RATIONAL_TEX_LINE_BUDGET,
                     ));
                 }
-                out.push_str("The graph sections below remain graph-local and report which individual graph reductions are available today.\n");
+                out.push_str("The graph sections below remain graph-local: they show the packed resolvent contribution and any bounded coefficient extraction available for that graph.\n");
             }
             Ok(RationalPotentialStatus::NeedsDegree) => {
                 out.push_str("Pass \\texttt{--d} to request the fully contracted $q$-truncated bounded potential.\n");
@@ -788,9 +782,7 @@ impl GraphFormulaSkeleton {
         ));
         match request.basis {
             FormulaBasisMode::Coefficients => self.render_expanded_expression(out, request),
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent => {
-                self.render_compact_expression(out, request)
-            }
+            FormulaBasisMode::Raw => self.render_compact_expression(out, request),
             FormulaBasisMode::Rational => self.render_rational_expression(out, request),
         }
     }
@@ -859,9 +851,7 @@ impl GraphFormulaSkeleton {
         self.render_tikz(out);
         match request.basis {
             FormulaBasisMode::Coefficients => self.render_expanded_tex_expression(out, request),
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent => {
-                self.render_compact_tex_expression(out, request)
-            }
+            FormulaBasisMode::Raw => self.render_compact_tex_expression(out, request),
             FormulaBasisMode::Rational => self.render_rational_tex_expression(out, request),
         }
     }
@@ -956,7 +946,12 @@ impl GraphFormulaSkeleton {
 
     fn render_compact_expression(&self, out: &mut String, request: &FormulaRequest) {
         let label = request.basis.label();
-        out.push_str(&format!("  Packed {label} contribution:\n"));
+        let descriptor = if request.basis == FormulaBasisMode::Rational {
+            "Packed rational resolvent"
+        } else {
+            "Packed raw"
+        };
+        out.push_str(&format!("  {descriptor} contribution:\n"));
         out.push_str(&format!(
             "    C_{}^{}(z) = (1/{}) * {} <{}>_Gamma^pt\n",
             self.index,
@@ -971,7 +966,8 @@ impl GraphFormulaSkeleton {
     }
 
     fn render_rational_expression(&self, out: &mut String, request: &FormulaRequest) {
-        out.push_str("  Rational residue-reduced contribution:\n");
+        self.render_compact_expression(out, request);
+        out.push_str("  Rational contractions:\n");
         if let Some(result) = self.rational_graph_bounded_terms(request) {
             match result {
                 Ok(terms) => {
@@ -1021,7 +1017,7 @@ impl GraphFormulaSkeleton {
             None => {
                 out.push_str(&format!(
                     "    {}\n",
-                    rational_unimplemented_message(request)
+                    rational_no_extra_contraction_message(request)
                 ));
             }
         }
@@ -1129,6 +1125,8 @@ impl GraphFormulaSkeleton {
     }
 
     fn render_rational_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
+        self.render_compact_tex_expression(out, request);
+        out.push_str("\\paragraph{Rational contraction.}\n");
         if let Some(result) = self.rational_graph_bounded_terms(request) {
             match result {
                 Ok(terms) => {
@@ -1201,12 +1199,10 @@ impl GraphFormulaSkeleton {
                 out.push_str("\\]\n");
             }
             None => {
-                out.push_str("\\[\n");
-                out.push_str(&format!(
-                    "\\text{{{}}}\n",
-                    escape_tex_text(&rational_unimplemented_message(request))
-                ));
-                out.push_str("\\]\n");
+                out.push_str(&escape_tex_text(&rational_no_extra_contraction_message(
+                    request,
+                )));
+                out.push('\n');
             }
         }
     }
@@ -1585,7 +1581,7 @@ fn resolvent_leg_text(marking: usize, vertex: usize, request: &FormulaRequest) -
     let psi = format!("barpsi_ell{marking}");
     let r_inv = r_inv_series_text(&psi, request);
     let s = s_series_text(&format!("z{marking}"), request);
-    match raw_projective_n(request) {
+    match engine_projective_n(request) {
         Some(_) => format!(
             "sum_{{j,alpha,beta=0..{max}}} {r_inv}[i{vertex},j] * Delta_j^(-1/2) * u_j^beta * {s}[beta,alpha] * gamma_{{{marking},alpha}}/(z{marking}-{psi})"
         ),
@@ -1605,7 +1601,7 @@ fn resolvent_edge_text(edge_index: usize, edge: &StableEdge, request: &FormulaRe
     let left_r = r_inv_series_text(&left, request);
     let right_r = r_inv_series_text(&right, request);
     let denominator = format!("({left}+{right})");
-    match raw_projective_n(request) {
+    match engine_projective_n(request) {
         Some(_) => format!(
             "(delta_{{i{},i{}}} - sum_{{nu=0..{max}}} {left_r}[i{},nu] * {right_r}[i{},nu]) / {denominator}",
             edge.a, edge.b, edge.a, edge.b
@@ -1639,7 +1635,7 @@ fn resolvent_leg_tex(marking: usize, vertex: usize, request: &FormulaRequest) ->
     let z = format!("z_{{{marking}}}");
     let r_inv = r_inv_series_tex(&psi, request);
     let s = s_series_tex(&z, request);
-    match raw_projective_n(request) {
+    match engine_projective_n(request) {
         Some(_) => format!(
             "\\sum_{{j,\\alpha,\\beta=0}}^{{{max}}}{r_inv}_{{i_{{{vertex}}},j}}\\mathbin{{\\cdot}}\\Delta_j^{{-1/2}}u_j^\\beta\\mathbin{{\\cdot}}{s}_{{\\beta,\\alpha}}\\mathbin{{\\cdot}}\\frac{{\\gamma_{{{marking},\\alpha}}}}{{{z}-{psi}}}"
         ),
@@ -1659,7 +1655,7 @@ fn resolvent_edge_tex(edge_index: usize, edge: &StableEdge, request: &FormulaReq
     let left_r = r_inv_series_tex(&left, request);
     let right_r = r_inv_series_tex(&right, request);
     let denominator = format!("\\bigl({left}+{right}\\bigr)");
-    match raw_projective_n(request) {
+    match engine_projective_n(request) {
         Some(_) => format!(
             "\\bigl(\\delta_{{i_{{{}}},i_{{{}}}}} - \\sum_{{\\nu=0}}^{{{max}}}{left_r}_{{i_{{{}}},\\nu}}\\mathbin{{\\cdot}}{right_r}_{{i_{{{}}},\\nu}}\\bigr)\\mathbin{{/}}{denominator}",
             edge.a, edge.b, edge.a, edge.b
@@ -1674,10 +1670,13 @@ fn resolvent_edge_tex(edge_index: usize, edge: &StableEdge, request: &FormulaReq
     }
 }
 
-fn raw_projective_n(request: &FormulaRequest) -> Option<usize> {
+fn engine_projective_n(request: &FormulaRequest) -> Option<usize> {
     match &request.expansion {
         Some(FormulaExpansion::ProjectiveSpace { n, .. })
-            if request.basis == FormulaBasisMode::Raw =>
+            if matches!(
+                request.basis,
+                FormulaBasisMode::Raw | FormulaBasisMode::Rational
+            ) =>
         {
             Some(*n)
         }
@@ -1696,38 +1695,38 @@ fn rational_projective_n(request: &FormulaRequest) -> Option<usize> {
     }
 }
 
-fn rational_unimplemented_message(request: &FormulaRequest) -> String {
+fn rational_no_extra_contraction_message(request: &FormulaRequest) -> String {
     if request.q_degree.is_some() {
         match &request.expansion {
             Some(FormulaExpansion::NegativeSplitTwisted { .. }) => {
-                return "not implemented for this graph: bounded graph-local rational contraction currently reuses the ordinary P^n S/R/T kernel; twisted kernels are not wired into this formatter yet.".to_string();
+                return "no extra bounded coefficient extraction is implemented here yet: the packed twisted resolvent expression above is the rational-basis output for this graph.".to_string();
             }
             Some(FormulaExpansion::ProjectiveSpace { .. }) => {
-                return "not implemented for this graph: bounded graph-local rational contraction requires ordinary P^n formula data with matching color count.".to_string();
+                return "no extra bounded coefficient extraction is available here because the formula color count does not match the ordinary P^n expansion data; the packed resolvent expression above is still shown.".to_string();
             }
             None => {
-                return "not implemented for this graph: bounded graph-local rational contraction needs an engine, for example --n for ordinary P^n.".to_string();
+                return "no extra bounded coefficient extraction is available without an engine, for example --n for ordinary P^n; the packed resolvent expression above is still shown.".to_string();
             }
         }
     }
 
-    "not implemented for this graph: without --d, current symbolic rational reduction supports only ordinary P^n, genus 0, one vertex, no edges, three primary markings, and max-descendant 0.".to_string()
+    "no extra symbolic quotient contraction is implemented for this graph yet; the packed rational resolvent expression above is the current output.".to_string()
 }
 
-fn raw_twisted(request: &FormulaRequest) -> bool {
+fn engine_twisted(request: &FormulaRequest) -> bool {
     matches!(
         (&request.expansion, request.basis),
         (
             Some(FormulaExpansion::NegativeSplitTwisted { .. }),
-            FormulaBasisMode::Raw
+            FormulaBasisMode::Raw | FormulaBasisMode::Rational
         )
     )
 }
 
 fn delta_text(color: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("P'({color})")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("Delta_tw_{color}")
     } else {
         format!("Delta_{color}")
@@ -1735,9 +1734,9 @@ fn delta_text(color: &str, request: &FormulaRequest) -> String {
 }
 
 fn delta_tex(color: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("P'(u_{{{color}}})")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("\\Delta_{{{color}}}^{{\\mathrm{{tw}}}}")
     } else {
         format!("\\Delta_{{{color}}}")
@@ -1745,9 +1744,9 @@ fn delta_tex(color: &str, request: &FormulaRequest) -> String {
 }
 
 fn r_inv_series_text(argument: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("RInv_raw({argument})")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("RInv_tw({argument})")
     } else {
         format!("RInv({argument})")
@@ -1755,9 +1754,9 @@ fn r_inv_series_text(argument: &str, request: &FormulaRequest) -> String {
 }
 
 fn r_inv_series_tex(argument: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("(R^{{\\mathrm{{raw}},-1}}({argument}))")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("(R^{{\\mathrm{{tw}},-1}}({argument}))")
     } else {
         format!("(R^{{-1}}({argument}))")
@@ -1765,9 +1764,9 @@ fn r_inv_series_tex(argument: &str, request: &FormulaRequest) -> String {
 }
 
 fn s_series_text(argument: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("S_raw({argument})")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("S_tw({argument})")
     } else {
         format!("S({argument})")
@@ -1775,9 +1774,9 @@ fn s_series_text(argument: &str, request: &FormulaRequest) -> String {
 }
 
 fn s_series_tex(argument: &str, request: &FormulaRequest) -> String {
-    if raw_projective_n(request).is_some() {
+    if engine_projective_n(request).is_some() {
         format!("S^{{\\mathrm{{raw}}}}({argument})")
-    } else if raw_twisted(request) {
+    } else if engine_twisted(request) {
         format!("S^{{\\mathrm{{tw}}}}({argument})")
     } else {
         format!("S({argument})")
@@ -1785,7 +1784,7 @@ fn s_series_tex(argument: &str, request: &FormulaRequest) -> String {
 }
 
 fn psi_inverse_text(request: &FormulaRequest) -> &'static str {
-    if raw_twisted(request) {
+    if engine_twisted(request) {
         "PsiInv_tw"
     } else {
         "PsiInv"
@@ -1793,7 +1792,7 @@ fn psi_inverse_text(request: &FormulaRequest) -> &'static str {
 }
 
 fn psi_inverse_tex(request: &FormulaRequest) -> &'static str {
-    if raw_twisted(request) {
+    if engine_twisted(request) {
         "(\\Psi^{\\mathrm{tw},-1})"
     } else {
         "(\\Psi^{-1})"
@@ -1801,7 +1800,7 @@ fn psi_inverse_tex(request: &FormulaRequest) -> &'static str {
 }
 
 fn eta_inverse_text(request: &FormulaRequest) -> &'static str {
-    if raw_twisted(request) {
+    if engine_twisted(request) {
         "EtaInv_tw"
     } else {
         "EtaInv"
@@ -1809,7 +1808,7 @@ fn eta_inverse_text(request: &FormulaRequest) -> &'static str {
 }
 
 fn eta_inverse_tex(request: &FormulaRequest) -> &'static str {
-    if raw_twisted(request) {
+    if engine_twisted(request) {
         "(\\eta^{\\mathrm{tw}})"
     } else {
         "\\eta"
@@ -2881,7 +2880,7 @@ mod tests {
     #[test]
     fn tex_renderer_wraps_compact_brackets_in_multlined() {
         let mut request = FormulaRequest::new(2, 1, 3);
-        request.basis = FormulaBasisMode::Resolvent;
+        request.basis = FormulaBasisMode::Rational;
         let skeleton = build_formula_skeleton(request).unwrap();
         let rendered = skeleton.render_tex();
         // The compact graph brackets are short and use `multlined`.
@@ -2892,14 +2891,15 @@ mod tests {
     }
 
     #[test]
-    fn resolvent_basis_packs_descendants_into_kernels() {
+    fn rational_basis_packs_resolvent_insertions_into_kernels() {
         let mut request = FormulaRequest::new(1, 1, 2);
-        request.basis = FormulaBasisMode::Resolvent;
+        request.basis = FormulaBasisMode::Rational;
         let skeleton = build_formula_skeleton(request).unwrap();
         let rendered = skeleton.render_tex();
-        assert!(rendered.contains("Resolvent Basis Elements"));
+        assert!(rendered.contains("Rational Basis Elements"));
+        assert!(rendered.contains("Resolvent Insertion Elements"));
         assert!(rendered.contains("\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)"));
-        assert!(rendered.contains("C_{0}^{\\mathrm{res}}"));
+        assert!(rendered.contains("C_{0}^{\\mathrm{rat}}"));
         assert!(rendered.contains("(R^{-1}(\\bar\\psi_{\\ell_{0}}))_{i_{0},j}"));
         assert!(rendered.contains("(\\Psi^{-1})_{j,\\beta}"));
         assert!(rendered.contains("S(z_{0})_{\\beta,\\alpha}"));
@@ -2943,7 +2943,8 @@ mod tests {
         });
         let skeleton = build_formula_skeleton(request).unwrap();
         let rendered = skeleton.render_text();
-        assert!(rendered.contains("Rational residue-reduced contribution"));
+        assert!(rendered.contains("Packed rational resolvent contribution"));
+        assert!(rendered.contains("Rational contractions"));
         assert!(rendered.contains("gamma_{0,0} * gamma_{1,0} * gamma_{2,2}"));
         assert!(rendered.contains("lambda_0"));
         assert!(rendered.contains("lambda_1"));
@@ -2969,6 +2970,7 @@ mod tests {
         });
         let skeleton = build_formula_skeleton(request).unwrap();
         let rendered = skeleton.render_text();
+        assert!(rendered.contains("Packed rational resolvent contribution"));
         assert!(rendered.contains("Contracted bounded rational potential"));
         assert!(rendered.contains("full S/R/T stable-graph sum"));
         assert!(rendered.contains("q^0 * x_{0,0,2} * x_{1,0,0} * x_{2,0,0}"));
@@ -2995,7 +2997,7 @@ mod tests {
     }
 
     #[test]
-    fn rational_basis_reports_unreduced_graphs_explicitly() {
+    fn rational_basis_keeps_unreduced_graphs_as_packed_resolvents() {
         let mut request = FormulaRequest::new(1, 1, 2);
         request.basis = FormulaBasisMode::Rational;
         request.expansion = Some(FormulaExpansion::ProjectiveSpace {
@@ -3004,7 +3006,8 @@ mod tests {
         });
         let skeleton = build_formula_skeleton(request).unwrap();
         let rendered = skeleton.render_text();
-        assert!(rendered.contains("not implemented for this graph"));
+        assert!(rendered.contains("Packed rational resolvent contribution"));
+        assert!(rendered.contains("no extra symbolic quotient contraction"));
         assert!(!rendered.contains("Packed rational contribution"));
     }
 
