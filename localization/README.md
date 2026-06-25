@@ -179,8 +179,19 @@ Notes:
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
-number of markings. This is an explanatory tool: it keeps the basis elements
-symbolic unless `--expand` asks for a backend-specific calibration dictionary.
+number of markings. This is an explanatory tool with three formula bases:
+
+- `--basis raw`: the crude coefficient basis `R_k`, `S_k`, `T_k`, `Psi`, `Delta`,
+  and point-theory psi integrals.
+- `--basis resolvent`: packed kernels with insertions left as
+  `gamma_l/(z_l-psi_l)`, so coefficient extraction in `z_l` recovers
+  individual descendants.
+- `--basis rational`: the same packed graph formula, but with ordinary `P^n` or
+  negative split-bundle calibration data displayed as q-truncated
+  rational/root-sum expressions.
+
+The default is `--basis raw`.  The older `--expand` flag is kept as a shortcut
+for `--basis rational` when no explicit `--basis` is passed.
 
 Use `--n` for `P^n` color count, or `--colors` for a provider-independent
 semisimple CohFT skeleton:
@@ -201,7 +212,7 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 ```
 
 Use `--format tex-fragment` when embedding the formula into an existing
-document that already loads `amsmath` and `tikz`.
+document that already loads `amsmath`, `breqn`, and `tikz`.
 
 Formula output is universal by default. The `--twist` flag is accepted in this
 raw mode but ignored, so the stable-graph skeleton remains provider-independent:
@@ -212,32 +223,37 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --format tex-fragment
 ```
 
-Add `--expand` to attach an engine-specific basis dictionary. Without `--twist`
-the expansion is ordinary `P^n`; with `--twist`, the expansion is the negative
-split backend:
+Use `--basis resolvent` to keep all descendants at each marking packed into one
+resolvent variable:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
-  --expand \
+  --basis resolvent \
+  --format tex-fragment
+```
+
+Use `--basis rational` to specialize the resolvent kernels to a concrete
+projective-space or twisted calibration. Without `--twist`, this is ordinary
+`P^n`; with `--twist`, this is the negative split backend:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --basis rational \
   --format tex
 
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
-  --expand \
+  --basis rational \
   --format tex
 ```
 
-These expansion sections do not change the stable graph expansion. They explain
-how the universal basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`, and
-`EtaInv` are read in the chosen engine: ordinary `P^n` via canonical roots of
-`\prod_a(x-\lambda_a)-q`, or negative split twists via the
-hypergeometric/Birkhoff `S` and QRR `R` calibration.
-
-The output defines the primitive basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`,
+The output defines the raw basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 `EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
 truncation orders, and expanded graph terms. Marking and edge factors are
 expanded directly in those basis elements rather than kept as separate composite
-basis elements.
+basis elements. The resolvent and rational bases instead print one compact
+graph expression per stable graph using packed leg kernels `L(z,psi)` and edge
+kernels `E(psi,phi)`.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and

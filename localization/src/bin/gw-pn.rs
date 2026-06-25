@@ -1,5 +1,5 @@
 use gw_pn::error::GwError;
-use gw_pn::formula::{build_formula_skeleton, FormulaExpansion, FormulaRequest};
+use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
@@ -218,6 +218,7 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--degree"),
             CliFlag::value("--format"),
             CliFlag::value("--twist"),
+            CliFlag::value("--basis"),
             CliFlag::switch("--equivariant"),
             CliFlag::switch("--expand"),
             CliFlag::switch("--no-glossary"),
@@ -245,7 +246,9 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
         first_usize_flag(args, &["--max-descendant", "--k-max"])?.unwrap_or(0);
     request.q_degree = first_usize_flag(args, &["--d", "--degree"])?;
     request.include_glossary = !has_flag(args, "--no-glossary");
-    request.expansion = formula_expansion_from_args(args, n_flag, colors)?;
+    request.basis = parse_formula_basis(args)?;
+    request.expansion =
+        formula_expansion_from_args(args, n_flag, colors, request.basis.requires_expansion())?;
     let skeleton = build_formula_skeleton(request)?;
     let format = match (
         parse_string_flag(args, "--format")?,
@@ -277,8 +280,9 @@ fn formula_expansion_from_args(
     args: &[String],
     n_flag: Option<usize>,
     colors: usize,
+    force: bool,
 ) -> Result<Option<FormulaExpansion>, GwError> {
-    if !has_flag(args, "--expand") {
+    if !force && !has_flag(args, "--expand") {
         return Ok(None);
     }
     let equivariant = has_flag(args, "--equivariant");
@@ -301,6 +305,24 @@ fn formula_expansion_from_args(
         })?,
     };
     Ok(Some(FormulaExpansion::ProjectiveSpace { n, equivariant }))
+}
+
+fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
+    match parse_string_flag(args, "--basis")?.as_deref() {
+        None => {
+            if has_flag(args, "--expand") {
+                Ok(FormulaBasisMode::Rational)
+            } else {
+                Ok(FormulaBasisMode::Raw)
+            }
+        }
+        Some("raw") => Ok(FormulaBasisMode::Raw),
+        Some("resolvent") => Ok(FormulaBasisMode::Resolvent),
+        Some("rational") => Ok(FormulaBasisMode::Rational),
+        Some(other) => Err(GwError::ParseError(format!(
+            "invalid --basis `{other}`; expected raw, resolvent, or rational"
+        ))),
+    }
 }
 
 fn run_degree_series(args: &[String]) -> Result<(), GwError> {
@@ -1000,8 +1022,9 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --expand --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --expand --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --basis resolvent --format tex-fragment\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --basis rational --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis rational --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
@@ -1066,13 +1089,15 @@ mod tests {
 
     #[test]
     fn formula_expansion_ignores_twist_without_expand() {
-        let expansion = formula_expansion_from_args(&args(&["--twist", "-3"]), Some(2), 3).unwrap();
+        let expansion =
+            formula_expansion_from_args(&args(&["--twist", "-3"]), Some(2), 3, false).unwrap();
         assert_eq!(expansion, None);
     }
 
     #[test]
     fn formula_expansion_infers_projective_with_expand() {
-        let expansion = formula_expansion_from_args(&args(&["--expand"]), Some(2), 3).unwrap();
+        let expansion =
+            formula_expansion_from_args(&args(&["--expand"]), Some(2), 3, false).unwrap();
         assert_eq!(
             expansion,
             Some(FormulaExpansion::ProjectiveSpace {
@@ -1085,7 +1110,8 @@ mod tests {
     #[test]
     fn formula_expansion_infers_twisted_with_expand_and_twist() {
         let expansion =
-            formula_expansion_from_args(&args(&["--expand", "--twist", "-3"]), Some(2), 3).unwrap();
+            formula_expansion_from_args(&args(&["--expand", "--twist", "-3"]), Some(2), 3, false)
+                .unwrap();
         assert_eq!(
             expansion,
             Some(FormulaExpansion::NegativeSplitTwisted {
@@ -1094,5 +1120,22 @@ mod tests {
                 equivariant: false,
             })
         );
+    }
+
+    #[test]
+    fn formula_basis_rational_forces_expansion() {
+        assert_eq!(
+            parse_formula_basis(&args(&["--basis", "rational"])).unwrap(),
+            FormulaBasisMode::Rational
+        );
+        let expansion =
+            formula_expansion_from_args(&args(&["--basis", "rational"]), Some(2), 3, true).unwrap();
+        assert!(matches!(
+            expansion,
+            Some(FormulaExpansion::ProjectiveSpace {
+                n: 2,
+                equivariant: false
+            })
+        ));
     }
 }

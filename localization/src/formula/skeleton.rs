@@ -18,6 +18,7 @@ pub struct FormulaRequest {
     pub q_degree: Option<usize>,
     pub include_glossary: bool,
     pub expansion: Option<FormulaExpansion>,
+    pub basis: FormulaBasisMode,
 }
 
 impl FormulaRequest {
@@ -30,6 +31,7 @@ impl FormulaRequest {
             q_degree: None,
             include_glossary: true,
             expansion: None,
+            basis: FormulaBasisMode::Raw,
         }
     }
 
@@ -69,6 +71,43 @@ impl FormulaRequest {
             ));
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormulaBasisMode {
+    Raw,
+    Resolvent,
+    Rational,
+}
+
+impl FormulaBasisMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Resolvent => "resolvent",
+            Self::Rational => "rational",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Raw => "Raw Basis",
+            Self::Resolvent => "Resolvent Basis",
+            Self::Rational => "Rational Basis",
+        }
+    }
+
+    pub fn tex_superscript(self) -> &'static str {
+        match self {
+            Self::Raw => "\\mathrm{raw}",
+            Self::Resolvent => "\\mathrm{res}",
+            Self::Rational => "\\mathrm{rat}",
+        }
+    }
+
+    pub fn requires_expansion(self) -> bool {
+        matches!(self, Self::Rational)
     }
 }
 
@@ -154,11 +193,19 @@ impl FormulaSkeleton {
         self.render_formula_convention(&mut out);
         if let Some(expansion) = &self.request.expansion {
             out.push('\n');
-            out.push_str(&expansion.render_text());
+            if self.request.basis == FormulaBasisMode::Rational {
+                out.push_str(&expansion.render_rational_text());
+            } else {
+                out.push_str(&expansion.render_text());
+            }
         }
         if self.request.include_glossary {
             out.push('\n');
-            out.push_str(&basis_glossary());
+            match self.request.basis {
+                FormulaBasisMode::Raw => out.push_str(&basis_glossary()),
+                FormulaBasisMode::Resolvent => self.render_resolvent_glossary(&mut out),
+                FormulaBasisMode::Rational => self.render_rational_glossary(&mut out),
+            }
         }
         self.render_graphs(&mut out);
         out
@@ -171,11 +218,19 @@ impl FormulaSkeleton {
         self.render_tex_formula_convention(&mut out);
         if let Some(expansion) = &self.request.expansion {
             out.push('\n');
-            out.push_str(&expansion.render_tex());
+            if self.request.basis == FormulaBasisMode::Rational {
+                out.push_str(&expansion.render_rational_tex());
+            } else {
+                out.push_str(&expansion.render_tex());
+            }
         }
         if self.request.include_glossary {
             out.push('\n');
-            self.render_tex_glossary(&mut out);
+            match self.request.basis {
+                FormulaBasisMode::Raw => self.render_tex_glossary(&mut out),
+                FormulaBasisMode::Resolvent => self.render_tex_resolvent_glossary(&mut out),
+                FormulaBasisMode::Rational => self.render_tex_rational_glossary(&mut out),
+            }
         }
         self.render_tex_graphs(&mut out);
         out
@@ -211,6 +266,10 @@ impl FormulaSkeleton {
         out.push_str(&format!(
             "Stable-curve dimension D=3g-3+m={}\n",
             self.request.graph_dimension()
+        ));
+        out.push_str(&format!(
+            "Formula basis mode: {}\n",
+            self.request.basis.label()
         ));
         match self.request.q_degree {
             Some(degree) => out.push_str(&format!(
@@ -255,15 +314,29 @@ impl FormulaSkeleton {
 
     fn render_formula_convention(&self, out: &mut String) {
         out.push('\n');
-        out.push_str("How the basis elements assemble\n");
-        out.push_str("--------------------------------\n");
+        out.push_str(&format!("{} conventions\n", self.request.basis.title()));
+        out.push_str(&"-".repeat(self.request.basis.title().len() + " conventions".len()));
+        out.push('\n');
+        if self.request.basis != FormulaBasisMode::Raw {
+            out.push_str("Descendants are packed as gamma_ell/(z_ell-psi_ell); extracting the coefficient of z_ell^{-k-1} recovers tau_k at marking ell.\n");
+            out.push_str("Leg kernel:\n");
+            out.push_str("  L_i^ell(z,psi) = sum_{j,a,b} RInv_i,j(psi) * PsiInv[j,b] * S(z)[b,a] * gamma_{ell,a}/(z-psi)\n");
+            out.push_str("Edge kernel:\n");
+            out.push_str("  E_ij(psi,phi) = (eta^{ij} - sum_nu RInv_i,nu(psi) eta^{nu,nu} RInv_j,nu(phi))/(psi+phi)\n");
+            out.push_str("Vertex TFT factor:\n");
+            out.push_str("  Theta_{g,n}(i) = Delta_i^{g-1} * (Delta_i^{1/2})^n\n");
+            out.push_str("The graph bracket <...>_Gamma^pt is the product of point-theory vertex integrals, including exp(T_i) translation insertions with symmetry factors.\n");
+            return;
+        }
+        out.push_str("How the raw basis elements assemble\n");
+        out.push_str("-----------------------------------\n");
         out.push_str("For a formal insertion at marking ell,\n");
         out.push_str("  gamma_ell = sum_{k<=K,a} x_{ell,k,a} tau_k(phi_a),\n");
         out.push_str("each marking factor is expanded directly as finite sums of\n");
         out.push_str("  x_{ell,k,a} * S_s[b,a] * PsiInv[j,b] * RInv_r[i,j]\n");
         out.push_str("with p = k - s + r.  Internal edges are also expanded directly in\n");
         out.push_str(
-            "RInv and EtaInv, so the graph terms below use only primitive calibration basis elements.\n\n",
+            "RInv and EtaInv, so the graph terms below use only raw calibration basis elements.\n\n",
         );
         out.push_str(
             "For a vertex of genus h and color i, the base half-edge/marking powers and\n",
@@ -336,12 +409,20 @@ impl FormulaSkeleton {
 
     fn render_tex_formula_convention(&self, out: &mut String) {
         out.push_str("\n\\subsection*{Conventions}\n");
+        out.push_str(&format!(
+            "Basis mode: $\\mathrm{{{}}}$.\n\n",
+            self.request.basis.label()
+        ));
+        if self.request.basis != FormulaBasisMode::Raw {
+            self.render_tex_resolvent_convention(out);
+            return;
+        }
         out.push_str("For formal descendant insertions we write\n");
         out.push_str("\\[\n");
         out.push_str("\\gamma_\\ell=\\sum_{0\\le k\\le K}\\sum_\\alpha x_{\\ell,k,\\alpha}\\,\\tau_k(\\phi_\\alpha).\n");
         out.push_str("\\]\n");
         out.push_str(
-            "The leg factors are expanded in the primitive coefficients of $S(z)$, $\\Psi^{-1}$, and $R(z)^{-1}$.\n",
+            "The leg factors are expanded in the raw coefficients of $S(z)$, $\\Psi^{-1}$, and $R(z)^{-1}$.\n",
         );
         out.push_str(
             "Internal edges use the standard Givental propagator expanded in $R(z)^{-1}$ and the inverse canonical metric.\n",
@@ -357,7 +438,7 @@ impl FormulaSkeleton {
     }
 
     fn render_tex_glossary(&self, out: &mut String) {
-        out.push_str("\\subsection*{Primitive Basis Elements}\n");
+        out.push_str("\\subsection*{Raw Basis Elements}\n");
         out.push_str("\\begin{itemize}\n");
         out.push_str(
             "\\item $(S_s)_{\\beta\\alpha}$: coefficient of $z^{-s}$ in the descendant-to-ancestor $S$-calibration.\n",
@@ -377,6 +458,61 @@ impl FormulaSkeleton {
             "\\item $\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\rangle_h^{\\mathrm{pt}}$: Witten--Kontsevich intersection number on $\\overline{\\mathcal M}_{h,N}$.\n",
         );
         out.push_str("\\end{itemize}\n");
+    }
+
+    fn render_resolvent_glossary(&self, out: &mut String) {
+        out.push_str("Resolvent basis glossary\n");
+        out.push_str("------------------------\n");
+        out.push_str("This view keeps descendant insertions packed as resolvents 1/(z_ell-psi).\n");
+        out.push_str("Coefficient extraction in z_ell^{-k-1} recovers tau_k at marking ell.\n");
+        out.push_str("- L_i^ell(z,psi): packed leg kernel R^{-1}(psi) Psi^{-1} S(z)/(z-psi).\n");
+        out.push_str("- E_{ij}(psi,phi): regular edge kernel (eta^{-1}-R^{-1}(psi) eta^{-1} R^{-1}(phi)^T)/(psi+phi).\n");
+        out.push_str("- Theta_{g,n}(i): diagonal TFT factor Delta_i^{g-1}(Delta_i^{1/2})^n in the stored relative frame.\n");
+        out.push_str("- exp(T_i): shorthand for arbitrary translation markings with the usual 1/m! symmetry factors.\n");
+        out.push_str("- <...>_Gamma^pt: product of Witten-Kontsevich point-theory integrals over the vertices of Gamma.\n");
+    }
+
+    fn render_rational_glossary(&self, out: &mut String) {
+        out.push_str("Rational basis glossary\n");
+        out.push_str("-----------------------\n");
+        out.push_str("This view uses the same packed graph expression as the resolvent basis, but the kernels are read in the selected projective or twisted calibration.\n");
+        out.push_str("For fixed q-degree, all displayed engine data are q-truncated rational/root-sum expressions in canonical roots, equivariant weights, and z-variables.\n");
+        self.render_resolvent_glossary(out);
+    }
+
+    fn render_tex_resolvent_convention(&self, out: &mut String) {
+        out.push_str(
+            "Descendants are packed by the resolvent insertion $\\gamma_\\ell/(z_\\ell-\\bar\\psi_\\ell)$; coefficient extraction in $z_\\ell^{-k-1}$ recovers $\\tau_k$ at marking $\\ell$.\n",
+        );
+        out.push_str("\\begin{align*}\n");
+        out.push_str(
+            "\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{-1}(\\psi))_{ij}(\\Psi^{-1})_{j\\beta}S(z_\\ell)_{\\beta\\alpha}\\frac{\\gamma_{\\ell,\\alpha}}{z_\\ell-\\psi},\\\\\n",
+        );
+        out.push_str(
+            "\\mathcal E_{ij}(\\psi,\\phi)&=\\frac{\\eta^{ij}-\\sum_\\nu(R^{-1}(\\psi))_{i\\nu}\\eta^{\\nu\\nu}(R^{-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
+        );
+        out.push_str("\\Theta_{g,n}(i)&=\\Delta_i^{g-1}\\bigl(\\Delta_i^{1/2}\\bigr)^n.\n");
+        out.push_str("\\end{align*}\n");
+        out.push_str(
+            "The graph bracket $\\langle\\cdots\\rangle_\\Gamma^{\\mathrm{pt}}$ means the product of point-theory vertex integrals, including arbitrary translation markings from $\\exp(T_i)$ with the usual symmetry factors.\n",
+        );
+    }
+
+    fn render_tex_resolvent_glossary(&self, out: &mut String) {
+        out.push_str("\\subsection*{Resolvent Basis Elements}\n");
+        out.push_str("\\begin{itemize}\n");
+        out.push_str("\\item $\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)$: packed descendant leg kernel; $[z_\\ell^{-k-1}]$ gives the $\\tau_k$ coefficient.\n");
+        out.push_str("\\item $\\mathcal E_{ij}(\\psi,\\phi)$: regular edge propagator before coefficient extraction in the two half-edge psi classes.\n");
+        out.push_str("\\item $\\Theta_{g,n}(i)$: diagonal TFT factor in the canonical idempotent color $i$.\n");
+        out.push_str("\\item $\\exp(T_i)$: translation insertions produced by $T(z)=z(1-R(z)^{-1})\\mathbf 1$.\n");
+        out.push_str("\\item $\\langle\\cdots\\rangle_\\Gamma^{\\mathrm{pt}}$: product of Witten--Kontsevich vertex integrals.\n");
+        out.push_str("\\end{itemize}\n");
+    }
+
+    fn render_tex_rational_glossary(&self, out: &mut String) {
+        out.push_str("\\subsection*{Rational Basis Elements}\n");
+        out.push_str("This view uses the resolvent graph expression with engine-specialized kernels.  For fixed $q$-degree, these kernels are read as truncated rational/root-sum expressions in canonical roots, equivariant weights, and insertion variables.\n");
+        self.render_tex_resolvent_glossary(out);
     }
 
     fn render_tex_graphs(&self, out: &mut String) {
@@ -450,7 +586,12 @@ impl GraphFormulaSkeleton {
             self.automorphism_order,
             request.colors - 1
         ));
-        self.render_expanded_expression(out, request);
+        match request.basis {
+            FormulaBasisMode::Raw => self.render_expanded_expression(out, request),
+            FormulaBasisMode::Resolvent | FormulaBasisMode::Rational => {
+                self.render_compact_expression(out, request)
+            }
+        }
     }
 
     fn render_tex(&self, out: &mut String, request: &FormulaRequest) {
@@ -515,7 +656,12 @@ impl GraphFormulaSkeleton {
         out.push_str(&format!("\\item Markings: {}.\n", markings));
         out.push_str("\\end{itemize}\n");
         self.render_tikz(out);
-        self.render_expanded_tex_expression(out, request);
+        match request.basis {
+            FormulaBasisMode::Raw => self.render_expanded_tex_expression(out, request),
+            FormulaBasisMode::Resolvent | FormulaBasisMode::Rational => {
+                self.render_compact_tex_expression(out, request)
+            }
+        }
     }
 
     fn render_tikz(&self, out: &mut String) {
@@ -606,6 +752,56 @@ impl GraphFormulaSkeleton {
         }
     }
 
+    fn render_compact_expression(&self, out: &mut String, request: &FormulaRequest) {
+        let label = request.basis.label();
+        out.push_str(&format!("  Packed {label} contribution:\n"));
+        out.push_str(&format!(
+            "    C_{}^{}(z) = (1/{}) * {} <{}>_Gamma^pt\n",
+            self.index,
+            label,
+            self.automorphism_order,
+            self.color_sum_label(request.colors),
+            self.compact_text_integrand(request)
+        ));
+        out.push_str(
+            "    Coefficients in z_ell^{-k-1} recover individual descendant invariants.\n",
+        );
+    }
+
+    fn compact_text_integrand(&self, request: &FormulaRequest) -> String {
+        let mut factors = Vec::new();
+        let suffix = match request.basis {
+            FormulaBasisMode::Rational => "^rat",
+            _ => "",
+        };
+        for vertex in &self.vertices {
+            factors.push(format!(
+                "Theta{}_{{{}, {}}}(i{})",
+                suffix, vertex.genus, vertex.valence, vertex.index
+            ));
+            if request.translation_power_max() >= 2 {
+                factors.push(format!("exp(T_i{})", vertex.index));
+            }
+        }
+        for (marking, &vertex) in self.graph.legs.iter().enumerate() {
+            factors.push(format!(
+                "L{}_i{}^ell{}(z{}, psi_ell{})",
+                suffix, vertex, marking, marking, marking
+            ));
+        }
+        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            factors.push(format!(
+                "E{}_i{},i{}(psi_e{}+, psi_e{}-)",
+                suffix, edge.a, edge.b, edge_index, edge_index
+            ));
+        }
+        if factors.is_empty() {
+            "1".to_string()
+        } else {
+            factors.join(" * ")
+        }
+    }
+
     fn render_expanded_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
         let terms = self.expanded_tex_factor_terms(request);
         if terms.is_empty() {
@@ -635,6 +831,53 @@ impl GraphFormulaSkeleton {
             out.push_str("\\bigr)");
         }
         out.push_str("\n\\end{dmath*}\n");
+    }
+
+    fn render_compact_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str("\\begin{dmath*}\n");
+        out.push_str(&format!(
+            "C_{{{}}}^{{{}}}(\\mathbf z)=\\frac{{1}}{{{}}}{}\\langle {}\\rangle_\\Gamma^{{\\mathrm{{pt}}}}",
+            self.index,
+            request.basis.tex_superscript(),
+            self.automorphism_order,
+            self.color_sum_tex(request.colors),
+            self.compact_tex_integrand(request)
+        ));
+        out.push_str("\n\\end{dmath*}\n");
+    }
+
+    fn compact_tex_integrand(&self, request: &FormulaRequest) -> String {
+        let mut factors = Vec::new();
+        let kernel_superscript = match request.basis {
+            FormulaBasisMode::Rational => "^{\\mathrm{rat}}",
+            _ => "",
+        };
+        for vertex in &self.vertices {
+            factors.push(format!(
+                "\\Theta{}_{{{}, {}}}(i_{{{}}})",
+                kernel_superscript, vertex.genus, vertex.valence, vertex.index
+            ));
+            if request.translation_power_max() >= 2 {
+                factors.push(format!("\\exp(T_{{i_{{{}}}}})", vertex.index));
+            }
+        }
+        for (marking, &vertex) in self.graph.legs.iter().enumerate() {
+            factors.push(format!(
+                "\\mathcal L{}_{{i_{{{}}}}}^{{\\gamma_{{{}}}}}(z_{{{}}},\\bar\\psi_{{\\ell_{{{}}}}})",
+                kernel_superscript, vertex, marking, marking, marking
+            ));
+        }
+        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            factors.push(format!(
+                "\\mathcal E{}_{{i_{{{}}}i_{{{}}}}}(\\bar\\psi_{{e_{{{}}},+}},\\bar\\psi_{{e_{{{}}},-}})",
+                kernel_superscript, edge.a, edge.b, edge_index, edge_index
+            ));
+        }
+        if factors.is_empty() {
+            "1".to_string()
+        } else {
+            factors.join("\\mathbin{\\cdot}")
+        }
     }
 
     fn color_sum_label(&self, colors: usize) -> String {
@@ -1397,7 +1640,7 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         assert_eq!(skeleton.graphs.len(), 1);
         assert_eq!(skeleton.graphs[0].automorphism_order, 1);
-        assert!(skeleton.render_text().contains("Basis glossary"));
+        assert!(skeleton.render_text().contains("Raw basis glossary"));
     }
 
     #[test]
@@ -1443,6 +1686,37 @@ mod tests {
         assert!(rendered.contains("\\mathbin{\\cdot}\\langle \\tau_{1}\\rangle_{1}^{\\mathrm{pt}}"));
         assert!(!rendered.contains("\\begin{aligned}[t]"));
         assert!(!rendered.contains("&\\qquad {}\\cdot"));
+    }
+
+    #[test]
+    fn resolvent_basis_packs_descendants_into_kernels() {
+        let mut request = FormulaRequest::new(1, 1, 2);
+        request.basis = FormulaBasisMode::Resolvent;
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_tex();
+        assert!(rendered.contains("Resolvent Basis Elements"));
+        assert!(rendered.contains("\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)"));
+        assert!(rendered.contains("C_{0}^{\\mathrm{res}}"));
+        assert!(rendered.contains("\\mathcal L_{i_{0}}^{\\gamma_{0}}"));
+        assert!(rendered.contains("\\langle"));
+        assert!(!rendered.contains("Expanded contribution in basis coefficients"));
+    }
+
+    #[test]
+    fn rational_basis_uses_engine_specialized_kernel_notation() {
+        let mut request = FormulaRequest::new(0, 3, 3);
+        request.basis = FormulaBasisMode::Rational;
+        request.expansion = Some(FormulaExpansion::ProjectiveSpace {
+            n: 2,
+            equivariant: false,
+        });
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_tex();
+        assert!(rendered.contains("Rational Basis: Ordinary Projective Space"));
+        assert!(rendered.contains("P(u_i)&=0"));
+        assert!(rendered.contains("C_{0}^{\\mathrm{rat}}"));
+        assert!(rendered.contains("\\mathcal L^{\\mathrm{rat}}_{i_{0}}^{\\gamma_{0}}"));
+        assert!(rendered.contains("\\Theta^{\\mathrm{rat}}_{0, 3}(i_{0})"));
     }
 
     #[test]

@@ -39,6 +39,32 @@ impl FormulaExpansion {
             } => render_twisted_tex(*n, degrees, *equivariant),
         }
     }
+
+    pub fn render_rational_text(&self) -> String {
+        match self {
+            Self::ProjectiveSpace { n, equivariant } => {
+                render_projective_rational_text(*n, *equivariant)
+            }
+            Self::NegativeSplitTwisted {
+                n,
+                degrees,
+                equivariant,
+            } => render_twisted_rational_text(*n, degrees, *equivariant),
+        }
+    }
+
+    pub fn render_rational_tex(&self) -> String {
+        match self {
+            Self::ProjectiveSpace { n, equivariant } => {
+                render_projective_rational_tex(*n, *equivariant)
+            }
+            Self::NegativeSplitTwisted {
+                n,
+                degrees,
+                equivariant,
+            } => render_twisted_rational_tex(*n, degrees, *equivariant),
+        }
+    }
 }
 
 fn render_projective_text(n: usize, equivariant: bool) -> String {
@@ -53,7 +79,7 @@ fn render_projective_text(n: usize, equivariant: bool) -> String {
             "Engine: ordinary projective-space Givental backend with the generic lambda-line calibration.\n",
         );
     }
-    out.push_str("Smaller calibration primitives:\n");
+    out.push_str("Smaller calibration data:\n");
     out.push_str("- P(x)=prod_a (x-lambda_a)-q, with canonical roots u_i(q).\n");
     out.push_str("- Evaluation matrix E_{i,alpha}=u_i^alpha in the flat basis 1,H,...,H^n.\n");
     out.push_str(
@@ -83,14 +109,14 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
     ));
     if equivariant {
         out.push_str(
-            "Engine: symbolic equivariant negative-split formulas are not a compute backend yet; this document records the intended calibration primitives.\n",
+            "Engine: symbolic equivariant negative-split formulas are not a compute backend yet; this document records the intended calibration data.\n",
         );
     } else {
         out.push_str(
             "Engine: negative-split hypergeometric/Birkhoff S plus QRR R backend with the generic rational lambda-line evaluation.\n",
         );
     }
-    out.push_str("Smaller calibration primitives:\n");
+    out.push_str("Smaller calibration data:\n");
     out.push_str("- I^tw(q,z): the negative-split hypergeometric I-function with the concave Euler factor.\n");
     out.push_str("- Birkhoff factorization turns I^tw into the descendant S-calibration used on insertions.\n");
     out.push_str("- eta^tw is the twisted flat metric, using the inverse Euler pairing in the local negative-split path.\n");
@@ -98,6 +124,53 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
     out.push_str("- Psi, Psi^{-1}, and Delta are obtained by diagonalizing that multiplication operator against eta^tw.\n");
     out.push_str("- R is then produced by the QRR/flatness recursion in the canonical frame.\n");
     out.push_str("- RInv, T, and edge propagators are derived universally from the resulting semisimple calibration.\n");
+    out
+}
+
+fn render_projective_rational_text(n: usize, equivariant: bool) -> String {
+    let mut out = String::new();
+    out.push_str("Rational basis specialization: ordinary projective space\n");
+    out.push_str("--------------------------------------------------------\n");
+    out.push_str(&format!("Target: P^{n}\n"));
+    if equivariant {
+        out.push_str("Equivariant parameters lambda_0,...,lambda_n are kept symbolic.\n");
+    } else {
+        out.push_str("The current compute backend usually evaluates on a generic lambda line before taking the non-equivariant limit; this display keeps the symbolic root-sum form.\n");
+    }
+    out.push_str("Canonical roots and norms:\n");
+    out.push_str("  P(x)=prod_{a=0}^n (x-lambda_a)-q,  P(u_i)=0,  Delta_i=P'(u_i).\n");
+    out.push_str("Flat-to-canonical transition:\n");
+    out.push_str("  E_{i,a}=u_i^a,  PsiInv_{i,a}=Delta_i^{-1/2} E_{i,a}.\n");
+    out.push_str("Packed kernels:\n");
+    out.push_str("  L_i^rat(z,psi)=sum_{j,a,b} RInv_ij(psi) PsiInv_{j,b} S(z)_{b,a}/(z-psi).\n");
+    out.push_str("  E_ij^rat(psi,phi)=(eta^{ij}-sum_nu RInv_i,nu(psi) eta^{nu,nu} RInv_j,nu(phi))/(psi+phi).\n");
+    out.push_str("Here S is computed from the small J-function by the quantum-minus-classical H recursion, and RInv/T are solved from the canonical flatness equation.  All q-series are read only to the requested q-degree.\n");
+    out
+}
+
+fn render_twisted_rational_text(n: usize, degrees: &[usize], equivariant: bool) -> String {
+    let mut out = String::new();
+    out.push_str("Rational basis specialization: negative split twist\n");
+    out.push_str("---------------------------------------------------\n");
+    out.push_str(&format!("Base: P^{n}\n"));
+    out.push_str(&format!(
+        "Twist: {}\n",
+        degrees
+            .iter()
+            .map(|degree| format!("O(-{degree})"))
+            .collect::<Vec<_>>()
+            .join(" + ")
+    ));
+    if equivariant {
+        out.push_str("Full symbolic equivariant negative-split rational output is a planned extension; the displayed formulas describe the specialized calibration data.\n");
+    } else {
+        out.push_str("The implemented twisted backend uses a generic rational lambda-line specialization with a non-equivariant limit when available.\n");
+    }
+    out.push_str("Twisted calibration:\n");
+    out.push_str("  I^tw(q,z)=sum_d q^d I_d^{P^n}(z) E_d^{conc};  S^tw=Birkhoff(I^tw).\n");
+    out.push_str("  eta^tw(phi_a,phi_b)=int_{P^n} phi_a phi_b / e(E).\n");
+    out.push_str("  H *_tw e_i = u_i^tw e_i,  Delta_i^{tw,-1}=(e_i,e_i)_{eta^tw}.\n");
+    out.push_str("Packed kernels are the same resolvent kernels with S,R,Psi,Delta,eta replaced by their twisted versions.  All q-series are read only to the requested q-degree.\n");
     out
 }
 
@@ -156,7 +229,7 @@ fn render_twisted_tex(n: usize, degrees: &[usize], equivariant: bool) -> String 
     out.push_str(&format!("Twist: ${twist}$.\n\n"));
     if equivariant {
         out.push_str(
-            "Engine note: full symbolic equivariant negative-split output is not yet a compute backend; this document records the calibration primitives it would expand to.\n\n",
+            "Engine note: full symbolic equivariant negative-split output is not yet a compute backend; this document records the calibration data it would expand to.\n\n",
         );
     } else {
         out.push_str(
@@ -189,6 +262,71 @@ U^{{\\mathrm{{tw}}}}&=\\operatorname{{diag}}(u_0^{{\\mathrm{{tw}}}},\\ldots,u_{n
     out.push_str(
         "and edge propagators are universal expressions in $(R^{\\mathrm{tw}})^{-1}$ and $(\\eta^{\\mathrm{tw}})^{-1}$.\n",
     );
+    out
+}
+
+fn render_projective_rational_tex(n: usize, equivariant: bool) -> String {
+    let mut out = String::new();
+    out.push_str("\\section*{Rational Basis: Ordinary Projective Space}\n");
+    out.push_str(&format!("Target: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
+    if equivariant {
+        out.push_str("The parameters $\\lambda_0,\\ldots,\\lambda_n$ are kept symbolic.\n\n");
+    } else {
+        out.push_str("The numerical backend may evaluate on a generic $\\lambda$-line before taking a non-equivariant limit; this display keeps the symbolic root-sum form.\n\n");
+    }
+    out.push_str("\\begin{align*}\n");
+    out.push_str(&format!(
+        "P(x)&=\\prod_{{a=0}}^{{{n}}}(x-\\lambda_a)-q, & P(u_i)&=0, & \\Delta_i&=P'(u_i),\\\\\n"
+    ));
+    out.push_str(
+        "E_{i\\alpha}&=u_i^\\alpha, & (\\Psi^{-1})_{i\\alpha}&=\\Delta_i^{-1/2}E_{i\\alpha}, & \\eta^{ij}&=\\delta^{ij}.\n",
+    );
+    out.push_str("\\end{align*}\n");
+    out.push_str(
+        "The packed graph kernels are then read as $q$-truncated rational/root-sum expressions:\n",
+    );
+    out.push_str("\\begin{align*}\n");
+    out.push_str(
+        "\\mathcal L_i^{\\mathrm{rat},\\gamma}(z,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{-1}(\\psi))_{ij}(\\Psi^{-1})_{j\\beta}S(z)_{\\beta\\alpha}\\frac{\\gamma_\\alpha}{z-\\psi},\\\\\n",
+    );
+    out.push_str(
+        "\\mathcal E_{ij}^{\\mathrm{rat}}(\\psi,\\phi)&=\\frac{\\eta^{ij}-\\sum_\\nu(R^{-1}(\\psi))_{i\\nu}\\eta^{\\nu\\nu}(R^{-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
+    );
+    out.push_str(
+        "\\Theta_{g,n}^{\\mathrm{rat}}(i)&=\\Delta_i^{g-1}\\bigl(\\Delta_i^{1/2}\\bigr)^n.\n",
+    );
+    out.push_str("\\end{align*}\n");
+    out.push_str("Here $S$ comes from the small $J$-function recursion and $R^{-1},T$ from the canonical flatness equation; all series are truncated at the requested $q$-degree.\n");
+    out
+}
+
+fn render_twisted_rational_tex(n: usize, degrees: &[usize], equivariant: bool) -> String {
+    let mut out = String::new();
+    out.push_str("\\section*{Rational Basis: Negative Split Twist}\n");
+    out.push_str(&format!("Base: $\\mathbb{{P}}^{{{n}}}$.\n\n"));
+    let twist = degrees
+        .iter()
+        .map(|degree| format!("\\mathcal{{O}}(-{degree})"))
+        .collect::<Vec<_>>()
+        .join("\\oplus ");
+    out.push_str(&format!("Twist: ${twist}$.\n\n"));
+    if equivariant {
+        out.push_str("Full symbolic equivariant negative-split rational output is a planned extension; this display records the specialized calibration data.\n\n");
+    } else {
+        out.push_str("The implemented twisted backend uses a generic rational $\\lambda$-line specialization with a non-equivariant limit when available.\n\n");
+    }
+    out.push_str("\\begin{align*}\n");
+    out.push_str(&format!(
+        "I^{{\\mathrm{{tw}}}}(q,z)&=\\sum_{{d\\ge0}}q^d I_d^{{\\mathbb P^{n}}}(z)\\mathcal E_d^{{\\mathrm{{conc}}}}, &
+S^{{\\mathrm{{tw}}}}&=\\operatorname{{Birkhoff}}(I^{{\\mathrm{{tw}}}}),\\\\\n"
+    ));
+    out.push_str(&format!(
+        "\\eta^{{\\mathrm{{tw}}}}(\\phi_\\alpha,\\phi_\\beta)&=\\int_{{\\mathbb P^{n}}}\\frac{{\\phi_\\alpha\\phi_\\beta}}{{e(E)}}, &
+H\\star_{{\\mathrm{{tw}}}}e_i&=u_i^{{\\mathrm{{tw}}}}e_i,\\\\\n"
+    ));
+    out.push_str("\\Delta_i^{\\mathrm{tw},-1}&=(e_i,e_i)_{\\eta^{\\mathrm{tw}}}.\n");
+    out.push_str("\\end{align*}\n");
+    out.push_str("The kernels $\\mathcal L^{\\mathrm{rat}}$, $\\mathcal E^{\\mathrm{rat}}$, and $\\Theta^{\\mathrm{rat}}$ are the resolvent kernels with $S,R,\\Psi,\\Delta,\\eta$ replaced by these twisted calibration data and truncated at the requested $q$-degree.\n");
     out
 }
 

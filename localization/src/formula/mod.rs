@@ -26,6 +26,6 @@ pub mod skeleton;
 pub use basis::{all_basis_kinds, basis_glossary, BasisKind};
 pub use expansion::FormulaExpansion;
 pub use skeleton::{
-    build_formula_skeleton, FormulaRequest, FormulaSkeleton, GraphFormulaSkeleton,
-    VertexFormulaSlot,
+    build_formula_skeleton, FormulaBasisMode, FormulaRequest, FormulaSkeleton,
+    GraphFormulaSkeleton, VertexFormulaSlot,
 };
