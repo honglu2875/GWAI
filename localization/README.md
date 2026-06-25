@@ -252,8 +252,9 @@ The output defines the raw basis elements `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 truncation orders, and expanded graph terms. Marking and edge factors are
 expanded directly in those basis elements rather than kept as separate composite
 basis elements. The resolvent and rational bases instead print one compact
-graph expression per stable graph using packed leg kernels `L(z,psi)` and edge
-kernels `E(psi,phi)`.
+graph expression per stable graph, with the leg and edge kernel formulas
+substituted directly into the graph bracket while descendant insertions stay
+packed in the variables `z_l`.
 Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and

@@ -511,11 +511,12 @@ impl FormulaSkeleton {
         out.push_str("\\item $\\exp(T_i)$: translation insertions produced by $T(z)=z(1-R(z)^{-1})\\mathbf 1$.\n");
         out.push_str("\\item $\\langle\\cdots\\rangle_\\Gamma^{\\mathrm{pt}}$: product of Witten--Kontsevich vertex integrals.\n");
         out.push_str("\\end{itemize}\n");
+        out.push_str("In graph contributions these kernel definitions are substituted inline rather than left as opaque $\\mathcal L$ or $\\mathcal E$ factors.\n");
     }
 
     fn render_tex_rational_glossary(&self, out: &mut String) {
         out.push_str("\\subsection*{Rational Basis Elements}\n");
-        out.push_str("This view uses the resolvent graph expression with engine-specialized kernels.  For fixed $q$-degree, these kernels are read as truncated rational/root-sum expressions in canonical roots, equivariant weights, and insertion variables.\n");
+        out.push_str("This view uses the resolvent graph expression with engine-specialized kernels substituted inline.  For fixed $q$-degree, these kernels are read as truncated rational/root-sum expressions in canonical roots, equivariant weights, and insertion variables.\n");
         self.render_tex_resolvent_glossary(out);
     }
 
@@ -774,30 +775,17 @@ impl GraphFormulaSkeleton {
 
     fn compact_text_integrand(&self, request: &FormulaRequest) -> String {
         let mut factors = Vec::new();
-        let suffix = match request.basis {
-            FormulaBasisMode::Rational => "^rat",
-            _ => "",
-        };
         for vertex in &self.vertices {
-            factors.push(format!(
-                "Theta{}_{{{}, {}}}(i{})",
-                suffix, vertex.genus, vertex.valence, vertex.index
-            ));
+            factors.push(vertex_theta_text(vertex, request));
             if request.translation_power_max() >= 2 {
                 factors.push(format!("exp(T_i{})", vertex.index));
             }
         }
         for (marking, &vertex) in self.graph.legs.iter().enumerate() {
-            factors.push(format!(
-                "L{}_i{}^ell{}(z{}, psi_ell{})",
-                suffix, vertex, marking, marking, marking
-            ));
+            factors.push(resolvent_leg_text(marking, vertex, request));
         }
         for (edge_index, edge) in self.graph.edges.iter().enumerate() {
-            factors.push(format!(
-                "E{}_i{},i{}(psi_e{}+, psi_e{}-)",
-                suffix, edge.a, edge.b, edge_index, edge_index
-            ));
+            factors.push(resolvent_edge_text(edge_index, edge, request));
         }
         if factors.is_empty() {
             "1".to_string()
@@ -887,47 +875,18 @@ impl GraphFormulaSkeleton {
     }
 
     fn compact_tex_factors(&self, request: &FormulaRequest) -> Vec<String> {
-        let rational = request.basis == FormulaBasisMode::Rational;
         let mut factors = Vec::new();
         for vertex in &self.vertices {
-            let theta = if rational {
-                format!(
-                    "\\Theta_{{{}, {}}}^{{\\mathrm{{rat}}}}(i_{{{}}})",
-                    vertex.genus, vertex.valence, vertex.index
-                )
-            } else {
-                format!(
-                    "\\Theta_{{{}, {}}}(i_{{{}}})",
-                    vertex.genus, vertex.valence, vertex.index
-                )
-            };
-            factors.push(theta);
+            factors.push(vertex_theta_tex(vertex, request));
             if request.translation_power_max() >= 2 {
                 factors.push(format!("\\exp(T_{{i_{{{}}}}})", vertex.index));
             }
         }
         for (marking, &vertex) in self.graph.legs.iter().enumerate() {
-            // The rational kernel reuses the resolvent symbol; the `rat` tag has
-            // to share the single superscript slot with the descendant label so
-            // that it never collides into a double superscript.
-            let superscript = if rational {
-                format!("\\mathrm{{rat}},\\gamma_{{{marking}}}")
-            } else {
-                format!("\\gamma_{{{marking}}}")
-            };
-            factors.push(format!(
-                "\\mathcal L_{{i_{{{vertex}}}}}^{{{superscript}}}(z_{{{marking}}},\\bar\\psi_{{\\ell_{{{marking}}}}})"
-            ));
+            factors.push(resolvent_leg_tex(marking, vertex, request));
         }
         for (edge_index, edge) in self.graph.edges.iter().enumerate() {
-            let scripts = if rational {
-                format!("_{{i_{{{}}}i_{{{}}}}}^{{\\mathrm{{rat}}}}", edge.a, edge.b)
-            } else {
-                format!("_{{i_{{{}}}i_{{{}}}}}", edge.a, edge.b)
-            };
-            factors.push(format!(
-                "\\mathcal E{scripts}(\\bar\\psi_{{e_{{{edge_index}}},+}},\\bar\\psi_{{e_{{{edge_index}}},-}})"
-            ));
+            factors.push(resolvent_edge_tex(edge_index, edge, request));
         }
         factors
     }
@@ -1199,6 +1158,238 @@ fn append_distributed_tex_factor_terms(
     }
 }
 
+fn vertex_theta_text(vertex: &VertexFormulaSlot, request: &FormulaRequest) -> String {
+    let delta = delta_text(&format!("i{}", vertex.index), request);
+    let mut factors = Vec::new();
+    if vertex.genus == 0 {
+        factors.push(format!("{delta}^-1"));
+    } else if vertex.genus > 1 {
+        factors.push(format!("{delta}^{}", vertex.genus - 1));
+    }
+    factors.push(format!("({delta}^(1/2))^{}", vertex.valence));
+    join_factors(&factors)
+}
+
+fn resolvent_leg_text(marking: usize, vertex: usize, request: &FormulaRequest) -> String {
+    let max = request.colors - 1;
+    let psi = format!("barpsi_ell{marking}");
+    let r_inv = r_inv_series_text(&psi, request);
+    let s = s_series_text(&format!("z{marking}"), request);
+    match rational_projective_n(request) {
+        Some(_) if request.basis == FormulaBasisMode::Rational => format!(
+            "sum_{{j,alpha,beta=0..{max}}} {r_inv}[i{vertex},j] * Delta_j^(-1/2) * u_j^beta * {s}[beta,alpha] * gamma_{{{marking},alpha}}/(z{marking}-{psi})"
+        ),
+        _ => {
+            let psi_inv = psi_inverse_text(request);
+            format!(
+                "sum_{{j,alpha,beta=0..{max}}} {r_inv}[i{vertex},j] * {psi_inv}[j,beta] * {s}[beta,alpha] * gamma_{{{marking},alpha}}/(z{marking}-{psi})"
+            )
+        }
+    }
+}
+
+fn resolvent_edge_text(edge_index: usize, edge: &StableEdge, request: &FormulaRequest) -> String {
+    let max = request.colors - 1;
+    let left = format!("barpsi_e{edge_index}_plus");
+    let right = format!("barpsi_e{edge_index}_minus");
+    let left_r = r_inv_series_text(&left, request);
+    let right_r = r_inv_series_text(&right, request);
+    let denominator = format!("({left}+{right})");
+    match rational_projective_n(request) {
+        Some(_) if request.basis == FormulaBasisMode::Rational => format!(
+            "(delta_{{i{},i{}}} - sum_{{nu=0..{max}}} {left_r}[i{},nu] * {right_r}[i{},nu]) / {denominator}",
+            edge.a, edge.b, edge.a, edge.b
+        ),
+        _ => {
+            let eta = eta_inverse_text(request);
+            format!(
+                "({eta}[i{},i{}] - sum_{{nu=0..{max}}} {left_r}[i{},nu] * {eta}[nu,nu] * {right_r}[i{},nu]) / {denominator}",
+                edge.a, edge.b, edge.a, edge.b
+            )
+        }
+    }
+}
+
+fn vertex_theta_tex(vertex: &VertexFormulaSlot, request: &FormulaRequest) -> String {
+    let delta = delta_tex(&format!("i_{{{}}}", vertex.index), request);
+    let mut factors = Vec::new();
+    if vertex.genus == 0 {
+        factors.push(format!("\\bigl({delta}\\bigr)^{{-1}}"));
+    } else if vertex.genus > 1 {
+        factors.push(powered_factor_tex(&delta, vertex.genus - 1));
+    }
+    let sqrt_delta = format!("\\bigl({delta}\\bigr)^{{1/2}}");
+    factors.push(powered_factor_tex(&sqrt_delta, vertex.valence));
+    join_tex_product(&factors)
+}
+
+fn resolvent_leg_tex(marking: usize, vertex: usize, request: &FormulaRequest) -> String {
+    let max = request.colors - 1;
+    let psi = format!("\\bar\\psi_{{\\ell_{{{marking}}}}}");
+    let z = format!("z_{{{marking}}}");
+    let r_inv = r_inv_series_tex(&psi, request);
+    let s = s_series_tex(&z, request);
+    match rational_projective_n(request) {
+        Some(_) if request.basis == FormulaBasisMode::Rational => format!(
+            "\\sum_{{j,\\alpha,\\beta=0}}^{{{max}}}{r_inv}_{{i_{{{vertex}}},j}}\\mathbin{{\\cdot}}\\Delta_j^{{-1/2}}u_j^\\beta\\mathbin{{\\cdot}}{s}_{{\\beta,\\alpha}}\\mathbin{{\\cdot}}\\frac{{\\gamma_{{{marking},\\alpha}}}}{{{z}-{psi}}}"
+        ),
+        _ => {
+            let psi_inv = psi_inverse_tex(request);
+            format!(
+                "\\sum_{{j,\\alpha,\\beta=0}}^{{{max}}}{r_inv}_{{i_{{{vertex}}},j}}\\mathbin{{\\cdot}}{psi_inv}_{{j,\\beta}}\\mathbin{{\\cdot}}{s}_{{\\beta,\\alpha}}\\mathbin{{\\cdot}}\\frac{{\\gamma_{{{marking},\\alpha}}}}{{{z}-{psi}}}"
+            )
+        }
+    }
+}
+
+fn resolvent_edge_tex(edge_index: usize, edge: &StableEdge, request: &FormulaRequest) -> String {
+    let max = request.colors - 1;
+    let left = format!("\\bar\\psi_{{e_{{{edge_index}}},+}}");
+    let right = format!("\\bar\\psi_{{e_{{{edge_index}}},-}}");
+    let left_r = r_inv_series_tex(&left, request);
+    let right_r = r_inv_series_tex(&right, request);
+    let denominator = format!("\\bigl({left}+{right}\\bigr)");
+    match rational_projective_n(request) {
+        Some(_) if request.basis == FormulaBasisMode::Rational => format!(
+            "\\bigl(\\delta_{{i_{{{}}},i_{{{}}}}} - \\sum_{{\\nu=0}}^{{{max}}}{left_r}_{{i_{{{}}},\\nu}}\\mathbin{{\\cdot}}{right_r}_{{i_{{{}}},\\nu}}\\bigr)\\mathbin{{/}}{denominator}",
+            edge.a, edge.b, edge.a, edge.b
+        ),
+        _ => {
+            let eta = eta_inverse_tex(request);
+            format!(
+                "\\bigl({eta}^{{i_{{{}}}i_{{{}}}}} - \\sum_{{\\nu=0}}^{{{max}}}{left_r}_{{i_{{{}}},\\nu}}\\mathbin{{\\cdot}}{eta}^{{\\nu\\nu}}\\mathbin{{\\cdot}}{right_r}_{{i_{{{}}},\\nu}}\\bigr)\\mathbin{{/}}{denominator}",
+                edge.a, edge.b, edge.a, edge.b
+            )
+        }
+    }
+}
+
+fn rational_projective_n(request: &FormulaRequest) -> Option<usize> {
+    match &request.expansion {
+        Some(FormulaExpansion::ProjectiveSpace { n, .. })
+            if request.basis == FormulaBasisMode::Rational =>
+        {
+            Some(*n)
+        }
+        _ => None,
+    }
+}
+
+fn rational_twisted(request: &FormulaRequest) -> bool {
+    matches!(
+        (&request.expansion, request.basis),
+        (
+            Some(FormulaExpansion::NegativeSplitTwisted { .. }),
+            FormulaBasisMode::Rational
+        )
+    )
+}
+
+fn delta_text(color: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("P'({color})")
+    } else if rational_twisted(request) {
+        format!("Delta_tw_{color}")
+    } else {
+        format!("Delta_{color}")
+    }
+}
+
+fn delta_tex(color: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("P'(u_{{{color}}})")
+    } else if rational_twisted(request) {
+        format!("\\Delta_{{{color}}}^{{\\mathrm{{tw}}}}")
+    } else {
+        format!("\\Delta_{{{color}}}")
+    }
+}
+
+fn r_inv_series_text(argument: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("RInv_rat({argument})")
+    } else if rational_twisted(request) {
+        format!("RInv_tw({argument})")
+    } else {
+        format!("RInv({argument})")
+    }
+}
+
+fn r_inv_series_tex(argument: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("(R^{{\\mathrm{{rat}},-1}}({argument}))")
+    } else if rational_twisted(request) {
+        format!("(R^{{\\mathrm{{tw}},-1}}({argument}))")
+    } else {
+        format!("(R^{{-1}}({argument}))")
+    }
+}
+
+fn s_series_text(argument: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("S_rat({argument})")
+    } else if rational_twisted(request) {
+        format!("S_tw({argument})")
+    } else {
+        format!("S({argument})")
+    }
+}
+
+fn s_series_tex(argument: &str, request: &FormulaRequest) -> String {
+    if rational_projective_n(request).is_some() {
+        format!("S^{{\\mathrm{{rat}}}}({argument})")
+    } else if rational_twisted(request) {
+        format!("S^{{\\mathrm{{tw}}}}({argument})")
+    } else {
+        format!("S({argument})")
+    }
+}
+
+fn psi_inverse_text(request: &FormulaRequest) -> &'static str {
+    if rational_twisted(request) {
+        "PsiInv_tw"
+    } else {
+        "PsiInv"
+    }
+}
+
+fn psi_inverse_tex(request: &FormulaRequest) -> &'static str {
+    if rational_twisted(request) {
+        "(\\Psi^{\\mathrm{tw},-1})"
+    } else {
+        "(\\Psi^{-1})"
+    }
+}
+
+fn eta_inverse_text(request: &FormulaRequest) -> &'static str {
+    if rational_twisted(request) {
+        "EtaInv_tw"
+    } else {
+        "EtaInv"
+    }
+}
+
+fn eta_inverse_tex(request: &FormulaRequest) -> &'static str {
+    if rational_twisted(request) {
+        "(\\eta^{\\mathrm{tw}})"
+    } else {
+        "\\eta"
+    }
+}
+
+fn join_tex_product(factors: &[String]) -> String {
+    let nontrivial = factors
+        .iter()
+        .filter(|factor| factor.as_str() != "1")
+        .cloned()
+        .collect::<Vec<_>>();
+    if nontrivial.is_empty() {
+        "1".to_string()
+    } else {
+        nontrivial.join("\\mathbin{\\cdot}")
+    }
+}
+
 /// Target visual width (in rough character units) for a single displayed line.
 /// Lines are wrapped conservatively so the largest graph contributions stay
 /// inside the text block instead of running off the right margin.
@@ -1266,7 +1457,11 @@ fn expand_wide_items(items: &[(String, String)], budget: usize) -> Vec<(String, 
             continue;
         }
         for (piece_index, (sign, text)) in pieces.into_iter().enumerate() {
-            let piece_connector = if piece_index == 0 { connector.clone() } else { sign };
+            let piece_connector = if piece_index == 0 {
+                connector.clone()
+            } else {
+                sign
+            };
             out.push((piece_connector, text));
         }
     }
@@ -1957,7 +2152,13 @@ mod tests {
         assert!(rendered.contains("Resolvent Basis Elements"));
         assert!(rendered.contains("\\mathcal L_i^{\\gamma_\\ell}(z_\\ell,\\psi)"));
         assert!(rendered.contains("C_{0}^{\\mathrm{res}}"));
-        assert!(rendered.contains("\\mathcal L_{i_{0}}^{\\gamma_{0}}"));
+        assert!(rendered.contains("(R^{-1}(\\bar\\psi_{\\ell_{0}}))_{i_{0},j}"));
+        assert!(rendered.contains("(\\Psi^{-1})_{j,\\beta}"));
+        assert!(rendered.contains("S(z_{0})_{\\beta,\\alpha}"));
+        assert!(rendered.contains("\\frac{\\gamma_{0,\\alpha}}{z_{0}-\\bar\\psi_{\\ell_{0}}}"));
+        assert!(rendered.contains("(R^{-1}(\\bar\\psi_{e_{0},+}))_{i_{0},\\nu}"));
+        assert!(!rendered.contains("\\mathcal L_{i_{0}}^{\\gamma_{0}}"));
+        assert!(!rendered.contains("\\mathcal E_{i_{0}i_{0}}"));
         assert!(rendered.contains("\\langle"));
         assert!(!rendered.contains("Expanded contribution in basis coefficients"));
     }
@@ -1975,12 +2176,13 @@ mod tests {
         assert!(rendered.contains("Rational Basis: Ordinary Projective Space"));
         assert!(rendered.contains("P(u_i)&=0"));
         assert!(rendered.contains("C_{0}^{\\mathrm{rat}}"));
-        // The rational leg kernel must keep a single superscript group: the old
-        // `\mathcal L^{\mathrm{rat}}_{i_0}^{\gamma_0}` was a LaTeX double
-        // superscript error.
-        assert!(rendered.contains("\\mathcal L_{i_{0}}^{\\mathrm{rat},\\gamma_{0}}"));
+        assert!(rendered.contains("\\bigl(P'(u_{i_{0}})\\bigr)^{-1}"));
+        assert!(rendered.contains("(R^{\\mathrm{rat},-1}(\\bar\\psi_{\\ell_{0}}))_{i_{0},j}"));
+        assert!(rendered.contains("\\Delta_j^{-1/2}u_j^\\beta"));
+        assert!(rendered.contains("S^{\\mathrm{rat}}(z_{0})_{\\beta,\\alpha}"));
+        assert!(!rendered.contains("\\mathcal L_{i_{0}}^{\\mathrm{rat},\\gamma_{0}}"));
         assert!(!rendered.contains("\\mathcal L^{\\mathrm{rat}}_{i_{0}}^{\\gamma_{0}}"));
-        assert!(rendered.contains("\\Theta_{0, 3}^{\\mathrm{rat}}(i_{0})"));
+        assert!(!rendered.contains("\\Theta_{0, 3}^{\\mathrm{rat}}(i_{0})"));
     }
 
     #[test]

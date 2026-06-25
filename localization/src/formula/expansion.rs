@@ -142,8 +142,10 @@ fn render_projective_rational_text(n: usize, equivariant: bool) -> String {
     out.push_str("Flat-to-canonical transition:\n");
     out.push_str("  E_{i,a}=u_i^a,  PsiInv_{i,a}=Delta_i^{-1/2} E_{i,a}.\n");
     out.push_str("Packed kernels:\n");
-    out.push_str("  L_i^rat(z,psi)=sum_{j,a,b} RInv_ij(psi) PsiInv_{j,b} S(z)_{b,a}/(z-psi).\n");
-    out.push_str("  E_ij^rat(psi,phi)=(eta^{ij}-sum_nu RInv_i,nu(psi) eta^{nu,nu} RInv_j,nu(phi))/(psi+phi).\n");
+    out.push_str("  L_i^rat(z,psi)=sum_{j,a,b} RInv_ij^rat(psi) Delta_j^(-1/2) u_j^b S^rat(z)_{b,a} gamma_a/(z-psi).\n");
+    out.push_str(
+        "  E_ij^rat(psi,phi)=(delta_ij-sum_nu RInv_i,nu^rat(psi) RInv_j,nu^rat(phi))/(psi+phi).\n",
+    );
     out.push_str("Here S is computed from the small J-function by the quantum-minus-classical H recursion, and RInv/T are solved from the canonical flatness equation.  All q-series are read only to the requested q-degree.\n");
     out
 }
@@ -170,7 +172,7 @@ fn render_twisted_rational_text(n: usize, degrees: &[usize], equivariant: bool) 
     out.push_str("  I^tw(q,z)=sum_d q^d I_d^{P^n}(z) E_d^{conc};  S^tw=Birkhoff(I^tw).\n");
     out.push_str("  eta^tw(phi_a,phi_b)=int_{P^n} phi_a phi_b / e(E).\n");
     out.push_str("  H *_tw e_i = u_i^tw e_i,  Delta_i^{tw,-1}=(e_i,e_i)_{eta^tw}.\n");
-    out.push_str("Packed kernels are the same resolvent kernels with S,R,Psi,Delta,eta replaced by their twisted versions.  All q-series are read only to the requested q-degree.\n");
+    out.push_str("The graph formula substitutes the resolvent leg and edge kernels inline, with S,R,Psi,Delta,eta replaced by their twisted versions.  All q-series are read only to the requested q-degree.\n");
     out
 }
 
@@ -282,19 +284,15 @@ fn render_projective_rational_tex(n: usize, equivariant: bool) -> String {
         "E_{i\\alpha}&=u_i^\\alpha, & (\\Psi^{-1})_{i\\alpha}&=\\Delta_i^{-1/2}E_{i\\alpha}, & \\eta^{ij}&=\\delta^{ij}.\n",
     );
     out.push_str("\\end{align*}\n");
-    out.push_str(
-        "The packed graph kernels are then read as $q$-truncated rational/root-sum expressions:\n",
-    );
+    out.push_str("The graph formula substitutes the following $q$-truncated rational/root-sum expressions inline:\n");
     out.push_str("\\begin{align*}\n");
     out.push_str(
-        "\\mathcal L_i^{\\mathrm{rat},\\gamma}(z,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{-1}(\\psi))_{ij}(\\Psi^{-1})_{j\\beta}S(z)_{\\beta\\alpha}\\frac{\\gamma_\\alpha}{z-\\psi},\\\\\n",
+        "\\mathcal L_i^{\\mathrm{rat},\\gamma}(z,\\psi)&=\\sum_{j,\\alpha,\\beta}(R^{\\mathrm{rat},-1}(\\psi))_{ij}\\Delta_j^{-1/2}u_j^\\beta S^{\\mathrm{rat}}(z)_{\\beta\\alpha}\\frac{\\gamma_\\alpha}{z-\\psi},\\\\\n",
     );
     out.push_str(
-        "\\mathcal E_{ij}^{\\mathrm{rat}}(\\psi,\\phi)&=\\frac{\\eta^{ij}-\\sum_\\nu(R^{-1}(\\psi))_{i\\nu}\\eta^{\\nu\\nu}(R^{-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
+        "\\mathcal E_{ij}^{\\mathrm{rat}}(\\psi,\\phi)&=\\frac{\\delta_{ij}-\\sum_\\nu(R^{\\mathrm{rat},-1}(\\psi))_{i\\nu}(R^{\\mathrm{rat},-1}(\\phi))_{j\\nu}}{\\psi+\\phi},\\\\\n",
     );
-    out.push_str(
-        "\\Theta_{g,n}^{\\mathrm{rat}}(i)&=\\Delta_i^{g-1}\\bigl(\\Delta_i^{1/2}\\bigr)^n.\n",
-    );
+    out.push_str("\\Theta_{g,n}^{\\mathrm{rat}}(i)&=P'(u_i)^{g-1}\\bigl(P'(u_i)^{1/2}\\bigr)^n.\n");
     out.push_str("\\end{align*}\n");
     out.push_str("Here $S$ comes from the small $J$-function recursion and $R^{-1},T$ from the canonical flatness equation; all series are truncated at the requested $q$-degree.\n");
     out
@@ -326,7 +324,7 @@ H\\star_{{\\mathrm{{tw}}}}e_i&=u_i^{{\\mathrm{{tw}}}}e_i,\\\\\n"
     ));
     out.push_str("\\Delta_i^{\\mathrm{tw},-1}&=(e_i,e_i)_{\\eta^{\\mathrm{tw}}}.\n");
     out.push_str("\\end{align*}\n");
-    out.push_str("The kernels $\\mathcal L^{\\mathrm{rat}}$, $\\mathcal E^{\\mathrm{rat}}$, and $\\Theta^{\\mathrm{rat}}$ are the resolvent kernels with $S,R,\\Psi,\\Delta,\\eta$ replaced by these twisted calibration data and truncated at the requested $q$-degree.\n");
+    out.push_str("The graph formula substitutes the resolvent leg and edge kernels inline, with $S,R,\\Psi,\\Delta,\\eta$ replaced by these twisted calibration data and truncated at the requested $q$-degree.\n");
     out
 }
 

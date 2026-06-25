@@ -35,9 +35,9 @@ Main files:
   off the bottom of a page.  It avoids giant `\left...\right` delimiter pairs.
 
 The raw basis deliberately keeps the coefficient data symbolic.  The resolvent
-basis packs descendants and edge propagators into generating kernels, while the
-rational basis displays how those kernels are read in the ordinary or twisted
-calibration.
+basis keeps descendant variables packed but substitutes the leg and edge kernel
+formulas into each graph bracket.  The rational basis does the same after
+reading those kernels in the ordinary or twisted calibration.
 
 Sample commands:
 
