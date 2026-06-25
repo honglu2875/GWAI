@@ -23,6 +23,7 @@ pub mod geometry;
 pub mod givental;
 pub mod graphs;
 pub mod series;
+pub mod symbolic;
 pub mod tautological;
 pub mod testsuite;
 pub mod twisted;
