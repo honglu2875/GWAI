@@ -216,7 +216,9 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--k-max"),
             CliFlag::value("--d"),
             CliFlag::value("--degree"),
+            CliFlag::value("--format"),
             CliFlag::switch("--no-glossary"),
+            CliFlag::switch("--tex"),
         ],
     )?;
     let genus = first_usize_flag(args, &["--g", "--genus"])?
@@ -242,7 +244,28 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
     request.q_degree = first_usize_flag(args, &["--d", "--degree"])?;
     request.include_glossary = !has_flag(args, "--no-glossary");
     let skeleton = build_formula_skeleton(request)?;
-    println!("{}", skeleton.render_text());
+    let format = match (
+        parse_string_flag(args, "--format")?,
+        has_flag(args, "--tex"),
+    ) {
+        (Some(_), true) => {
+            return Err(GwError::ParseError(
+                "pass either --format tex or --tex, not both".to_string(),
+            ))
+        }
+        (Some(format), false) => format,
+        (None, true) => "tex".to_string(),
+        (None, false) => "text".to_string(),
+    };
+    match format.as_str() {
+        "text" => println!("{}", skeleton.render_text()),
+        "tex" => println!("{}", skeleton.render_tex()),
+        other => {
+            return Err(GwError::ParseError(format!(
+                "invalid --format `{other}`; expected text or tex"
+            )))
+        }
+    }
     Ok(())
 }
 
@@ -942,6 +965,7 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\

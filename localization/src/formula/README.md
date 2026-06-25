@@ -17,7 +17,10 @@ Main files:
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
   orders, stable graph metadata, and expanded graph terms using primitive atom
   coefficients.  Marking factors are expanded into `S/PsiInv/RInv`, and edge
-  factors are expanded into `RInv/EtaInv`.
+  factors are expanded into `RInv/EtaInv`.  The same skeleton can be rendered
+  as plain text or as a TeX fragment using standard symbols
+  \(S_s\), \(R_r^{-1}\), \(\Psi^{-1}\), \((T_p)_i\), \(\Delta_i\), and
+  point-theory intersection brackets.
 
 The first renderer deliberately keeps calibration data symbolic.  Later stages
 can add substitution modes that print actual truncated `R_k`, `S_k`, `T_k`,

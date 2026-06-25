@@ -148,6 +148,19 @@ impl FormulaSkeleton {
         out
     }
 
+    pub fn render_tex(&self) -> String {
+        let mut out = String::new();
+        self.render_tex_header(&mut out);
+        self.render_tex_finite_orders(&mut out);
+        self.render_tex_formula_convention(&mut out);
+        if self.request.include_glossary {
+            out.push('\n');
+            self.render_tex_glossary(&mut out);
+        }
+        self.render_tex_graphs(&mut out);
+        out
+    }
+
     fn render_header(&self, out: &mut String) {
         out.push_str("Givental graph formula skeleton\n");
         out.push_str("===============================\n");
@@ -230,6 +243,120 @@ impl FormulaSkeleton {
         );
     }
 
+    fn render_tex_header(&self, out: &mut String) {
+        out.push_str("\\section*{Givental Graph Formula Skeleton}\n");
+        out.push_str(&format!(
+            "Stable range: $g={}$, $m={}$.\n\n",
+            self.request.genus, self.request.markings
+        ));
+        out.push_str(&format!(
+            "Canonical colors are indexed by $i=0,\\ldots,{}$.\n\n",
+            self.request.colors - 1
+        ));
+        out.push_str(&format!(
+            "\\[\nD=3g-3+m={}\n\\]\n",
+            self.request.graph_dimension()
+        ));
+        match self.request.q_degree {
+            Some(degree) => out.push_str(&format!(
+                "Calibration series are read modulo $q^{{{}}}$.\n",
+                degree + 1
+            )),
+            None => {
+                out.push_str("No $q$-degree is fixed here; this is a universal graph skeleton.\n")
+            }
+        }
+    }
+
+    fn render_tex_finite_orders(&self, out: &mut String) {
+        out.push_str("\n\\subsection*{Finite Truncation Orders}\n");
+        out.push_str("\\begin{align*}\n");
+        out.push_str(&format!(
+            "0\\le s &\\le K={}, &&\\text{{for }} S_s,\\\\\n",
+            self.request.descendant_s_order()
+        ));
+        out.push_str(&format!(
+            "0\\le r &\\le D+1={}, &&\\text{{for }} R_r^{{-1}},\\\\\n",
+            self.request.inverse_r_order()
+        ));
+        out.push_str(&format!(
+            "0\\le a,b &\\le D={}, &&\\text{{for edge endpoint powers}},\\\\\n",
+            self.request.edge_power_max()
+        ));
+        if self.request.translation_power_max() < 2 {
+            out.push_str("T_p&=0, &&\\text{in this range after truncation},\\\\\n");
+        } else {
+            out.push_str(&format!(
+                "2\\le p &\\le D+1={}, &&\\text{{for translation coefficients }}T_p,\\\\\n",
+                self.request.translation_power_max()
+            ));
+        }
+        out.push_str(&format!(
+            "z_{{\\max}} &\\ge \\max(D+1,K)={}.\n",
+            self.request.z_order()
+        ));
+        out.push_str("\\end{align*}\n");
+    }
+
+    fn render_tex_formula_convention(&self, out: &mut String) {
+        out.push_str("\n\\subsection*{Conventions}\n");
+        out.push_str("For formal descendant insertions we write\n");
+        out.push_str("\\[\n");
+        out.push_str("\\gamma_\\ell=\\sum_{0\\le k\\le K}\\sum_\\alpha x_{\\ell,k,\\alpha}\\,\\tau_k(\\phi_\\alpha).\n");
+        out.push_str("\\]\n");
+        out.push_str(
+            "The leg factors are expanded in the primitive coefficients of $S(z)$, $\\Psi^{-1}$, and $R(z)^{-1}$.\n",
+        );
+        out.push_str(
+            "Internal edges use the standard Givental propagator expanded in $R(z)^{-1}$ and the inverse canonical metric.\n",
+        );
+        out.push_str(
+            "At a vertex of genus $h$ and color $i$, translation insertions $(T_p)_i$ are integrated against point-theory psi classes:\n",
+        );
+        out.push_str("\\[\n");
+        out.push_str(
+            "\\left\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\right\\rangle_h^{\\mathrm{pt}}\n",
+        );
+        out.push_str("=\n");
+        out.push_str("\\int_{\\overline{\\mathcal M}_{h,N}}\\prod_{a=1}^N \\psi_a^{p_a}.\n");
+        out.push_str("\\]\n");
+    }
+
+    fn render_tex_glossary(&self, out: &mut String) {
+        out.push_str("\\subsection*{Primitive Atoms}\n");
+        out.push_str("\\begin{itemize}\n");
+        out.push_str(
+            "\\item $(S_s)_{\\beta\\alpha}$: coefficient of $z^{-s}$ in the descendant-to-ancestor $S$-calibration.\n",
+        );
+        out.push_str(
+            "\\item $(\\Psi^{-1})_{j\\beta}$: transition from flat classes to canonical colors.\n",
+        );
+        out.push_str("\\item $(R_r^{-1})_{ij}$: coefficient of $z^r$ in $R(z)^{-1}$.\n");
+        out.push_str(
+            "\\item $(T_p)_i$: translation coefficient in $T(z)=z(1-R(z)^{-1})\\mathbf 1$; here $p\\ge 2$.\n",
+        );
+        out.push_str(
+            "\\item $\\Delta_i$: canonical metric norm; $\\Delta_i^{-1}$ is the genus-zero TFT factor.\n",
+        );
+        out.push_str("\\item $\\eta^{ii}$: diagonal inverse metric in canonical coordinates.\n");
+        out.push_str(
+            "\\item $\\left\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\right\\rangle_h^{\\mathrm{pt}}$: Witten--Kontsevich intersection number on $\\overline{\\mathcal M}_{h,N}$.\n",
+        );
+        out.push_str("\\end{itemize}\n");
+    }
+
+    fn render_tex_graphs(&self, out: &mut String) {
+        out.push_str("\n\\section*{Stable Graphs}\n");
+        out.push_str(&format!(
+            "There are ${}$ stable graphs.\n\n",
+            self.graphs.len()
+        ));
+        for graph in &self.graphs {
+            graph.render_tex(out, &self.request);
+            out.push('\n');
+        }
+    }
+
     fn render_graphs(&self, out: &mut String) {
         out.push('\n');
         out.push_str("Stable graphs\n");
@@ -292,6 +419,70 @@ impl GraphFormulaSkeleton {
         self.render_expanded_expression(out, request);
     }
 
+    fn render_tex(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str(&format!("\\subsection*{{Graph {}}}\n", self.index));
+        out.push_str("\\begin{itemize}\n");
+        out.push_str(&format!(
+            "\\item $|\\operatorname{{Aut}}\\Gamma|={}$, $h^1(\\Gamma)={}$, $|V|={}$, $|E|={}$, $m={}$.\n",
+            self.automorphism_order,
+            self.graph.first_betti(),
+            self.graph.vertices.len(),
+            self.graph.edges.len(),
+            self.graph.legs.len()
+        ));
+
+        let vertices = self
+            .vertices
+            .iter()
+            .map(|vertex| {
+                format!(
+                    "$v_{{{}}}: h={}, n={}$",
+                    vertex.index, vertex.genus, vertex.valence
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!("\\item Vertices: {}.\n", vertices));
+
+        let edges = if self.graph.edges.is_empty() {
+            "none".to_string()
+        } else {
+            self.graph
+                .edges
+                .iter()
+                .enumerate()
+                .map(|(edge_index, edge)| {
+                    let kind = if edge.is_loop() {
+                        "\\mathrm{loop}"
+                    } else {
+                        "e"
+                    };
+                    format!(
+                        "${kind}_{{{edge_index}}}:v_{{{}}}\\text{{--}}v_{{{}}}$",
+                        edge.a, edge.b
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!("\\item Edges: {}.\n", edges));
+
+        let markings = if self.graph.legs.is_empty() {
+            "none".to_string()
+        } else {
+            self.graph
+                .legs
+                .iter()
+                .enumerate()
+                .map(|(marking, vertex)| format!("$\\ell_{{{marking}}}\\mapsto v_{{{vertex}}}$"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!("\\item Markings: {}.\n", markings));
+        out.push_str("\\end{itemize}\n");
+        self.render_expanded_tex_expression(out, request);
+    }
+
     fn render_expanded_expression(&self, out: &mut String, request: &FormulaRequest) {
         let terms = self.expanded_terms(request);
         out.push_str("  Expanded contribution in atom coefficients:\n");
@@ -315,6 +506,33 @@ impl GraphFormulaSkeleton {
         }
     }
 
+    fn render_expanded_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
+        let terms = self.expanded_tex_terms(request);
+        out.push_str("\\[\n");
+        out.push_str(&format!("C_{{{}}}=", self.index));
+        if terms.is_empty() {
+            out.push_str("0\n\\]\n");
+            return;
+        }
+
+        out.push_str(&format!(
+            "\\frac{{1}}{{{}}}{}\\left[\\begin{{aligned}}\n",
+            self.automorphism_order,
+            self.color_sum_tex(request.colors)
+        ));
+        for (idx, term) in terms.iter().enumerate() {
+            if idx == 0 {
+                out.push_str("&");
+            } else {
+                out.push_str("&+");
+            }
+            out.push_str(term);
+            out.push_str("\\\\\n");
+        }
+        out.push_str("\\end{aligned}\\right]\n");
+        out.push_str("\\]\n");
+    }
+
     fn color_sum_label(&self, colors: usize) -> String {
         if self.graph.vertices.len() == 1 {
             format!("sum_{{i0=0..{}}}", colors - 1)
@@ -325,6 +543,13 @@ impl GraphFormulaSkeleton {
                 .join(", ");
             format!("sum_{{{variables}}}")
         }
+    }
+
+    fn color_sum_tex(&self, colors: usize) -> String {
+        (0..self.graph.vertices.len())
+            .map(|vertex| format!("\\sum_{{i_{{{vertex}}}=0}}^{{{}}}", colors - 1))
+            .collect::<Vec<_>>()
+            .join("")
     }
 
     fn expanded_terms(&self, request: &FormulaRequest) -> Vec<String> {
@@ -361,6 +586,55 @@ impl GraphFormulaSkeleton {
                 })
                 .collect::<Vec<_>>();
             append_distributed_terms(
+                &fixed_factors,
+                &vertex_terms,
+                0,
+                &mut Vec::new(),
+                &mut terms,
+            );
+        }
+        terms
+    }
+
+    fn expanded_tex_terms(&self, request: &FormulaRequest) -> Vec<String> {
+        let assignments = self.power_assignments(request);
+        let mut terms = Vec::new();
+        for assignment in assignments {
+            let mut fixed_factors = Vec::new();
+            for (marking, &power) in assignment.leg_powers.iter().enumerate() {
+                let vertex = self.graph.legs[marking];
+                fixed_factors.push(leg_factor_tex(
+                    marking,
+                    &format!("i_{{{vertex}}}"),
+                    power,
+                    request,
+                ));
+            }
+            for (edge_index, &(left_power, right_power)) in
+                assignment.edge_powers.iter().enumerate()
+            {
+                let edge = &self.graph.edges[edge_index];
+                fixed_factors.push(edge_factor_tex(
+                    &format!("i_{{{}}}", edge.a),
+                    &format!("i_{{{}}}", edge.b),
+                    left_power,
+                    right_power,
+                    request.colors,
+                ));
+            }
+
+            let vertex_terms = self
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    vertex_expanded_terms_tex(
+                        vertex.genus,
+                        &format!("i_{{{}}}", vertex.index),
+                        &assignment.vertex_powers[vertex.index],
+                    )
+                })
+                .collect::<Vec<_>>();
+            append_distributed_tex_terms(
                 &fixed_factors,
                 &vertex_terms,
                 0,
@@ -498,6 +772,33 @@ fn append_distributed_terms(
     }
 }
 
+fn append_distributed_tex_terms(
+    fixed_factors: &[String],
+    vertex_terms: &[Vec<String>],
+    vertex_index: usize,
+    current_vertex_factors: &mut Vec<String>,
+    out: &mut Vec<String>,
+) {
+    if vertex_index == vertex_terms.len() {
+        let mut factors = fixed_factors.to_vec();
+        factors.extend(current_vertex_factors.iter().cloned());
+        out.push(join_factors_tex(&factors));
+        return;
+    }
+
+    for term in &vertex_terms[vertex_index] {
+        current_vertex_factors.push(term.clone());
+        append_distributed_tex_terms(
+            fixed_factors,
+            vertex_terms,
+            vertex_index + 1,
+            current_vertex_factors,
+            out,
+        );
+        current_vertex_factors.pop();
+    }
+}
+
 fn leg_factor(marking: usize, color: &str, power: usize, request: &FormulaRequest) -> String {
     let mut terms = Vec::new();
     for k in 0..=request.max_descendant_power {
@@ -514,6 +815,24 @@ fn leg_factor(marking: usize, color: &str, power: usize, request: &FormulaReques
         }
     }
     parenthesized_sum(&terms)
+}
+
+fn leg_factor_tex(marking: usize, color: &str, power: usize, request: &FormulaRequest) -> String {
+    let mut terms = Vec::new();
+    for k in 0..=request.max_descendant_power {
+        for s in 0..=k {
+            for r in 0..=request.inverse_r_order() {
+                if k - s + r != power {
+                    continue;
+                }
+                terms.push(format!(
+                    "\\sum_{{\\alpha,\\beta,j=0}}^{{{}}} x_{{{marking},{k},\\alpha}}\\,(R^{{-1}}_{{{r}}})_{{{color},j}}\\,(\\Psi^{{-1}})_{{j,\\beta}}\\,(S_{{{s}}})_{{\\beta,\\alpha}}",
+                    request.colors - 1
+                ));
+            }
+        }
+    }
+    parenthesized_sum_tex(&terms)
 }
 
 fn edge_factor(
@@ -545,11 +864,50 @@ fn edge_factor(
     out
 }
 
+fn edge_factor_tex(
+    left_color: &str,
+    right_color: &str,
+    left_power: usize,
+    right_power: usize,
+    colors: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str("\\left(");
+    for t in 0..=right_power {
+        let sign = if t % 2 == 0 { "-" } else { "+" };
+        if t == 0 {
+            out.push_str(sign);
+        } else {
+            out.push(' ');
+            out.push_str(sign);
+            out.push(' ');
+        }
+        out.push_str(&format!(
+            "\\sum_{{\\nu=0}}^{{{}}}(R^{{-1}}_{{{}}})_{{{},\\nu}}\\,\\eta^{{\\nu\\nu}}\\,(R^{{-1}}_{{{}}})_{{{},\\nu}}",
+            colors - 1,
+            left_power + 1 + t,
+            left_color,
+            right_power - t,
+            right_color
+        ));
+    }
+    out.push_str("\\right)");
+    out
+}
+
 fn parenthesized_sum(terms: &[String]) -> String {
     match terms {
         [] => "0".to_string(),
         [term] => format!("({term})"),
         _ => format!("({})", terms.join(" + ")),
+    }
+}
+
+fn parenthesized_sum_tex(terms: &[String]) -> String {
+    match terms {
+        [] => "0".to_string(),
+        [term] => format!("\\left({term}\\right)"),
+        _ => format!("\\left({}\\right)", terms.join(" + ")),
     }
 }
 
@@ -601,6 +959,54 @@ fn vertex_expanded_terms(genus: usize, color: &str, base_powers: &[usize]) -> Ve
         .collect()
 }
 
+fn vertex_expanded_terms_tex(genus: usize, color: &str, base_powers: &[usize]) -> Vec<String> {
+    let dimension = 3 * genus + base_powers.len() - 3;
+    let power_sum = base_powers.iter().sum::<usize>();
+    if power_sum > dimension {
+        return Vec::new();
+    }
+
+    let excess = dimension - power_sum;
+    if excess == 0 {
+        return vec![join_factors_tex(&[
+            tft_factor_tex(genus, color, base_powers.len()),
+            psi_integral_factor_tex(genus, base_powers),
+        ])];
+    }
+
+    translation_partitions(excess)
+        .into_iter()
+        .map(|partition| {
+            let translation_count = partition
+                .iter()
+                .map(|(_, multiplicity)| *multiplicity)
+                .sum::<usize>();
+            let mut powers = base_powers.to_vec();
+            let mut factors = Vec::new();
+            let mut symmetry = 1usize;
+            for (translation_excess, multiplicity) in partition {
+                let translation_power = translation_excess + 1;
+                powers.extend(std::iter::repeat(translation_power).take(multiplicity));
+                factors.push(powered_factor_tex(
+                    &format!("(T_{{{translation_power}}})_{{{color}}}"),
+                    multiplicity,
+                ));
+                symmetry *= factorial(multiplicity);
+            }
+            if symmetry > 1 {
+                factors.push(format!("\\frac{{1}}{{{symmetry}}}"));
+            }
+            factors.push(tft_factor_tex(
+                genus,
+                color,
+                base_powers.len() + translation_count,
+            ));
+            factors.push(psi_integral_factor_tex(genus, &powers));
+            join_factors_tex(&factors)
+        })
+        .collect()
+}
+
 fn tft_factor(genus: usize, color: &str, valence: usize) -> String {
     let mut factors = Vec::new();
     if genus == 0 {
@@ -613,6 +1019,23 @@ fn tft_factor(genus: usize, color: &str, valence: usize) -> String {
         valence,
     ));
     join_factors(&factors)
+}
+
+fn tft_factor_tex(genus: usize, color: &str, valence: usize) -> String {
+    let mut factors = Vec::new();
+    if genus == 0 {
+        factors.push(format!("\\Delta_{{{color}}}^{{-1}}"));
+    } else if genus > 1 {
+        factors.push(powered_factor_tex(
+            &format!("\\Delta_{{{color}}}"),
+            genus - 1,
+        ));
+    }
+    factors.push(powered_factor_tex(
+        &format!("\\Delta_{{{color}}}^{{1/2}}"),
+        valence,
+    ));
+    join_factors_tex(&factors)
 }
 
 fn psi_integral_factor(genus: usize, powers: &[usize]) -> String {
@@ -628,11 +1051,32 @@ fn psi_integral_factor(genus: usize, powers: &[usize]) -> String {
     }
 }
 
+fn psi_integral_factor_tex(genus: usize, powers: &[usize]) -> String {
+    let insertions = if powers.is_empty() {
+        "1".to_string()
+    } else {
+        powers
+            .iter()
+            .map(|power| format!("\\tau_{{{power}}}"))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    format!("\\left\\langle {insertions}\\right\\rangle_{{{genus}}}^{{\\mathrm{{pt}}}}")
+}
+
 fn powered_factor(base: &str, exponent: usize) -> String {
     match exponent {
         0 => "1".to_string(),
         1 => base.to_string(),
         _ => format!("({base})^{exponent}"),
+    }
+}
+
+fn powered_factor_tex(base: &str, exponent: usize) -> String {
+    match exponent {
+        0 => "1".to_string(),
+        1 => base.to_string(),
+        _ => format!("\\left({base}\\right)^{{{exponent}}}"),
     }
 }
 
@@ -646,6 +1090,19 @@ fn join_factors(factors: &[String]) -> String {
         "1".to_string()
     } else {
         nontrivial.join(" * ")
+    }
+}
+
+fn join_factors_tex(factors: &[String]) -> String {
+    let nontrivial = factors
+        .iter()
+        .filter(|factor| factor.as_str() != "1")
+        .cloned()
+        .collect::<Vec<_>>();
+    if nontrivial.is_empty() {
+        "1".to_string()
+    } else {
+        nontrivial.join("\\,")
     }
 }
 
@@ -714,6 +1171,18 @@ mod tests {
         assert!(rendered.contains("PsiInt(0;0,0,0)"));
         assert!(!rendered.contains("Here L"));
         assert!(!rendered.contains("L_{"));
+    }
+
+    #[test]
+    fn tex_renderer_uses_standard_givental_symbols() {
+        let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
+        let rendered = skeleton.render_tex();
+        assert!(rendered.contains("\\section*{Givental Graph Formula Skeleton}"));
+        assert!(rendered.contains("(R^{-1}_{0})_{i_{0},j}"));
+        assert!(rendered.contains("(\\Psi^{-1})_{j,\\beta}"));
+        assert!(rendered.contains("(S_{0})_{\\beta,\\alpha}"));
+        assert!(rendered.contains("\\Delta_{i_{0}}^{-1}"));
+        assert!(rendered.contains("\\left\\langle \\tau_{0}\\tau_{0}\\tau_{0}\\right\\rangle_{0}"));
     }
 
     #[test]

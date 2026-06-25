@@ -191,12 +191,22 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --d 3
 ```
 
+For TeX output, use either `--format tex` or the shorthand `--tex`:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --max-descendant 5 \
+  --format tex
+```
+
 The output defines the primitive atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 `EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
 truncation orders, and expanded graph terms. Marking and edge factors are
 expanded directly in those atoms rather than kept as separate composite atoms.
 Add `--no-glossary` for a shorter listing that still includes the graph
-formulas.
+formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
+`\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and
+`\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`.
 
 ## `degree-series`
 
