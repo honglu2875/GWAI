@@ -259,10 +259,11 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
     };
     match format.as_str() {
         "text" => println!("{}", skeleton.render_text()),
-        "tex" => println!("{}", skeleton.render_tex()),
+        "tex" | "tex-document" => println!("{}", skeleton.render_tex_document()),
+        "tex-fragment" => println!("{}", skeleton.render_tex()),
         other => {
             return Err(GwError::ParseError(format!(
-                "invalid --format `{other}`; expected text or tex"
+                "invalid --format `{other}`; expected text, tex, tex-document, or tex-fragment"
             )))
         }
     }
@@ -966,6 +967,7 @@ Commands:\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
+  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\

@@ -1,7 +1,10 @@
 //! Finite formula skeletons for fixed stable `(g,m)`.
 
+use std::collections::BTreeMap;
+use std::f64::consts::PI;
+
 use crate::error::GwError;
-use crate::graphs::{stable_graphs, StableGraph};
+use crate::graphs::{stable_graphs, StableEdge, StableGraph};
 
 use super::atoms::atom_glossary;
 
@@ -102,6 +105,12 @@ struct PowerAssignment {
     vertex_powers: Vec<Vec<usize>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TikzPoint {
+    x: f64,
+    y: f64,
+}
+
 pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton, GwError> {
     request.validate()?;
     let graphs = stable_graphs(request.genus, request.markings)
@@ -158,6 +167,21 @@ impl FormulaSkeleton {
             self.render_tex_glossary(&mut out);
         }
         self.render_tex_graphs(&mut out);
+        out
+    }
+
+    pub fn render_tex_document(&self) -> String {
+        let mut out = String::new();
+        out.push_str("\\documentclass[11pt]{article}\n");
+        out.push_str("\\usepackage[margin=1in]{geometry}\n");
+        out.push_str("\\usepackage[T1]{fontenc}\n");
+        out.push_str("\\usepackage{amsmath,amssymb,mathtools}\n");
+        out.push_str("\\usepackage{tikz}\n");
+        out.push_str("\\usetikzlibrary{calc,arrows.meta}\n");
+        out.push_str("\\allowdisplaybreaks\n");
+        out.push_str("\\begin{document}\n\n");
+        out.push_str(&self.render_tex());
+        out.push_str("\\end{document}\n");
         out
     }
 
@@ -480,7 +504,73 @@ impl GraphFormulaSkeleton {
         };
         out.push_str(&format!("\\item Markings: {}.\n", markings));
         out.push_str("\\end{itemize}\n");
+        self.render_tikz(out);
         self.render_expanded_tex_expression(out, request);
+    }
+
+    fn render_tikz(&self, out: &mut String) {
+        let positions = tikz_vertex_positions(self.graph.vertices.len());
+        out.push_str("\\begin{center}\n");
+        out.push_str("\\begin{tikzpicture}[\n");
+        out.push_str("  stable vertex/.style={circle,draw,thick,fill=white,inner sep=1.5pt,minimum size=20pt},\n");
+        out.push_str("  stable edge/.style={line width=0.5pt},\n");
+        out.push_str("  leg/.style={line width=0.45pt},\n");
+        out.push_str("  marking/.style={font=\\scriptsize},\n");
+        out.push_str("  edge label/.style={midway,fill=white,inner sep=1pt,font=\\scriptsize},\n");
+        out.push_str("  every node/.style={font=\\scriptsize}\n");
+        out.push_str("]\n");
+
+        for (vertex_index, vertex) in self.graph.vertices.iter().enumerate() {
+            let point = positions[vertex_index];
+            out.push_str(&format!(
+                "\\node[stable vertex] (v{vertex_index}) at ({:.3},{:.3}) {{$\\begin{{smallmatrix}}v_{{{vertex_index}}}\\\\ h={}\\end{{smallmatrix}}$}};\n",
+                point.x, point.y, vertex.genus
+            ));
+        }
+
+        let pair_counts = edge_pair_counts(&self.graph.edges);
+        let mut pair_seen = BTreeMap::<(usize, usize), usize>::new();
+        let mut loop_seen = BTreeMap::<usize, usize>::new();
+        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            if edge.is_loop() {
+                let ordinal = *loop_seen.get(&edge.a).unwrap_or(&0);
+                loop_seen.insert(edge.a, ordinal + 1);
+                let direction = tikz_loop_direction(edge.a, ordinal, positions.len());
+                out.push_str(&format!(
+                    "\\draw[stable edge] (v{}) edge[loop {direction}] node[edge label] {{$e_{{{edge_index}}}$}} (v{});\n",
+                    edge.a, edge.a
+                ));
+            } else {
+                let key = (edge.a, edge.b);
+                let ordinal = *pair_seen.get(&key).unwrap_or(&0);
+                pair_seen.insert(key, ordinal + 1);
+                let total = pair_counts.get(&key).copied().unwrap_or(1);
+                let bend = tikz_bend_option(ordinal, total);
+                out.push_str(&format!(
+                    "\\draw[stable edge] (v{}) to{bend} node[edge label] {{$e_{{{edge_index}}}$}} (v{});\n",
+                    edge.a, edge.b
+                ));
+            }
+        }
+
+        let leg_counts = leg_counts_by_vertex(&self.graph);
+        let mut leg_seen = vec![0usize; self.graph.vertices.len()];
+        for (marking, &vertex) in self.graph.legs.iter().enumerate() {
+            let ordinal = leg_seen[vertex];
+            leg_seen[vertex] += 1;
+            let total = leg_counts[vertex];
+            let angle = tikz_leg_angle(vertex, ordinal, total, &positions);
+            let start = positions[vertex];
+            let end = start.add_polar(angle, 0.85);
+            let anchor = tikz_anchor(angle);
+            out.push_str(&format!(
+                "\\draw[leg] (v{vertex}) -- ({:.3},{:.3}) node[marking,anchor={anchor}] {{$\\ell_{{{marking}}}$}};\n",
+                end.x, end.y
+            ));
+        }
+
+        out.push_str("\\end{tikzpicture}\n");
+        out.push_str("\\end{center}\n");
     }
 
     fn render_expanded_expression(&self, out: &mut String, request: &FormulaRequest) {
@@ -1106,6 +1196,125 @@ fn join_factors_tex(factors: &[String]) -> String {
     }
 }
 
+impl TikzPoint {
+    fn from_polar(angle: f64, radius: f64) -> Self {
+        Self {
+            x: radius * angle.cos(),
+            y: radius * angle.sin(),
+        }
+    }
+
+    fn add_polar(self, angle: f64, radius: f64) -> Self {
+        Self {
+            x: self.x + radius * angle.cos(),
+            y: self.y + radius * angle.sin(),
+        }
+    }
+}
+
+fn tikz_vertex_positions(vertex_count: usize) -> Vec<TikzPoint> {
+    match vertex_count {
+        0 => Vec::new(),
+        1 => vec![TikzPoint { x: 0.0, y: 0.0 }],
+        2 => vec![
+            TikzPoint { x: -1.35, y: 0.0 },
+            TikzPoint { x: 1.35, y: 0.0 },
+        ],
+        count => {
+            let radius = 1.65 + 0.12 * count as f64;
+            (0..count)
+                .map(|idx| {
+                    let angle = PI / 2.0 + 2.0 * PI * idx as f64 / count as f64;
+                    TikzPoint::from_polar(angle, radius)
+                })
+                .collect()
+        }
+    }
+}
+
+fn edge_pair_counts(edges: &[StableEdge]) -> BTreeMap<(usize, usize), usize> {
+    let mut counts = BTreeMap::new();
+    for edge in edges {
+        if !edge.is_loop() {
+            *counts.entry((edge.a, edge.b)).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+fn tikz_bend_option(ordinal: usize, total: usize) -> String {
+    if total <= 1 {
+        return String::new();
+    }
+    let midpoint = (total - 1) as f64 / 2.0;
+    let offset = ordinal as f64 - midpoint;
+    if offset.abs() < 0.1 {
+        String::new()
+    } else {
+        let direction = if offset > 0.0 { "left" } else { "right" };
+        let angle = 16 + (offset.abs() * 12.0).round() as usize;
+        format!("[bend {direction}={angle}]")
+    }
+}
+
+fn tikz_loop_direction(vertex: usize, ordinal: usize, vertex_count: usize) -> &'static str {
+    const DIRECTIONS: [&str; 8] = [
+        "above",
+        "right",
+        "below",
+        "left",
+        "above right",
+        "below right",
+        "below left",
+        "above left",
+    ];
+    if vertex_count == 1 {
+        return DIRECTIONS[ordinal % DIRECTIONS.len()];
+    }
+    DIRECTIONS[(vertex + ordinal) % DIRECTIONS.len()]
+}
+
+fn leg_counts_by_vertex(graph: &StableGraph) -> Vec<usize> {
+    let mut counts = vec![0usize; graph.vertices.len()];
+    for &vertex in &graph.legs {
+        counts[vertex] += 1;
+    }
+    counts
+}
+
+fn tikz_leg_angle(
+    vertex: usize,
+    ordinal: usize,
+    total_at_vertex: usize,
+    positions: &[TikzPoint],
+) -> f64 {
+    if positions.len() == 1 {
+        return PI / 2.0 + 2.0 * PI * ordinal as f64 / total_at_vertex.max(1) as f64;
+    }
+
+    let point = positions[vertex];
+    let base = point.y.atan2(point.x);
+    let spread = PI / 9.0;
+    let midpoint = (total_at_vertex.saturating_sub(1)) as f64 / 2.0;
+    base + (ordinal as f64 - midpoint) * spread
+}
+
+fn tikz_anchor(angle: f64) -> &'static str {
+    let x = angle.cos();
+    let y = angle.sin();
+    match (x > 0.35, x < -0.35, y > 0.35, y < -0.35) {
+        (true, _, true, _) => "south west",
+        (true, _, _, true) => "north west",
+        (_, true, true, _) => "south east",
+        (_, true, _, true) => "north east",
+        (true, _, _, _) => "west",
+        (_, true, _, _) => "east",
+        (_, _, true, _) => "south",
+        (_, _, _, true) => "north",
+        _ => "center",
+    }
+}
+
 fn translation_partitions(total: usize) -> Vec<Vec<(usize, usize)>> {
     fn rec(
         next_excess: usize,
@@ -1178,11 +1387,32 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_tex();
         assert!(rendered.contains("\\section*{Givental Graph Formula Skeleton}"));
+        assert!(rendered.contains("\\begin{tikzpicture}"));
+        assert!(rendered.contains("\\draw[leg]"));
         assert!(rendered.contains("(R^{-1}_{0})_{i_{0},j}"));
         assert!(rendered.contains("(\\Psi^{-1})_{j,\\beta}"));
         assert!(rendered.contains("(S_{0})_{\\beta,\\alpha}"));
         assert!(rendered.contains("\\Delta_{i_{0}}^{-1}"));
         assert!(rendered.contains("\\left\\langle \\tau_{0}\\tau_{0}\\tau_{0}\\right\\rangle_{0}"));
+    }
+
+    #[test]
+    fn tex_document_renderer_is_standalone() {
+        let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
+        let rendered = skeleton.render_tex_document();
+        assert!(rendered.starts_with("\\documentclass[11pt]{article}"));
+        assert!(rendered.contains("\\usepackage{tikz}"));
+        assert!(rendered.contains("\\begin{document}"));
+        assert!(rendered.contains("\\begin{tikzpicture}"));
+        assert!(rendered.ends_with("\\end{document}\n"));
+    }
+
+    #[test]
+    fn tikz_renderer_draws_loop_edges() {
+        let skeleton = build_formula_skeleton(FormulaRequest::new(1, 1, 2)).unwrap();
+        let rendered = skeleton.render_tex();
+        assert!(rendered.contains("edge[loop"));
+        assert!(rendered.contains("node[edge label] {$e_{0}$}"));
     }
 
     #[test]

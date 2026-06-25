@@ -191,13 +191,17 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --d 3
 ```
 
-For TeX output, use either `--format tex` or the shorthand `--tex`:
+For standalone TeX output, including a document preamble and TikZ graph
+pictures, use either `--format tex` or the shorthand `--tex`:
 
 ```bash
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --max-descendant 5 \
   --format tex
 ```
+
+Use `--format tex-fragment` when embedding the formula into an existing
+document that already loads `amsmath` and `tikz`.
 
 The output defines the primitive atoms `S`, `PsiInv`, `RInv`, `T`, `Delta`,
 `EtaInv`, and point-theory psi integrals, then lists the finite stable graphs,
