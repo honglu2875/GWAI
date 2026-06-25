@@ -5,7 +5,8 @@ use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
 use gw_pn::twisted::{
-    compute_negative_split_twisted, NegativeSplitBundleTwist, TwistedInvariantRequest,
+    compute_negative_split_twisted, compute_negative_split_twisted_resolvent_packed,
+    NegativeSplitBundleTwist, TwistedInvariantRequest,
 };
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
@@ -292,6 +293,7 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--twist"),
             CliFlag::value("--mode"),
             CliFlag::switch("--equivariant"),
+            CliFlag::switch("--validate"),
         ],
     )?;
     let n = required_usize(args, "--n")?;
@@ -305,6 +307,7 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
     let twist_model = parse_twist_model(twist.as_ref())?;
     let mode = parse_compute_mode(args)?;
     let equivariant = has_flag(args, "--equivariant");
+    let validate = has_flag(args, "--validate");
     let virtual_dimension = match twist_model.as_ref() {
         Some(twist) => twist.virtual_dimension(n, genus, degree, markings),
         None => ordinary_virtual_dimension(n, genus, degree, markings),
@@ -317,17 +320,57 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
         markings,
         virtual_dimension,
     };
-    let result = compute_resolvent_generating_function(&req, |insertions| {
-        compute_series_point(
-            n,
-            twist.as_deref(),
-            genus,
-            degree,
-            insertions,
-            equivariant,
-            mode,
-        )
-    })?;
+    let compute_invariant_wise = || {
+        compute_resolvent_generating_function(&req, |insertions| {
+            compute_series_point(
+                n,
+                twist.as_deref(),
+                genus,
+                degree,
+                insertions,
+                equivariant,
+                mode,
+            )
+        })
+    };
+    let packed = match twist.as_ref() {
+        Some(degrees) => {
+            compute_negative_split_twisted_resolvent_packed(n, degrees.clone(), &req, equivariant)
+        }
+        None => gw_pn::givental::compute_projective_resolvent_packed(&req, equivariant),
+    };
+    let (result, used_packed) = match packed {
+        Ok(result) => (result, true),
+        Err(GwError::UnsupportedInvariant(message)) => {
+            let mut result = compute_invariant_wise()?;
+            result.notes.insert(
+                0,
+                format!(
+                    "packed resolvent unavailable: {message}; fell back to invariant-wise resolver"
+                ),
+            );
+            (result, false)
+        }
+        Err(err) => return Err(err),
+    };
+
+    let validation = if validate && used_packed {
+        let invariant_wise = compute_invariant_wise()?;
+        if result.value != invariant_wise.value {
+            return Err(GwError::ValidationFailure(format!(
+                "packed resolvent output does not match invariant-wise resolver: packed `{}`, invariant-wise `{}`",
+                result.value, invariant_wise.value
+            )));
+        }
+        Some(format!(
+            "matched invariant-wise resolver ({} candidate, {} nonzero)",
+            invariant_wise.candidate_terms, invariant_wise.nonzero_terms
+        ))
+    } else if validate {
+        Some("packed resolver unavailable; invariant-wise fallback was used".to_string())
+    } else {
+        None
+    };
 
     println!("Resolvent generating function");
     println!("target: P^{n}");
@@ -347,6 +390,9 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
         "terms: {} candidate, {} nonzero",
         result.candidate_terms, result.nonzero_terms
     );
+    if let Some(validation) = validation {
+        println!("validation: {validation}");
+    }
     println!("F = {}", result.value);
 
     if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
@@ -1195,7 +1241,7 @@ Commands:\n\
   gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
   gw-pn resolvent --n 2 --g 0 --d 1 --markings 3\n\
-  gw-pn resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1\n\
+  gw-pn resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1 --validate\n\
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
   gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\

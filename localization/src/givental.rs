@@ -25,6 +25,9 @@ use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
 use crate::graphs::{stable_graphs, StableGraph};
+use crate::resolvent::{
+    enumerate_resolvent_indices, ResolventPolynomial, ResolventRequest, ResolventResult,
+};
 use crate::series::{QSeries, RationalQSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
@@ -2285,6 +2288,197 @@ where
         engine: "givental-master-series",
         notes,
     }))
+}
+
+/// Computes a fixed-degree labelled resolvent potential by sharing the
+/// Givental graph contraction across all descendant/cohomology coefficients.
+///
+/// The coefficient-wise resolver calls the full invariant evaluator once for
+/// every pair `(a_i,k_i)`.  This routine instead builds the stable-graph kernel
+/// once for fixed `(g,d,m)`, precontracts the graph sum into a restricted
+/// external-leg tensor, and then attaches every resolvent leg coefficient to
+/// that tensor.  The output is still the finite Laurent polynomial in
+/// `z_i^{-1}`; only the algorithm is reorganized.
+pub fn compute_packed_resolvent_with_provider<P, N>(
+    req: &ResolventRequest,
+    provider: P,
+    engine: &'static str,
+    note: impl Into<String>,
+    mut normalize: N,
+) -> Result<ResolventResult, GwError>
+where
+    P: SemisimpleCohftProvider<Insertion = Insertion>,
+    N: FnMut(RatFun) -> Result<RatFun, GwError>,
+{
+    if req.virtual_dimension < 0 {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms: 0,
+            nonzero_terms: 0,
+            engine: "packed-resolvent-empty-dimension",
+            notes: vec![format!(
+                "virtual dimension {} is negative, so the packed resolvent generating function is zero",
+                req.virtual_dimension
+            )],
+        });
+    }
+
+    if req.markings == 0 {
+        return compute_no_marking_packed_resolvent(req, &provider, engine, note, normalize);
+    }
+    if !is_stable_cohft_range(req.genus, req.markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "packed resolvent graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let max_descendant_power = req.virtual_dimension as usize;
+    let series_req = SeriesRequest {
+        n: req.target_n,
+        genus: req.genus,
+        degree_max: req.degree,
+        max_markings: req.markings,
+        max_descendant_power,
+        include_zero: false,
+        equivariant: false,
+        mode: ComputeMode::Givental,
+        truncation: None,
+    };
+    let mut evaluator = GiventalMasterEvaluator::with_provider(&series_req, provider);
+    let mut tasks = Vec::new();
+    let candidate_terms = enumerate_resolvent_indices(req, |h_powers, descendant_powers| {
+        let insertions = resolvent_insertions(req.target_n, h_powers, descendant_powers);
+        if evaluator.is_dimension_mismatch(req.degree, &insertions) {
+            return Ok(());
+        }
+        evaluator.validate_truncation(req.markings, &insertions)?;
+        let mut leg_options = Vec::with_capacity(req.markings);
+        for insertion in &insertions {
+            leg_options.push(evaluator.leg_options_for_insertion_at_q(
+                req.markings,
+                insertion,
+                req.degree,
+            )?);
+        }
+        tasks.push(MasterContractionTask {
+            ordinal: tasks.len(),
+            degree: req.degree,
+            insertions,
+            markings: req.markings,
+            leg_options,
+        });
+        Ok(())
+    })?;
+
+    let coefficients =
+        evaluator.contract_restricted_tasks(req.markings, req.degree, &tasks, false)?;
+    let mut value = ResolventPolynomial::zero();
+    let mut nonzero_terms = 0usize;
+    for coefficient in coefficients {
+        let (h_powers, descendant_powers) =
+            resolvent_indices_from_insertions(&coefficient.coefficient.insertions)?;
+        let normalized = normalize(coefficient.coefficient.value)?;
+        if normalized.is_zero() {
+            continue;
+        }
+        value.add_coefficient(&h_powers, &descendant_powers, normalized);
+        nonzero_terms += 1;
+    }
+
+    Ok(ResolventResult {
+        value,
+        candidate_terms,
+        nonzero_terms,
+        engine,
+        notes: vec![note.into()],
+    })
+}
+
+pub fn compute_projective_resolvent_packed(
+    req: &ResolventRequest,
+    equivariant: bool,
+) -> Result<ResolventResult, GwError> {
+    let provider = ProjectiveSpaceProvider::new(req.target_n, equivariant);
+    let engine = if equivariant {
+        "givental-packed-resolvent"
+    } else {
+        "givental-packed-resolvent-lambda-line"
+    };
+    compute_packed_resolvent_with_provider(
+        req,
+        provider,
+        engine,
+        "computed by packed S/R external-leg graph kernel; all resolvent coefficients share one stable-graph contraction",
+        Ok::<RatFun, GwError>,
+    )
+}
+
+fn compute_no_marking_packed_resolvent<P, N>(
+    req: &ResolventRequest,
+    provider: &P,
+    engine: &'static str,
+    note: impl Into<String>,
+    mut normalize: N,
+) -> Result<ResolventResult, GwError>
+where
+    P: SemisimpleCohftProvider<Insertion = Insertion>,
+    N: FnMut(RatFun) -> Result<RatFun, GwError>,
+{
+    let mut value = ResolventPolynomial::zero();
+    let mut nonzero_terms = 0usize;
+    let candidate_terms = usize::from(req.virtual_dimension == 0);
+    if req.virtual_dimension == 0 {
+        let coefficient =
+            compute_semisimple_graph_value(provider, req.genus, req.degree, &[], None)?;
+        let normalized = normalize(coefficient)?;
+        if !normalized.is_zero() {
+            value.add_coefficient(&[], &[], normalized);
+            nonzero_terms = 1;
+        }
+    }
+
+    Ok(ResolventResult {
+        value,
+        candidate_terms,
+        nonzero_terms,
+        engine,
+        notes: vec![note.into()],
+    })
+}
+
+fn resolvent_insertions(
+    target_n: usize,
+    h_powers: &[usize],
+    descendant_powers: &[usize],
+) -> Vec<Insertion> {
+    h_powers
+        .iter()
+        .zip(descendant_powers.iter())
+        .map(|(&h_power, &descendant_power)| {
+            crate::tau(
+                descendant_power,
+                crate::geometry::CohomologyClass::h_power(target_n, h_power),
+            )
+        })
+        .collect()
+}
+
+fn resolvent_indices_from_insertions(
+    insertions: &[Insertion],
+) -> Result<(Vec<usize>, Vec<usize>), GwError> {
+    let mut h_powers = Vec::with_capacity(insertions.len());
+    let mut descendant_powers = Vec::with_capacity(insertions.len());
+    for insertion in insertions {
+        let h_power = insertion.class.pure_power().ok_or_else(|| {
+            GwError::AlgebraFailure(
+                "packed resolvent task contained a non-pure H insertion".to_string(),
+            )
+        })?;
+        h_powers.push(h_power);
+        descendant_powers.push(insertion.descendant_power);
+    }
+    Ok((h_powers, descendant_powers))
 }
 
 fn shared_kernel_task_counts(
@@ -5785,6 +5979,30 @@ mod tests {
             .unwrap();
             assert_eq!(result.coefficient.value, scalar.value);
         }
+    }
+
+    #[test]
+    fn packed_resolvent_matches_invariant_wise_projective_resolver() {
+        let req = ResolventRequest {
+            target_n: 1,
+            genus: 0,
+            degree: 0,
+            markings: 3,
+            virtual_dimension: 1,
+        };
+        let packed = compute_projective_resolvent_packed(&req, false).unwrap();
+        let invariant_wise =
+            crate::resolvent::compute_resolvent_generating_function(&req, |insertions| {
+                compute_by_givental_graphs(&InvariantRequest {
+                    mode: ComputeMode::Givental,
+                    ..InvariantRequest::new(1, 0, 0, insertions.to_vec())
+                })
+            })
+            .unwrap();
+
+        assert_eq!(packed.value, invariant_wise.value);
+        assert_eq!(packed.candidate_terms, invariant_wise.candidate_terms);
+        assert_eq!(packed.nonzero_terms, invariant_wise.nonzero_terms);
     }
 
     fn assert_r_matrix_unitary_after_lambda_eval(

@@ -21,6 +21,7 @@ use crate::givental::{
     CalibrationId, CanonicalFrameConvention, GiventalGraphKernel, ProjectiveSpaceProvider,
     SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix,
 };
+use crate::resolvent::{ResolventRequest, ResolventResult};
 use crate::series::{QSeries, SeriesMatrix};
 use crate::{Insertion, InvariantResult, Truncation};
 use std::collections::{BTreeMap, HashMap};
@@ -4480,6 +4481,40 @@ pub fn compute_negative_split_twisted(
     })
 }
 
+pub fn compute_negative_split_twisted_resolvent_packed(
+    target_n: usize,
+    degrees: Vec<usize>,
+    req: &ResolventRequest,
+    equivariant: bool,
+) -> Result<ResolventResult, GwError> {
+    if equivariant {
+        return Err(GwError::UnsupportedInvariant(
+            "symbolic equivariant negative split-bundle output is not implemented yet; the current twisted calibration uses a generic rational lambda line"
+                .to_string(),
+        ));
+    }
+    if req.degree == 0 {
+        return Err(GwError::UnsupportedInvariant(
+            "degree-zero local invariants are not implemented in the negative split-bundle path"
+                .to_string(),
+        ));
+    }
+
+    let provider = TwistedProjectiveSpaceProvider::new(target_n, degrees, equivariant)?;
+    crate::givental::compute_packed_resolvent_with_provider(
+        req,
+        provider,
+        "twisted-negative-split-packed-resolvent",
+        "computed by packed twisted S/R external-leg graph kernel; all resolvent coefficients share one stable-graph contraction",
+        |raw| match raw.as_rational() {
+            Some(value) => Ok(RatFun::from_rational(value)),
+            None => Ok(RatFun::from_rational(
+                raw.nonequivariant_limit_line(0, &[Rational::one()])?,
+            )),
+        },
+    )
+}
+
 fn twisted_dimension_mismatch(
     provider: &TwistedProjectiveSpaceProvider,
     genus: usize,
@@ -5688,6 +5723,30 @@ mod tests {
             result.value,
             RatFun::from_rational(crate::validation_backends::local_cy::local_p2_gw(2, 1).unwrap(),)
         );
+    }
+
+    #[test]
+    fn packed_resolvent_matches_invariant_wise_local_p2() {
+        let req = crate::resolvent::ResolventRequest {
+            target_n: 2,
+            genus: 2,
+            degree: 1,
+            markings: 1,
+            virtual_dimension: 1,
+        };
+        let packed =
+            compute_negative_split_twisted_resolvent_packed(2, vec![3], &req, false).unwrap();
+        let invariant_wise =
+            crate::resolvent::compute_resolvent_generating_function(&req, |insertions| {
+                let invariant_req =
+                    TwistedInvariantRequest::new(2, vec![3], 2, 1, insertions.to_vec())?;
+                compute_negative_split_twisted(&invariant_req)
+            })
+            .unwrap();
+
+        assert_eq!(packed.value, invariant_wise.value);
+        assert_eq!(packed.candidate_terms, invariant_wise.candidate_terms);
+        assert_eq!(packed.nonzero_terms, invariant_wise.nonzero_terms);
     }
 
     #[test]

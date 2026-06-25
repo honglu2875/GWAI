@@ -73,6 +73,16 @@ impl ResolventPolynomial {
             self.terms.insert(monomial, next);
         }
     }
+
+    pub fn add_coefficient(
+        &mut self,
+        h_powers: &[usize],
+        descendant_powers: &[usize],
+        coefficient: RatFun,
+    ) {
+        let (monomial, scalar) = resolvent_monomial(h_powers, descendant_powers);
+        self.add_term(monomial, &coefficient * &scalar);
+    }
 }
 
 impl fmt::Display for ResolventPolynomial {
@@ -125,12 +135,16 @@ where
         engine: "resolvent",
         notes: Vec::new(),
     };
-    enumerate_h_powers(
+    let mut visit = |h_powers: &[usize], descendant_powers: &[usize]| {
+        add_resolvent_term(h_powers, descendant_powers, &mut state)
+    };
+    enumerate_h_powers_with_bound(
         0,
         target_degree,
+        req.target_n,
         &mut h_powers,
         &mut descendant_powers,
-        &mut state,
+        &mut visit,
     )?;
     Ok(ResolventResult {
         value: state.value,
@@ -139,6 +153,34 @@ where
         engine: state.engine,
         notes: state.notes,
     })
+}
+
+pub fn enumerate_resolvent_indices<F>(
+    req: &ResolventRequest,
+    mut visitor: F,
+) -> Result<usize, GwError>
+where
+    F: FnMut(&[usize], &[usize]) -> Result<(), GwError>,
+{
+    if req.virtual_dimension < 0 {
+        return Ok(0);
+    }
+    let mut h_powers = vec![0; req.markings];
+    let mut descendant_powers = vec![0; req.markings];
+    let mut count = 0usize;
+    let mut visit = |h_powers: &[usize], descendant_powers: &[usize]| {
+        count += 1;
+        visitor(h_powers, descendant_powers)
+    };
+    enumerate_h_powers_with_bound(
+        0,
+        req.virtual_dimension as usize,
+        req.target_n,
+        &mut h_powers,
+        &mut descendant_powers,
+        &mut visit,
+    )?;
+    Ok(count)
 }
 
 struct Accumulator<'a, F>
@@ -154,29 +196,31 @@ where
     notes: Vec<String>,
 }
 
-fn enumerate_h_powers<F>(
+fn enumerate_h_powers_with_bound<F>(
     marking: usize,
     remaining_degree: usize,
+    target_n: usize,
     h_powers: &mut [usize],
     descendant_powers: &mut [usize],
-    state: &mut Accumulator<'_, F>,
+    visitor: &mut F,
 ) -> Result<(), GwError>
 where
-    F: FnMut(&[Insertion]) -> Result<InvariantResult, GwError>,
+    F: FnMut(&[usize], &[usize]) -> Result<(), GwError>,
 {
-    if marking == state.req.markings {
-        enumerate_descendant_powers(0, remaining_degree, h_powers, descendant_powers, state)?;
+    if marking == h_powers.len() {
+        enumerate_descendant_powers(0, remaining_degree, h_powers, descendant_powers, visitor)?;
         return Ok(());
     }
 
-    for h_power in 0..=state.req.target_n.min(remaining_degree) {
+    for h_power in 0..=target_n.min(remaining_degree) {
         h_powers[marking] = h_power;
-        enumerate_h_powers(
+        enumerate_h_powers_with_bound(
             marking + 1,
             remaining_degree - h_power,
+            target_n,
             h_powers,
             descendant_powers,
-            state,
+            visitor,
         )?;
     }
     Ok(())
@@ -187,14 +231,14 @@ fn enumerate_descendant_powers<F>(
     remaining_degree: usize,
     h_powers: &[usize],
     descendant_powers: &mut [usize],
-    state: &mut Accumulator<'_, F>,
+    visitor: &mut F,
 ) -> Result<(), GwError>
 where
-    F: FnMut(&[Insertion]) -> Result<InvariantResult, GwError>,
+    F: FnMut(&[usize], &[usize]) -> Result<(), GwError>,
 {
-    if marking == state.req.markings {
+    if marking == descendant_powers.len() {
         if remaining_degree == 0 {
-            add_resolvent_term(h_powers, descendant_powers, state)?;
+            visitor(h_powers, descendant_powers)?;
         }
         return Ok(());
     }
@@ -206,7 +250,7 @@ where
             remaining_degree - descendant_power,
             h_powers,
             descendant_powers,
-            state,
+            visitor,
         )?;
     }
     Ok(())

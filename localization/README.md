@@ -271,10 +271,15 @@ For fixed genus, degree, and number of markings, the virtual dimension fixes
 a polynomial in the `t_i`.  Each coefficient is simplified by the same exact
 algebra engine used elsewhere in the crate.
 
+The command uses the packed S/R external-leg graph evaluator by default: it
+precontracts the stable-graph sum once for fixed `(g,d,m)` and attaches all
+resolvent coefficients to that shared kernel. Add `--validate` to also run the
+older invariant-wise resolver and compare the two outputs.
+
 ```bash
 cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
 
-cargo run --quiet -- resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1
+cargo run --quiet -- resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1 --validate
 ```
 
 ## `degree-series`
