@@ -11,6 +11,9 @@ pub mod projective;
 pub mod quotient;
 pub mod univariate;
 
-pub use projective::{projective_quotient, projective_relation};
+pub use projective::{
+    projective_quotient, projective_relation, projective_residue_monomial,
+    projective_trace_monomial,
+};
 pub use quotient::OneGeneratorQuotient;
 pub use univariate::UniPoly;

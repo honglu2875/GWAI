@@ -190,11 +190,12 @@ number of markings. This is an explanatory tool with four formula bases:
   individual descendants.
 - `--basis coefficients`: the legacy fully unrolled coefficient basis in
   `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
-- `--basis rational`: reserved for the planned concrete graph-wise `q`-series
-  basis, where the hypergeometric calibration is expanded, color/root sums are
-  contracted, and each graph contribution is simplified enough that
-  `z`-coefficients can be read directly. The command currently reports this as
-  not implemented instead of printing the old raw root-sum display.
+- `--basis rational`: quotient-reduced graph expressions where supported. The
+  first implemented case is the ordinary `P^n` genus-zero three-primary
+  one-vertex graph, where the color sum is contracted by
+  `sum_{P(u)=0} f(u)/P'(u) = [H^n] f(H) mod (prod_a(H-lambda_a)-q)`. Other
+  graph shapes currently print an explicit "not implemented for this graph"
+  message rather than falling back to raw root-sum notation.
 
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
 now just requests the same engine dictionary that raw mode uses by default.
@@ -206,6 +207,14 @@ semisimple CohFT skeleton:
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --max-descendant 5 \
   --d 3
+```
+
+For the currently supported quotient-reduced rational-basis case:
+
+```bash
+cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
+  --basis rational \
+  --format text
 ```
 
 For standalone TeX output, including a document preamble and TikZ graph

@@ -3,8 +3,10 @@
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
+use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
+use crate::symbolic::projective_residue_monomial;
 
 use super::basis::basis_glossary;
 use super::expansion::FormulaExpansion;
@@ -68,12 +70,6 @@ impl FormulaRequest {
         if 2 * self.genus + self.markings <= 2 {
             return Err(GwError::UnsupportedInvariant(
                 "formula skeleton is implemented for stable (g,m) ranges only".to_string(),
-            ));
-        }
-        if self.basis == FormulaBasisMode::Rational {
-            return Err(GwError::UnsupportedInvariant(
-                "formula --basis rational is reserved for concrete graph-wise q-series after hypergeometric calibration, color-sum contraction, and rational simplification; use --basis raw for the current engine-specialized symbolic graph formula"
-                    .to_string(),
             ));
         }
         Ok(())
@@ -155,6 +151,12 @@ struct PowerAssignment {
     leg_powers: Vec<usize>,
     edge_powers: Vec<(usize, usize)>,
     vertex_powers: Vec<Vec<usize>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RationalPrimaryTerm {
+    insertions: Vec<usize>,
+    coefficient: RatFun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -511,7 +513,10 @@ impl FormulaSkeleton {
     fn render_rational_glossary(&self, out: &mut String) {
         out.push_str("Rational basis glossary\n");
         out.push_str("-----------------------\n");
-        out.push_str("This planned view will contract the raw color/root sums and simplify each graph contribution to a concrete q-series whose z-coefficients can be read directly.\n");
+        out.push_str("This view contracts supported raw color/root sums through quotient-ring residue identities.\n");
+        out.push_str("Currently implemented: ordinary P^n, genus 0, one vertex, no edges, three primary markings.\n");
+        out.push_str("For that graph, sum_{P(u)=0} f(u)/P'(u) is reduced as the H^n coefficient of f(H) modulo prod_a(H-lambda_a)-q.\n");
+        out.push_str("Unsupported graphs are printed explicitly as not yet reduced instead of falling back to raw root-sum notation.\n");
     }
 
     fn render_tex_resolvent_convention(&self, out: &mut String) {
@@ -552,7 +557,11 @@ impl FormulaSkeleton {
 
     fn render_tex_rational_glossary(&self, out: &mut String) {
         out.push_str("\\subsection*{Rational Basis Elements}\n");
-        out.push_str("This planned view will contract the raw color/root sums and simplify each graph contribution to a concrete $q$-series whose $z$-coefficients can be read directly.\n");
+        out.push_str("This view contracts supported raw color/root sums by quotient-ring residue identities.  Currently implemented: ordinary $\\mathbb P^n$, genus $0$, one vertex, no edges, three primary markings.  There the color sum is reduced by\n");
+        out.push_str("\\[\n");
+        out.push_str("\\sum_{P(u)=0}\\frac{f(u)}{P'(u)}=[H^n]\\,f(H)\\bmod P(H),\\qquad P(H)=\\prod_{a=0}^{n}(H-\\lambda_a)-q.\n");
+        out.push_str("\\]\n");
+        out.push_str("Unsupported graphs are reported as not yet reduced.\n");
     }
 
     fn render_tex_graphs(&self, out: &mut String) {
@@ -628,9 +637,10 @@ impl GraphFormulaSkeleton {
         ));
         match request.basis {
             FormulaBasisMode::Coefficients => self.render_expanded_expression(out, request),
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent | FormulaBasisMode::Rational => {
+            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent => {
                 self.render_compact_expression(out, request)
             }
+            FormulaBasisMode::Rational => self.render_rational_expression(out, request),
         }
     }
 
@@ -698,9 +708,10 @@ impl GraphFormulaSkeleton {
         self.render_tikz(out);
         match request.basis {
             FormulaBasisMode::Coefficients => self.render_expanded_tex_expression(out, request),
-            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent | FormulaBasisMode::Rational => {
+            FormulaBasisMode::Raw | FormulaBasisMode::Resolvent => {
                 self.render_compact_tex_expression(out, request)
             }
+            FormulaBasisMode::Rational => self.render_rational_tex_expression(out, request),
         }
     }
 
@@ -808,6 +819,34 @@ impl GraphFormulaSkeleton {
         );
     }
 
+    fn render_rational_expression(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str("  Rational residue-reduced contribution:\n");
+        match self.rational_primary_three_point_terms(request) {
+            Some(Ok(terms)) => {
+                out.push_str(&format!("    C_{}^rational = ", self.index));
+                if terms.is_empty() {
+                    out.push_str("0\n");
+                } else {
+                    out.push_str(&rational_primary_terms_text(&terms));
+                    out.push('\n');
+                }
+                out.push_str(
+                    "    This uses QH_T(P^n)=Q[lambda,q][H]/(prod_a(H-lambda_a)-q) and residue sum f(H)/P'(H).\n",
+                );
+            }
+            Some(Err(err)) => {
+                out.push_str(&format!(
+                    "    quotient reduction failed for this graph: {err}\n"
+                ));
+            }
+            None => {
+                out.push_str(
+                    "    not implemented for this graph. Current rational reduction supports only ordinary P^n, genus 0, one vertex, no edges, three primary markings, and max-descendant 0.\n",
+                );
+            }
+        }
+    }
+
     fn compact_text_integrand(&self, request: &FormulaRequest) -> String {
         let mut factors = Vec::new();
         for vertex in &self.vertices {
@@ -909,6 +948,44 @@ impl GraphFormulaSkeleton {
         out.push_str(&tex_multlined_display(&head, &items, tail, TEX_LINE_BUDGET));
     }
 
+    fn render_rational_tex_expression(&self, out: &mut String, request: &FormulaRequest) {
+        match self.rational_primary_three_point_terms(request) {
+            Some(Ok(terms)) => {
+                let head = format!("C_{{{}}}^{{\\mathrm{{rat}}}}={{}}&", self.index);
+                let items = rational_primary_terms_tex_items(&terms);
+                if items.is_empty() {
+                    out.push_str(&format!(
+                        "\\[\nC_{{{}}}^{{\\mathrm{{rat}}}}=0\n\\]\n",
+                        self.index
+                    ));
+                } else {
+                    out.push_str(&tex_aligned_display_preserving_items(
+                        &head,
+                        &items,
+                        "",
+                        RATIONAL_TEX_LINE_BUDGET,
+                    ));
+                }
+                out.push_str("\\[\n");
+                out.push_str("\\sum_{P(u)=0}\\frac{f(u)}{P'(u)}=[H^n]\\,f(H)\\bmod P(H),\\qquad P(H)=\\prod_{a=0}^{n}(H-\\lambda_a)-q.\n");
+                out.push_str("\\]\n");
+            }
+            Some(Err(err)) => {
+                out.push_str("\\[\n");
+                out.push_str(&format!(
+                    "\\text{{Quotient reduction failed for this graph: {}}}\n",
+                    escape_tex_text(&err.to_string())
+                ));
+                out.push_str("\\]\n");
+            }
+            None => {
+                out.push_str("\\[\n");
+                out.push_str("\\text{Rational reduction is not implemented for this graph.}\n");
+                out.push_str("\\]\n");
+            }
+        }
+    }
+
     fn compact_tex_factors(&self, request: &FormulaRequest) -> Vec<String> {
         let mut factors = Vec::new();
         for vertex in &self.vertices {
@@ -924,6 +1001,46 @@ impl GraphFormulaSkeleton {
             factors.push(resolvent_edge_tex(edge_index, edge, request));
         }
         factors
+    }
+
+    fn rational_primary_three_point_terms(
+        &self,
+        request: &FormulaRequest,
+    ) -> Option<Result<Vec<RationalPrimaryTerm>, GwError>> {
+        let n = rational_projective_n(request)?;
+        if request.genus != 0
+            || request.markings != 3
+            || request.colors != n + 1
+            || request.max_descendant_power != 0
+            || self.graph.vertices.len() != 1
+            || self.graph.edges.len() != 0
+            || self.graph.legs.len() != 3
+            || self.vertices.len() != 1
+            || self.vertices[0].genus != 0
+        {
+            return None;
+        }
+
+        let mut terms = Vec::new();
+        for alpha0 in 0..=n {
+            for alpha1 in 0..=n {
+                for alpha2 in 0..=n {
+                    let insertions = vec![alpha0, alpha1, alpha2];
+                    let coefficient = match projective_residue_monomial(n, alpha0 + alpha1 + alpha2)
+                    {
+                        Ok(value) => value,
+                        Err(err) => return Some(Err(err)),
+                    };
+                    if !coefficient.is_zero() {
+                        terms.push(RationalPrimaryTerm {
+                            insertions,
+                            coefficient,
+                        });
+                    }
+                }
+            }
+        }
+        Some(Ok(terms))
     }
 
     fn color_sum_label(&self, colors: usize) -> String {
@@ -1310,6 +1427,17 @@ fn raw_projective_n(request: &FormulaRequest) -> Option<usize> {
     }
 }
 
+fn rational_projective_n(request: &FormulaRequest) -> Option<usize> {
+    match &request.expansion {
+        Some(FormulaExpansion::ProjectiveSpace { n, .. })
+            if request.basis == FormulaBasisMode::Rational =>
+        {
+            Some(*n)
+        }
+        _ => None,
+    }
+}
+
 fn raw_twisted(request: &FormulaRequest) -> bool {
     matches!(
         (&request.expansion, request.basis),
@@ -1412,6 +1540,129 @@ fn eta_inverse_tex(request: &FormulaRequest) -> &'static str {
     }
 }
 
+fn rational_primary_terms_text(terms: &[RationalPrimaryTerm]) -> String {
+    terms
+        .iter()
+        .map(|term| {
+            let gamma = term
+                .insertions
+                .iter()
+                .enumerate()
+                .map(|(marking, power)| format!("gamma_{{{marking},{power}}}"))
+                .collect::<Vec<_>>()
+                .join(" * ");
+            if term.coefficient.is_one() {
+                gamma
+            } else {
+                format!("({}) * {gamma}", term.coefficient)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn rational_primary_terms_tex_items(terms: &[RationalPrimaryTerm]) -> Vec<(String, String)> {
+    let mut items = Vec::new();
+    for term in terms {
+        append_rational_primary_term_tex_items(term, &mut items);
+    }
+    items
+}
+
+fn append_rational_primary_term_tex_items(
+    term: &RationalPrimaryTerm,
+    items: &mut Vec<(String, String)>,
+) {
+    let gamma = term
+        .insertions
+        .iter()
+        .enumerate()
+        .map(|(marking, power)| format!("\\gamma_{{{marking},{power}}}"))
+        .collect::<Vec<_>>()
+        .join("\\mathbin{\\cdot}");
+    if term.coefficient.is_one() {
+        let connector = if items.is_empty() { "" } else { "+" };
+        items.push((connector.to_string(), gamma));
+    } else if term.coefficient.as_rational() == Some(-Rational::one()) {
+        items.push(("-".to_string(), gamma));
+    } else if term.coefficient.den.is_one() {
+        for (sign, piece) in split_plain_signed_sum(&term.coefficient.num.to_string()) {
+            let connector = rational_tex_connector(items.is_empty(), &sign);
+            let factor = if piece == "1" {
+                gamma.clone()
+            } else {
+                format!("{}\\mathbin{{\\cdot}}{gamma}", algebra_fragment_tex(&piece))
+            };
+            items.push((connector, factor));
+        }
+    } else {
+        let connector = if items.is_empty() { "" } else { "+" };
+        let factor = format!(
+            "\\bigl({}\\bigr)\\mathbin{{\\cdot}}{gamma}",
+            algebra_fragment_tex(&term.coefficient.to_string())
+        );
+        items.push((connector.to_string(), factor));
+    }
+}
+
+fn rational_tex_connector(first: bool, sign: &str) -> String {
+    match (first, sign) {
+        (true, "+") | (true, "") => String::new(),
+        (_, "-") => "-".to_string(),
+        _ => "+".to_string(),
+    }
+}
+
+fn split_plain_signed_sum(value: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut current = value.trim();
+    let first_sign = if let Some(stripped) = current.strip_prefix('-') {
+        current = stripped.trim_start();
+        "-"
+    } else {
+        ""
+    };
+    let mut sign = first_sign.to_string();
+    while let Some((split, next_sign)) = next_plain_sum_split(current) {
+        let piece = current[..split].trim();
+        if !piece.is_empty() {
+            out.push((std::mem::take(&mut sign), piece.to_string()));
+        }
+        sign = next_sign.to_string();
+        current = current[split + 3..].trim();
+    }
+    if !current.is_empty() {
+        out.push((sign, current.to_string()));
+    }
+    out
+}
+
+fn next_plain_sum_split(value: &str) -> Option<(usize, &'static str)> {
+    let plus = value.find(" + ").map(|index| (index, "+"));
+    let minus = value.find(" - ").map(|index| (index, "-"));
+    match (plus, minus) {
+        (Some(left), Some(right)) => Some(if left.0 <= right.0 { left } else { right }),
+        (Some(found), None) | (None, Some(found)) => Some(found),
+        (None, None) => None,
+    }
+}
+
+fn algebra_fragment_tex(value: &str) -> String {
+    value.replace("lambda_", "\\lambda_").replace('*', "\\,")
+}
+
+fn escape_tex_text(value: &str) -> String {
+    value
+        .replace('\\', "\\textbackslash{}")
+        .replace('{', "\\{")
+        .replace('}', "\\}")
+        .replace('_', "\\_")
+        .replace('&', "\\&")
+        .replace('%', "\\%")
+        .replace('$', "\\$")
+        .replace('#', "\\#")
+}
+
 fn join_tex_product(factors: &[String]) -> String {
     let nontrivial = factors
         .iter()
@@ -1429,6 +1680,7 @@ fn join_tex_product(factors: &[String]) -> String {
 /// Lines are wrapped conservatively so the largest graph contributions stay
 /// inside the text block instead of running off the right margin.
 const TEX_LINE_BUDGET: usize = 52;
+const RATIONAL_TEX_LINE_BUDGET: usize = 36;
 
 /// A trivial automorphism factor reads as a bare `1`; suppress it so the display
 /// shows `\sum\langle\cdots\rangle` rather than the noisy `\frac{1}{1}`.
@@ -1452,6 +1704,38 @@ fn wrap_display_lines(
     budget: usize,
 ) -> Vec<String> {
     let items = expand_wide_items(items, budget);
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = head.to_string();
+    let mut current_width = tex_visual_width(head);
+
+    for (index, (connector, factor)) in items.iter().enumerate() {
+        let piece_width = tex_visual_width(connector) + tex_visual_width(factor);
+        if index == 0 || current_width + piece_width <= budget {
+            current.push_str(connector);
+            current.push_str(factor);
+            current_width += piece_width;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(connector);
+            current.push_str(factor);
+            current_width = piece_width;
+        }
+    }
+    current.push_str(tail);
+    lines.push(current);
+    lines
+}
+
+/// Same as `wrap_display_lines`, but never splits inside an item.  This is
+/// useful for explicit rational sums where each item is a coefficient times a
+/// gamma monomial: breaking inside the coefficient polynomial would detach part
+/// of the coefficient from the monomial it multiplies.
+fn wrap_display_lines_preserving_items(
+    head: &str,
+    items: &[(String, String)],
+    tail: &str,
+    budget: usize,
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = head.to_string();
     let mut current_width = tex_visual_width(head);
@@ -1574,6 +1858,20 @@ fn tex_aligned_display(
     budget: usize,
 ) -> String {
     let lines = wrap_display_lines(head, items, tail, budget);
+    tex_align_lines(&lines)
+}
+
+fn tex_aligned_display_preserving_items(
+    head: &str,
+    items: &[(String, String)],
+    tail: &str,
+    budget: usize,
+) -> String {
+    let lines = wrap_display_lines_preserving_items(head, items, tail, budget);
+    tex_align_lines(&lines)
+}
+
+fn tex_align_lines(lines: &[String]) -> String {
     let body = lines
         .iter()
         .enumerate()
@@ -2230,15 +2528,42 @@ mod tests {
     }
 
     #[test]
-    fn rational_basis_is_reserved_for_concrete_q_series() {
+    fn rational_basis_reduces_projective_primary_three_point_graph() {
         let mut request = FormulaRequest::new(0, 3, 3);
         request.basis = FormulaBasisMode::Rational;
         request.expansion = Some(FormulaExpansion::ProjectiveSpace {
             n: 2,
             equivariant: false,
         });
-        let err = build_formula_skeleton(request).unwrap_err();
-        assert!(err.to_string().contains("concrete graph-wise q-series"));
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_text();
+        assert!(rendered.contains("Rational residue-reduced contribution"));
+        assert!(rendered.contains("gamma_{0,0} * gamma_{1,0} * gamma_{2,2}"));
+        assert!(rendered.contains("lambda_0"));
+        assert!(rendered.contains("lambda_1"));
+        assert!(rendered.contains("lambda_2"));
+        assert!(rendered.contains("residue sum f(H)/P'(H)"));
+        assert!(!rendered.contains("concrete graph-wise q-series"));
+
+        let rendered_tex = skeleton.render_tex();
+        assert!(rendered_tex.contains("C_{0}^{\\mathrm{rat}}"));
+        assert!(rendered_tex.contains(
+            "\\lambda_0\\mathbin{\\cdot}\\gamma_{0,0}\\mathbin{\\cdot}\\gamma_{1,1}\\mathbin{\\cdot}\\gamma_{2,2}"
+        ));
+    }
+
+    #[test]
+    fn rational_basis_reports_unreduced_graphs_explicitly() {
+        let mut request = FormulaRequest::new(1, 1, 2);
+        request.basis = FormulaBasisMode::Rational;
+        request.expansion = Some(FormulaExpansion::ProjectiveSpace {
+            n: 1,
+            equivariant: false,
+        });
+        let skeleton = build_formula_skeleton(request).unwrap();
+        let rendered = skeleton.render_text();
+        assert!(rendered.contains("not implemented for this graph"));
+        assert!(!rendered.contains("Packed rational contribution"));
     }
 
     #[test]

@@ -38,9 +38,12 @@ The coefficient basis deliberately keeps the lowest-level coefficient data
 symbolic.  The resolvent basis keeps descendant variables packed but substitutes
 the leg and edge kernel formulas into each graph bracket.  The raw basis does
 the same after reading those kernels in the ordinary or twisted calibration.
-The rational basis name is reserved for a future concrete graph-wise `q`-series
-renderer that contracts color/root sums and simplifies the resulting rational
-expressions.
+The rational basis is the quotient-reduction path.  Its first implemented case
+is the ordinary `P^n` genus-zero three-primary one-vertex graph: the root sum
+`sum_{P(u)=0} f(u)/P'(u)` is reduced as the top coefficient of `f(H)` modulo
+`prod_a(H-lambda_a)-q`.  More general graph-wise `q`-series contractions remain
+future work, and unsupported graphs are reported explicitly instead of being
+silently displayed in raw notation.
 
 Sample commands:
 
@@ -66,4 +69,9 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
   --basis raw \
   --format tex
+
+# Quotient-reduced ordinary P^2 primary three-point expression.
+cargo run --quiet -- formula --n 2 --g 0 --markings 3 \
+  --basis rational \
+  --format text
 ```
