@@ -15,7 +15,8 @@ Main files:
 - `atoms.rs`: glossary for the named components `S`, `Psi`, `RInv`, edge
   propagator, translation `T`, `Delta`, and point-theory psi integrals.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
-  orders and stable graph metadata.
+  orders, stable graph metadata, and coefficient-level graph formulas using the
+  individual atom coefficients.
 
 The first renderer deliberately keeps calibration data symbolic.  Later stages
 can add substitution modes that print actual truncated `R_k`, `S_k`, `T_k`,

@@ -227,14 +227,14 @@ impl FormulaSkeleton {
             self.graphs.len()
         ));
         for graph in &self.graphs {
-            graph.render_text(out, self.request.colors);
+            graph.render_text(out, &self.request);
             out.push('\n');
         }
     }
 }
 
 impl GraphFormulaSkeleton {
-    fn render_text(&self, out: &mut String, colors: usize) {
+    fn render_text(&self, out: &mut String, request: &FormulaRequest) {
         out.push_str(&format!(
             "Graph #{}: |Aut|={}, h1={}, vertices={}, edges={}, markings={}\n",
             self.index,
@@ -275,8 +275,109 @@ impl GraphFormulaSkeleton {
         out.push_str(&format!(
             "    (1/{}) * sum_{{color(v) in 0..{}}} [product of leg, edge, and vertex atoms]\n",
             self.automorphism_order,
-            colors - 1
+            request.colors - 1
         ));
+        self.render_unravelled_formula(out, request);
+    }
+
+    fn render_unravelled_formula(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str("  Unravelled coefficient formula:\n");
+        out.push_str(&format!(
+            "    C_G = (1/{}) * sum_{{i_v=0..{}}} sum_{{finite powers satisfying vertex caps}}\n",
+            self.automorphism_order,
+            request.colors - 1
+        ));
+        out.push_str("          [prod markings Leg_{ell,i_{v(ell)}}^{p_ell}]\n");
+        out.push_str("          [prod edges Edge_{i_{v(e-)},i_{v(e+)}}^{a_e,b_e}]\n");
+        out.push_str("          [prod vertices Vertex_{h_v,i_v}(P_v)].\n");
+        self.render_power_variables(out, request);
+        self.render_vertex_power_sets(out);
+        self.render_atom_expansions(out, request);
+    }
+
+    fn render_power_variables(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str("    Power variables:\n");
+        if self.graph.legs.is_empty() {
+            out.push_str("      no external leg powers\n");
+        } else {
+            let leg_vars = (0..self.graph.legs.len())
+                .map(|marking| format!("p_{marking}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "      leg powers: {leg_vars}, each kept only when the endpoint vertex cap allows it\n"
+            ));
+        }
+        if self.graph.edges.is_empty() {
+            out.push_str("      no edge powers\n");
+        } else {
+            let edge_vars = (0..self.graph.edges.len())
+                .map(|edge| format!("(a_{edge},b_{edge})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!(
+                "      edge powers: {edge_vars}, with 0 <= a_e,b_e <= D={}\n",
+                request.edge_power_max()
+            ));
+        }
+    }
+
+    fn render_vertex_power_sets(&self, out: &mut String) {
+        out.push_str("    Vertex power multisets and caps:\n");
+        for vertex in &self.vertices {
+            let powers = self.vertex_power_labels(vertex.index);
+            let powers_label = if powers.is_empty() {
+                "empty".to_string()
+            } else {
+                powers.join(", ")
+            };
+            out.push_str(&format!(
+                "      P_v{} = {{{}}}; keep terms with sum(P_v{}) <= {}\n",
+                vertex.index, powers_label, vertex.index, vertex.psi_dimension_cap
+            ));
+        }
+    }
+
+    fn vertex_power_labels(&self, vertex: usize) -> Vec<String> {
+        let mut powers = Vec::new();
+        for (marking, &leg_vertex) in self.graph.legs.iter().enumerate() {
+            if leg_vertex == vertex {
+                powers.push(format!("p_{marking}"));
+            }
+        }
+        for (edge_index, edge) in self.graph.edges.iter().enumerate() {
+            if edge.a == vertex {
+                powers.push(format!("a_{edge_index}"));
+            }
+            if edge.b == vertex {
+                powers.push(format!("b_{edge_index}"));
+            }
+        }
+        powers
+    }
+
+    fn render_atom_expansions(&self, out: &mut String, request: &FormulaRequest) {
+        out.push_str("    Coefficient atoms used in this graph:\n");
+        out.push_str(&format!(
+            "      Leg_{{ell,i}}^p = sum_{{0<=k<=K={}, 0<=alpha,beta,j<{}, 0<=s<=k, 0<=r<=D+1={}, p=k-s+r}}\n",
+            request.max_descendant_power,
+            request.colors,
+            request.inverse_r_order()
+        ));
+        out.push_str("        x_{ell,k,alpha} * RInv_r[i,j] * PsiInv[j,beta] * S_s[beta,alpha].\n");
+        out.push_str("      Edge_{i,j}^{a,b} = sum_{t=0}^{b} (-1)^{t+1} sum_nu RInv_{a+1+t}[i,nu] * EtaInv_nu * RInv_{b-t}[j,nu].\n");
+        out.push_str(
+            "        Terms with RInv order outside 0..D+1 vanish under this truncation.\n",
+        );
+        out.push_str("      T_i^p = - sum_j RInv_{p-1}[i,j] * Unit_j for p>=2; T_i^0=T_i^1=0.\n");
+        out.push_str(
+            "      Vertex_{h,i}(P) = translation-completed TFT_i(h,N) * PsiInt(h; powers):\n",
+        );
+        out.push_str("        let excess = 3h-3+|P| - sum(P). If excess<0 the vertex term is 0.\n");
+        out.push_str("        if excess=0, add TFT_i(h,|P|) * PsiInt(h; P).\n");
+        out.push_str("        for each partition excess=sum_e c_e*e, add\n");
+        out.push_str("          [prod_e (T_i^{e+1})^{c_e}/c_e!] * TFT_i(h,|P|+sum_e c_e) * PsiInt(h; P, (e+1) repeated c_e).\n");
+        out.push_str("        TFT_i(0,N)=DeltaInv_i*RelSqrtDelta_i^N; TFT_i(h>0,N)=Delta_i^{h-1}*RelSqrtDelta_i^N.\n");
     }
 }
 
@@ -301,5 +402,16 @@ mod tests {
         assert_eq!(skeleton.graphs.len(), 1);
         assert_eq!(skeleton.graphs[0].automorphism_order, 1);
         assert!(skeleton.render_text().contains("Atom glossary"));
+    }
+
+    #[test]
+    fn graph_renderer_unravels_atom_coefficients() {
+        let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
+        let rendered = skeleton.render_text();
+        assert!(rendered.contains("Unravelled coefficient formula"));
+        assert!(rendered.contains("Leg_{ell,i}^p"));
+        assert!(rendered.contains("Edge_{i,j}^{a,b}"));
+        assert!(rendered.contains("T_i^p"));
+        assert!(rendered.contains("Vertex_{h,i}(P)"));
     }
 }
