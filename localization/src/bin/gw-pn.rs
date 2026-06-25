@@ -332,17 +332,16 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
     println!("Resolvent generating function");
     println!("target: P^{n}");
     if let Some(twist) = twist.as_ref() {
-        let degrees = twist
-            .iter()
-            .map(|degree| format!("O(-{degree})"))
-            .collect::<Vec<_>>()
-            .join(" + ");
-        println!("twist: {degrees}");
+        println!("twist: {}", twist_bundle_label(twist));
     }
     println!("genus: {genus}");
     println!("degree: {degree}");
     println!("markings: {markings}");
     println!("virtual_dimension: {virtual_dimension}");
+    print!(
+        "{}",
+        resolvent_definition_text(n, genus, degree, markings, twist.as_deref())
+    );
     println!("engine: {}", result.engine);
     println!(
         "terms: {} candidate, {} nonzero",
@@ -357,6 +356,92 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
         );
     }
     Ok(())
+}
+
+fn resolvent_definition_text(
+    n: usize,
+    genus: usize,
+    degree: usize,
+    markings: usize,
+    twist: Option<&[usize]>,
+) -> String {
+    let target = resolvent_target_label(n, twist);
+    let mut out = String::new();
+    out.push_str("definition:\n");
+    let arguments = resolvent_arguments(markings);
+    if arguments.is_empty() {
+        out.push_str(&format!("  F_{{{genus},{degree}}}^{{{target}}}\n"));
+    } else {
+        out.push_str(&format!(
+            "  F_{{{genus},{degree}}}^{{{target}}}({arguments})\n"
+        ));
+    }
+    out.push_str("    =\n");
+    if markings == 0 {
+        out.push_str(&format!("      < 1 >_{{{genus},{degree}}}^{{{target}}}\n"));
+    } else {
+        out.push_str(&format!(
+            "      < {} >_{{{genus},{degree}}}^{{{target}}}\n",
+            resolvent_insertion_range(markings)
+        ));
+        out.push_str("  where, for each marking ell,\n");
+        out.push_str("      I_ell(z_ell,t_ell)\n");
+        out.push_str("        =\n");
+        out.push_str(&format!("          sum_{{a=0}}^{{{n}}} t_ell^a H^a/a!\n"));
+        out.push_str("          -------------------------------\n");
+        out.push_str("                  z_ell - psi_ell\n");
+        out.push_str(
+            "  expansion convention: 1/(z_ell - psi_ell) = sum_{k>=0} psi_ell^k z_ell^{-k-1}\n",
+        );
+    }
+    out
+}
+
+fn resolvent_target_label(n: usize, twist: Option<&[usize]>) -> String {
+    let base = format!("P^{n}");
+    match twist {
+        Some(degrees) if !degrees.is_empty() => format!("{base}, {}", twist_bundle_label(degrees)),
+        _ => base,
+    }
+}
+
+fn twist_bundle_label(degrees: &[usize]) -> String {
+    degrees
+        .iter()
+        .map(|degree| format!("O(-{degree})"))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn resolvent_arguments(markings: usize) -> String {
+    if markings == 0 {
+        String::new()
+    } else {
+        format!(
+            "{}; {}",
+            indexed_variable_range("z", markings),
+            indexed_variable_range("t", markings)
+        )
+    }
+}
+
+fn indexed_variable_range(prefix: &str, count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => format!("{prefix}_0"),
+        _ => format!("{prefix}_0,...,{prefix}_{}", count - 1),
+    }
+}
+
+fn resolvent_insertion_range(markings: usize) -> String {
+    match markings {
+        0 => String::new(),
+        1 => "I_0(z_0,t_0)".to_string(),
+        _ => format!(
+            "I_0(z_0,t_0), ..., I_{last}(z_{last},t_{last})",
+            last = markings - 1
+        ),
+    }
 }
 
 fn formula_expansion_from_args(
@@ -1244,5 +1329,28 @@ mod tests {
         assert!(err
             .to_string()
             .contains("formula rational basis was removed"));
+    }
+
+    #[test]
+    fn resolvent_definition_names_ordinary_target_and_fraction() {
+        let rendered = resolvent_definition_text(2, 0, 1, 3, None);
+        assert!(rendered.contains("F_{0,1}^{P^2}(z_0,...,z_2; t_0,...,t_2)"));
+        assert!(rendered.contains("sum_{a=0}^{2} t_ell^a H^a/a!"));
+        assert!(rendered.contains("z_ell - psi_ell"));
+        assert!(rendered.contains("1/(z_ell - psi_ell)"));
+    }
+
+    #[test]
+    fn resolvent_definition_names_twisted_target() {
+        let rendered = resolvent_definition_text(2, 2, 1, 1, Some(&[1, 2]));
+        assert!(rendered.contains("F_{2,1}^{P^2, O(-1) + O(-2)}(z_0; t_0)"));
+        assert!(rendered.contains(">_{2,1}^{P^2, O(-1) + O(-2)}"));
+    }
+
+    #[test]
+    fn resolvent_definition_handles_zero_markings() {
+        let rendered = resolvent_definition_text(1, 2, 0, 0, None);
+        assert!(rendered.contains("F_{2,0}^{P^1}"));
+        assert!(rendered.contains("< 1 >_{2,0}^{P^1}"));
     }
 }
