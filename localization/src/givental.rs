@@ -1840,6 +1840,13 @@ pub fn compute_semisimple_graph_value<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        if let Some(value) =
+            provider.scalar_fallback_value(genus, degree, insertions, truncation)?
+        {
+            return Ok(value);
+        }
+    }
     let total = compute_semisimple_graph_series(provider, genus, degree, insertions, truncation)?;
     Ok(total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
 }

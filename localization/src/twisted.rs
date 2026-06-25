@@ -4455,6 +4455,7 @@ pub fn compute_negative_split_twisted(
         });
     }
 
+    let unstable_two_point = req.genus == 0 && req.insertions.len() == 2;
     let raw = crate::givental::compute_semisimple_graph_value(
         &provider,
         req.genus,
@@ -4469,10 +4470,13 @@ pub fn compute_negative_split_twisted(
     Ok(InvariantResult {
         value,
         engine: "twisted-negative-split-givental-birkhoff-early-line",
-        notes: vec![
+        notes: vec![if unstable_two_point {
+            "computed by the genus-zero two-point unstable S-matrix convention from the same early rational one-parameter lambda-line hypergeometric/Birkhoff calibration; no local oracle shortcut is used"
+                .to_string()
+        } else {
             "computed by early rational one-parameter lambda-line hypergeometric/Birkhoff S and QRR R stable-graph expansion; no local oracle shortcut is used; fast validation currently covers resolved conifold genus 2 degree 1"
-                .to_string(),
-        ],
+                .to_string()
+        }],
     })
 }
 
@@ -4525,6 +4529,90 @@ impl TwistedProjectiveSpaceProvider {
         let mut out = Self::new(n, degrees, false)?;
         out.calibration_mode = TwistedCalibrationMode::InverseEulerFiberPlus;
         Ok(out)
+    }
+
+    fn flat_metric_matrix(&self, q_degree: usize) -> Result<SeriesMatrix, GwError> {
+        let fiber_weights = self.fiber_weights();
+        match self.line_mode {
+            TwistedLineMode::EarlyRational => twisted_inverse_euler_flat_metric_matrix(
+                self.base.n,
+                q_degree,
+                &self.twist,
+                self.base_weights(),
+                &fiber_weights,
+            ),
+            TwistedLineMode::SymbolicLimit => {
+                let lambda = crate::algebra::lambda(0);
+                let base_weight_line = self
+                    .base_weights()
+                    .iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
+                    .collect::<Vec<_>>();
+                let fiber_weight_line = fiber_weights
+                    .iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
+                    .collect::<Vec<_>>();
+                twisted_inverse_euler_flat_metric_matrix_ratfun(
+                    self.base.n,
+                    q_degree,
+                    &self.twist,
+                    &base_weight_line,
+                    &fiber_weight_line,
+                )
+            }
+        }
+    }
+
+    fn genus_zero_two_point_fallback(
+        &self,
+        degree: usize,
+        insertions: &[Insertion],
+    ) -> Result<Option<RatFun>, GwError> {
+        if insertions.len() != 2 {
+            return Ok(None);
+        }
+        let descendant_positions = insertions
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, insertion)| (insertion.descendant_power > 0).then_some(idx))
+            .collect::<Vec<_>>();
+        if descendant_positions.len() != 1 {
+            return Ok(None);
+        }
+
+        let descendant_idx = descendant_positions[0];
+        let primary_idx = 1 - descendant_idx;
+        let descendant_power = insertions[descendant_idx].descendant_power;
+        let s_order = descendant_power + 1;
+        let s_matrix = self.descendant_s_matrix(degree, s_order)?;
+        let metric = self.flat_metric_matrix(degree)?;
+        let descendant = self.insertion_vector(&insertions[descendant_idx], degree)?;
+        let primary = self.insertion_vector(&insertions[primary_idx], degree)?;
+        let s_coeff = s_matrix
+            .coefficient(s_order)
+            .ok_or(GwError::TruncationTooLow)?;
+
+        let mut transformed = vec![QSeries::zero(degree); self.colors()];
+        for (row, target) in transformed.iter_mut().enumerate() {
+            let mut total = QSeries::zero(degree);
+            for (col, class_coeff) in descendant.iter().enumerate() {
+                total = total.add(&s_coeff.entry(row, col).mul(class_coeff));
+            }
+            *target = total;
+        }
+
+        let mut paired = QSeries::zero(degree);
+        for (left, transformed_coeff) in transformed.iter().enumerate() {
+            for (right, primary_coeff) in primary.iter().enumerate() {
+                let term = transformed_coeff
+                    .mul(metric.entry(left, right))
+                    .mul(primary_coeff);
+                paired = paired.add(&term);
+            }
+        }
+        Ok(Some(
+            paired.coeff(degree).cloned().unwrap_or_else(RatFun::zero),
+        ))
     }
 
     pub fn rational_lambda_line_with_scale(
@@ -4775,11 +4863,14 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
 
     fn scalar_fallback_value(
         &self,
-        _genus: usize,
-        _degree: usize,
-        _insertions: &[Self::Insertion],
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
         _truncation: Option<&Truncation>,
     ) -> Result<Option<RatFun>, GwError> {
+        if genus == 0 {
+            return self.genus_zero_two_point_fallback(degree, insertions);
+        }
         Ok(None)
     }
 }
@@ -5539,6 +5630,24 @@ mod tests {
                 "twisted-negative-split-givental-birkhoff-early-line"
             );
         }
+    }
+
+    #[test]
+    fn o_minus_one_p2_genus_zero_two_point_descendant_uses_unstable_s_matrix() {
+        let req = TwistedInvariantRequest::new(
+            2,
+            vec![1],
+            0,
+            2,
+            vec![
+                tau(2, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+            ],
+        )
+        .unwrap();
+        let result = compute_negative_split_twisted(&req).unwrap();
+        assert_eq!(result.value, RatFun::from_rational(Rational::new(-1, 2)));
+        assert!(result.notes[0].contains("two-point unstable S-matrix"));
     }
 
     #[test]
