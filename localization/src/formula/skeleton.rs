@@ -187,6 +187,7 @@ impl FormulaSkeleton {
         out.push_str("\\usepackage[margin=1in]{geometry}\n");
         out.push_str("\\usepackage[T1]{fontenc}\n");
         out.push_str("\\usepackage{amsmath,amssymb,mathtools}\n");
+        out.push_str("\\usepackage{breqn}\n");
         out.push_str("\\usepackage{tikz}\n");
         out.push_str("\\usetikzlibrary{calc,arrows.meta}\n");
         out.push_str("\\allowdisplaybreaks\n");
@@ -349,9 +350,7 @@ impl FormulaSkeleton {
             "At a vertex of genus $h$ and color $i$, translation insertions $(T_p)_i$ are integrated against point-theory psi classes:\n",
         );
         out.push_str("\\[\n");
-        out.push_str(
-            "\\left\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\right\\rangle_h^{\\mathrm{pt}}\n",
-        );
+        out.push_str("\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\rangle_h^{\\mathrm{pt}}\n");
         out.push_str("=\n");
         out.push_str("\\int_{\\overline{\\mathcal M}_{h,N}}\\prod_{a=1}^N \\psi_a^{p_a}.\n");
         out.push_str("\\]\n");
@@ -375,7 +374,7 @@ impl FormulaSkeleton {
         );
         out.push_str("\\item $\\eta^{ii}$: diagonal inverse metric in canonical coordinates.\n");
         out.push_str(
-            "\\item $\\left\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\right\\rangle_h^{\\mathrm{pt}}$: Witten--Kontsevich intersection number on $\\overline{\\mathcal M}_{h,N}$.\n",
+            "\\item $\\langle \\tau_{p_1}\\cdots\\tau_{p_N}\\rangle_h^{\\mathrm{pt}}$: Witten--Kontsevich intersection number on $\\overline{\\mathcal M}_{h,N}$.\n",
         );
         out.push_str("\\end{itemize}\n");
     }
@@ -616,17 +615,26 @@ impl GraphFormulaSkeleton {
             return;
         }
 
-        out.push_str("\\begin{align*}\n");
-        out.push_str(&format!("C_{{{}}}\n", self.index));
+        out.push_str("\\begin{dmath*}\n");
         out.push_str(&format!(
-            "&= \\frac{{1}}{{{}}}{}\\\\\n",
+            "C_{{{}}} = \\frac{{1}}{{{}}}{}",
+            self.index,
             self.automorphism_order,
             self.color_sum_tex(request.colors)
         ));
-        for (idx, factors) in terms.iter().enumerate() {
-            render_tex_product_term(out, factors, idx == 0, idx + 1 == terms.len());
+        if terms.len() == 1 {
+            out.push_str(&tex_product_expression(&terms[0]));
+        } else {
+            out.push_str("\\bigl(");
+            for (idx, factors) in terms.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(" +\n");
+                }
+                out.push_str(&tex_product_expression(factors));
+            }
+            out.push_str("\\bigr)");
         }
-        out.push_str("\\end{align*}\n");
+        out.push_str("\n\\end{dmath*}\n");
     }
 
     fn color_sum_label(&self, colors: usize) -> String {
@@ -896,46 +904,16 @@ fn append_distributed_tex_factor_terms(
     }
 }
 
-fn render_tex_product_term(
-    out: &mut String,
-    factors: &[String],
-    first_term: bool,
-    last_term: bool,
-) {
+fn tex_product_expression(factors: &[String]) -> String {
     let nontrivial = factors
         .iter()
         .filter(|factor| factor.as_str() != "1")
+        .cloned()
         .collect::<Vec<_>>();
     if nontrivial.is_empty() {
-        if first_term {
-            out.push_str("&\\quad 1");
-        } else {
-            out.push_str("&\\quad {}+1");
-        }
-        push_tex_row_end(out, last_term);
-        return;
-    }
-
-    if first_term {
-        out.push_str("&\\quad ");
+        "1".to_string()
     } else {
-        out.push_str("&\\quad {}+ ");
-    }
-    out.push_str(nontrivial[0]);
-    push_tex_row_end(out, last_term && nontrivial.len() == 1);
-
-    for (idx, factor) in nontrivial.iter().enumerate().skip(1) {
-        out.push_str("&\\qquad {}\\cdot ");
-        out.push_str(factor);
-        push_tex_row_end(out, last_term && idx + 1 == nontrivial.len());
-    }
-}
-
-fn push_tex_row_end(out: &mut String, final_row: bool) {
-    if final_row {
-        out.push('\n');
-    } else {
-        out.push_str("\\\\\n");
+        nontrivial.join("\\mathbin{\\cdot}")
     }
 }
 
@@ -958,24 +936,21 @@ fn leg_factor(marking: usize, color: &str, power: usize, request: &FormulaReques
 }
 
 fn leg_factor_tex(marking: usize, color: &str, power: usize, request: &FormulaRequest) -> String {
-    let mut summands = Vec::new();
+    let mut terms = Vec::new();
     for k in 0..=request.max_descendant_power {
         for s in 0..=k {
             for r in 0..=request.inverse_r_order() {
                 if k - s + r != power {
                     continue;
                 }
-                summands.push((
-                    format!(
-                        "\\sum_{{\\alpha,\\beta,j=0}}^{{{}}} x_{{{marking},{k},\\alpha}}\\,(R^{{-1}}_{{{r}}})_{{{color},j}}",
-                        request.colors - 1
-                    ),
-                    format!("(\\Psi^{{-1}})_{{j,\\beta}}\\,(S_{{{s}}})_{{\\beta,\\alpha}}"),
+                terms.push(format!(
+                    "\\sum_{{\\alpha,\\beta,j=0}}^{{{}}} x_{{{marking},{k},\\alpha}}\\,(R^{{-1}}_{{{r}}})_{{{color},j}}\\mathbin{{\\cdot}}(\\Psi^{{-1}})_{{j,\\beta}}\\,(S_{{{s}}})_{{\\beta,\\alpha}}",
+                    request.colors - 1
                 ));
             }
         }
     }
-    parenthesized_split_summands_tex(&summands)
+    parenthesized_sum_tex(&terms)
 }
 
 fn edge_factor(
@@ -1014,24 +989,22 @@ fn edge_factor_tex(
     right_power: usize,
     colors: usize,
 ) -> String {
-    let mut summands = Vec::new();
+    let mut terms = Vec::new();
     for t in 0..=right_power {
-        let sign = if t % 2 == 0 { "-" } else { "+" };
-        summands.push((
+        let sign = if t % 2 == 0 { '-' } else { '+' };
+        terms.push((
+            sign,
             format!(
-                "{sign}\\sum_{{\\nu=0}}^{{{}}}(R^{{-1}}_{{{}}})_{{{},\\nu}}",
+                "\\sum_{{\\nu=0}}^{{{}}}(R^{{-1}}_{{{}}})_{{{},\\nu}}\\mathbin{{\\cdot}}\\eta^{{\\nu\\nu}}\\,(R^{{-1}}_{{{}}})_{{{},\\nu}}",
                 colors - 1,
                 left_power + 1 + t,
-                left_color
-            ),
-            format!(
-                "\\eta^{{\\nu\\nu}}\\,(R^{{-1}}_{{{}}})_{{{},\\nu}}",
+                left_color,
                 right_power - t,
                 right_color
             ),
         ));
     }
-    parenthesized_split_summands_tex(&summands)
+    parenthesized_signed_sum_tex(&terms)
 }
 
 fn parenthesized_sum(terms: &[String]) -> String {
@@ -1042,29 +1015,29 @@ fn parenthesized_sum(terms: &[String]) -> String {
     }
 }
 
-fn parenthesized_split_summands_tex(summands: &[(String, String)]) -> String {
-    match summands {
+fn parenthesized_sum_tex(terms: &[String]) -> String {
+    match terms {
+        [] => "0".to_string(),
+        [term] => term.clone(),
+        _ => format!("\\bigl({}\\bigr)", terms.join(" + ")),
+    }
+}
+
+fn parenthesized_signed_sum_tex(terms: &[(char, String)]) -> String {
+    match terms {
         [] => "0".to_string(),
         _ => {
-            let mut out = String::new();
-            out.push_str("\\biggl(\\begin{aligned}[t]\n");
-            for (idx, (first_line, second_line)) in summands.iter().enumerate() {
-                if idx == 0 {
-                    out.push('&');
-                } else {
-                    out.push_str("&+");
+            let mut out = "\\bigl(".to_string();
+            for (idx, (sign, term)) in terms.iter().enumerate() {
+                match (idx, sign) {
+                    (0, '-') => out.push('-'),
+                    (0, _) => {}
+                    (_, '-') => out.push_str(" - "),
+                    (_, _) => out.push_str(" + "),
                 }
-                out.push_str(first_line);
-                out.push_str("\\\\\n");
-                out.push_str("&\\qquad {}\\cdot ");
-                out.push_str(second_line);
-                if idx + 1 == summands.len() {
-                    out.push('\n');
-                } else {
-                    out.push_str("\\\\\n");
-                }
+                out.push_str(term);
             }
-            out.push_str("\\end{aligned}\\biggr)");
+            out.push_str("\\bigr)");
             out
         }
     }
@@ -1223,7 +1196,7 @@ fn psi_integral_factor_tex(genus: usize, powers: &[usize]) -> String {
             .collect::<Vec<_>>()
             .join("")
     };
-    format!("\\left\\langle {insertions}\\right\\rangle_{{{genus}}}^{{\\mathrm{{pt}}}}")
+    format!("\\langle {insertions}\\rangle_{{{genus}}}^{{\\mathrm{{pt}}}}")
 }
 
 fn powered_factor(base: &str, exponent: usize) -> String {
@@ -1448,28 +1421,28 @@ mod tests {
         assert!(rendered.contains("\\section*{Givental Graph Formula Skeleton}"));
         assert!(rendered.contains("\\begin{tikzpicture}"));
         assert!(rendered.contains("\\draw[leg]"));
-        assert!(rendered.contains("\\begin{align*}"));
-        assert!(rendered.contains("&\\qquad {}\\cdot"));
+        assert!(rendered.contains("\\begin{dmath*}"));
+        assert!(rendered.contains("\\mathbin{\\cdot}"));
         assert!(!rendered.contains("\\left["));
         assert!(!rendered.contains("\\right]"));
         assert!(rendered.contains("(R^{-1}_{0})_{i_{0},j}"));
         assert!(rendered.contains("(\\Psi^{-1})_{j,\\beta}"));
         assert!(rendered.contains("(S_{0})_{\\beta,\\alpha}"));
         assert!(rendered.contains("\\Delta_{i_{0}}^{-1}"));
-        assert!(rendered.contains("\\left\\langle \\tau_{0}\\tau_{0}\\tau_{0}\\right\\rangle_{0}"));
+        assert!(rendered.contains("\\langle \\tau_{0}\\tau_{0}\\tau_{0}\\rangle_{0}"));
     }
 
     #[test]
-    fn tex_renderer_splits_long_graph_factors() {
+    fn tex_renderer_exposes_breakable_graph_math_without_forced_chunks() {
         let skeleton = build_formula_skeleton(FormulaRequest::new(1, 1, 2)).unwrap();
         let rendered = skeleton.render_tex();
-        assert!(rendered.contains("\\\\\n&\\qquad {}\\cdot (\\Psi^{-1})"));
-        assert!(rendered
-            .contains("\\\\\n&\\qquad {}\\cdot \\eta^{\\nu\\nu}\\,(R^{-1}_{0})_{i_{0},\\nu}"));
-        assert!(rendered.contains("\\\\\n&\\qquad {}\\cdot (T_{2})_{i_{0}}"));
-        assert!(rendered.contains(
-            "\\\\\n&\\qquad {}\\cdot \\left\\langle \\tau_{1}\\right\\rangle_{1}^{\\mathrm{pt}}"
-        ));
+        assert!(rendered.contains("\\begin{dmath*}"));
+        assert!(rendered.contains("\\mathbin{\\cdot}(\\Psi^{-1})"));
+        assert!(rendered.contains("\\mathbin{\\cdot}\\eta^{\\nu\\nu}"));
+        assert!(rendered.contains("\\mathbin{\\cdot}(T_{2})_{i_{0}}"));
+        assert!(rendered.contains("\\mathbin{\\cdot}\\langle \\tau_{1}\\rangle_{1}^{\\mathrm{pt}}"));
+        assert!(!rendered.contains("\\begin{aligned}[t]"));
+        assert!(!rendered.contains("&\\qquad {}\\cdot"));
     }
 
     #[test]
@@ -1477,6 +1450,7 @@ mod tests {
         let skeleton = build_formula_skeleton(FormulaRequest::new(0, 3, 2)).unwrap();
         let rendered = skeleton.render_tex_document();
         assert!(rendered.starts_with("\\documentclass[11pt]{article}"));
+        assert!(rendered.contains("\\usepackage{breqn}"));
         assert!(rendered.contains("\\usepackage{tikz}"));
         assert!(rendered.contains("\\begin{document}"));
         assert!(rendered.contains("\\begin{tikzpicture}"));

@@ -242,10 +242,11 @@ Add `--no-glossary` for a shorter listing that still includes the graph
 formulas. TeX mode uses standard Givental symbols such as `S_s`, `R^{-1}_r`,
 `\Psi^{-1}`, `(T_p)_i`, `\Delta_i`, and
 `\langle \tau_{p_1}\cdots\tau_{p_N}\rangle_h^{\mathrm{pt}}`. Graph
-contributions are rendered as `align*` displays.  The TeX renderer inserts
-explicit breaks at product boundaries and inside the longer leg and edge
-summands, so compiled PDFs do not depend on an oversized full-expression
-delimiter to fit on the page.
+contributions are rendered as `dmath*` displays from the `breqn` package.  The
+renderer avoids giant `\left...\right` delimiter pairs and nested aligned
+chunks, and it inserts breakable product operators so TeX can choose line
+breaks.  Standalone `tex` output loads `breqn`; `tex-fragment` users should
+load it in their surrounding document.
 
 ## `degree-series`
 
