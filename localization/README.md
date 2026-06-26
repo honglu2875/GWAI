@@ -188,6 +188,9 @@ number of markings. This is an explanatory tool with two formula bases:
 - `--basis coefficients`: the legacy fully unrolled coefficient basis in
   `R_k`, `S_k`, `T_k`, `Psi`, `Delta`, and point-theory psi integrals.
 
+There is no separate `coefficient` subcommand; use
+`formula --basis coefficients` for this view.
+
 The default is `--basis raw`.  The older `--expand` flag is still accepted; it
 now just requests the same engine dictionary that raw mode uses by default.
 
