@@ -6,7 +6,8 @@ engine calibration data, contract canonical-root sums where available, and
 simplify expressions in quotient rings.  The previous public formula
 `rational` basis has been removed until its mathematical meaning is made
 precise; fixed-degree resolvent generating functions now live in the top-level
-`resolvent` command.
+`resolvent` command, which uses the packed external-leg graph evaluator when
+available.
 
 Implemented now:
 

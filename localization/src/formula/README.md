@@ -21,7 +21,7 @@ Main files:
   QRR `R`-recursions.
 - `skeleton.rs`: fixed `(g,m)` formula skeletons, including finite truncation
   orders, stable graph metadata, and expanded graph terms using the legacy
-  coefficient basis or packed raw/rational kernels.  Marking factors in
+  coefficient basis or packed raw resolvent kernels.  Marking factors in
   coefficient mode are expanded into `S/PsiInv/RInv`, and edge factors are
   expanded into `RInv/EtaInv`.  The same skeleton can be rendered
   as plain text, as a TeX fragment, or as a standalone TeX document using
@@ -62,5 +62,5 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --format tex
 
 # Fixed-degree resolvent generating functions live in the top-level command.
-cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
+cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3 --validate
 ```
