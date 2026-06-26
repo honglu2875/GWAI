@@ -40,6 +40,9 @@ insertions and substitutes the leg and edge kernel formulas into each graph
 bracket after reading the selected ordinary or twisted calibration data.  Actual
 fixed-degree resolvent generating functions are computed by the top-level
 `resolvent` command, not by this formula renderer.
+For negative split twists, `--equivariant` means the displayed calibration keeps
+symbolic fiber parameters `mu_i` over early-specialized base weights; large
+symbolic graph contractions still need a factored rational-function engine.
 
 Sample commands:
 
@@ -59,6 +62,13 @@ cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
 cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
   --twist -3 \
   --basis raw \
+  --format tex
+
+# Same dictionary with symbolic fiber parameter mu_0.
+cargo run --quiet -- formula --n 2 --g 2 --markings 1 \
+  --twist -3 \
+  --basis raw \
+  --equivariant \
   --format tex
 
 # Fixed-degree resolvent generating functions live in the top-level command.

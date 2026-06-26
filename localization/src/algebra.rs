@@ -274,6 +274,23 @@ impl Monomial {
         }
         Some(coefficient)
     }
+
+    fn evaluate_variables(&self, values: &BTreeMap<String, Rational>) -> Result<Rational, GwError> {
+        let mut coefficient = Rational::one();
+        for (name, exp) in &self.0 {
+            let value = values.get(name).ok_or_else(|| {
+                GwError::AlgebraFailure(format!(
+                    "missing value for symbolic variable `{name}` in monomial `{self}`"
+                ))
+            })?;
+            if *exp >= 0 {
+                coefficient = coefficient * value.pow_usize(*exp as usize);
+            } else {
+                coefficient = coefficient / value.pow_usize((-*exp) as usize);
+            }
+        }
+        Ok(coefficient)
+    }
 }
 
 impl Ord for Monomial {
@@ -414,6 +431,14 @@ impl SparsePoly {
                 )));
             };
             total += coeff.clone() * monomial_value;
+        }
+        Ok(total)
+    }
+
+    fn evaluate_variables(&self, values: &BTreeMap<String, Rational>) -> Result<Rational, GwError> {
+        let mut total = Rational::zero();
+        for (monomial, coeff) in &self.terms {
+            total += coeff.clone() * monomial.evaluate_variables(values)?;
         }
         Ok(total)
     }
@@ -681,6 +706,20 @@ impl RatFun {
         if den.is_zero() {
             return Err(GwError::AlgebraFailure(
                 "zero denominator after lambda evaluation".to_string(),
+            ));
+        }
+        Ok(num / den)
+    }
+
+    pub fn evaluate_variables(
+        &self,
+        values: &BTreeMap<String, Rational>,
+    ) -> Result<Rational, GwError> {
+        let num = self.num.evaluate_variables(values)?;
+        let den = self.den.evaluate_variables(values)?;
+        if den.is_zero() {
+            return Err(GwError::AlgebraFailure(
+                "zero denominator after symbolic variable evaluation".to_string(),
             ));
         }
         Ok(num / den)
@@ -1013,5 +1052,17 @@ mod tests {
             .evaluate_lambda_weights(1, &[Rational::from(2), Rational::from(5)])
             .unwrap();
         assert_eq!(value, Rational::new(4, 3));
+    }
+
+    #[test]
+    fn variable_evaluation_replaces_named_parameters() {
+        let mu = RatFun::variable("mu_0");
+        let expr = &(&mu + &RatFun::from(1usize)) / &(&mu - &RatFun::from(2usize));
+        let mut values = BTreeMap::new();
+        values.insert("mu_0".to_string(), Rational::from(5usize));
+        assert_eq!(
+            expr.evaluate_variables(&values).unwrap(),
+            Rational::from(2usize)
+        );
     }
 }

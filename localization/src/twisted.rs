@@ -8,12 +8,16 @@
 //! two semisimple skeletons.  The principal-relation skeleton is diagnostic
 //! only: it fails the flat-pairing diagonalization beyond q=0.  The equivariant
 //! Birkhoff skeleton validates the inverse-Euler product and low-order
-//! Birkhoff/QRR `R` unitarity, including local `P^2`.  The public graph path
-//! uses an early rational specialization of the one-parameter lambda line,
-//! while the symbolic lambda-line provider remains available as a finite-limit
-//! diagnostic.  Fast validation currently covers several resolved-conifold rows
-//! and the first local-`P^2` genus-2 row; genus-4 local curve computations are
-//! the next observed performance frontier.
+//! Birkhoff/QRR `R` unitarity, including local `P^2`.  The non-equivariant
+//! graph path uses an early rational specialization of the one-parameter lambda
+//! line.  A fiber-equivariant mode keeps independent symbolic parameters
+//! `mu_i` for the split summands while keeping the base weights
+//! early-specialized; calibration-level specialization tests cover this mode.
+//! Large symbolic graph contractions still need a factored rational
+//! representation to avoid expanded numerator/denominator blow-up.  Fast
+//! validation currently covers several resolved-conifold rows and the first
+//! local-`P^2` genus-2 row; genus-4 local curve computations are the next
+//! observed performance frontier.
 
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
@@ -1187,44 +1191,35 @@ struct NegativeSplitLineHypergeometricModel {
 }
 
 impl NegativeSplitLineHypergeometricModel {
-    fn new(
+    fn from_ratfun_weights(
         n: usize,
         twist: NegativeSplitBundleTwist,
         q_degree: usize,
         z_order: usize,
-        base_weight_factors: &[Rational],
-        fiber_weight_factors: &[Rational],
+        base_weights: Vec<RatFun>,
+        fiber_weights: &[RatFun],
     ) -> Result<Self, GwError> {
-        if base_weight_factors.len() != n + 1 {
+        if base_weights.len() != n + 1 {
             return Err(GwError::AlgebraFailure(format!(
-                "expected {} base weight factors, got {}",
+                "expected {} base weights, got {}",
                 n + 1,
-                base_weight_factors.len()
+                base_weights.len()
             )));
         }
-        if fiber_weight_factors.len() != twist.rank() {
+        if fiber_weights.len() != twist.rank() {
             return Err(GwError::AlgebraFailure(format!(
-                "expected {} fiber weight factors, got {}",
+                "expected {} fiber weights, got {}",
                 twist.rank(),
-                fiber_weight_factors.len()
+                fiber_weights.len()
             )));
         }
-        let lambda = crate::algebra::lambda(0);
-        let base_weights = base_weight_factors
-            .iter()
-            .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-            .collect::<Vec<_>>();
-        let fiber_weights = fiber_weight_factors
-            .iter()
-            .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-            .collect::<Vec<_>>();
         let min_z_power = -(((n + 1) * q_degree + z_order + 2) as i32);
         Ok(Self {
             n,
             twist,
             q_degree,
             base_weights,
-            fiber_weights,
+            fiber_weights: fiber_weights.to_vec(),
             min_z_power,
         })
     }
@@ -2628,21 +2623,21 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode_and_validation(
     })
 }
 
-fn specialized_twisted_birkhoff_canonical_data_ratfun_with_validation(
+fn specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validation(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     max_q_degree: usize,
-    base_weight_factors: &[Rational],
-    fiber_weight_factors: &[Rational],
+    base_weights: &[RatFun],
+    fiber_weights: &[RatFun],
     validation: TwistedCalibrationValidation,
 ) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
-    let model = NegativeSplitLineHypergeometricModel::new(
+    let model = NegativeSplitLineHypergeometricModel::from_ratfun_weights(
         n,
         twist.clone(),
         max_q_degree,
         1,
-        base_weight_factors,
-        fiber_weight_factors,
+        base_weights.to_vec(),
+        fiber_weights,
     )?;
     let descendant_s = model.birkhoff_descendant_s_matrix(1)?;
     let classical_h =
@@ -2905,42 +2900,32 @@ fn negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validatio
     Ok(calibration)
 }
 
-fn negative_split_twisted_birkhoff_calibration_candidate_ratfun_with_validation(
+fn negative_split_twisted_birkhoff_calibration_candidate_for_ratfun_weights_with_validation(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     q_degree: usize,
     z_order: usize,
-    base_weight_factors: &[Rational],
-    fiber_weight_factors: &[Rational],
+    base_weights: &[RatFun],
+    fiber_weights: &[RatFun],
     validation: TwistedCalibrationValidation,
 ) -> Result<SemisimpleCalibration, GwError> {
-    let canonical = specialized_twisted_birkhoff_canonical_data_ratfun_with_validation(
+    let canonical = specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validation(
         n,
         twist,
         q_degree,
-        base_weight_factors,
-        fiber_weight_factors,
+        base_weights,
+        fiber_weights,
         validation,
     )?;
     let mut calibration = negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
         q_degree, z_order, &canonical,
     )?;
-
-    let lambda = crate::algebra::lambda(0);
-    let base_weights = base_weight_factors
-        .iter()
-        .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-        .collect::<Vec<_>>();
-    let fiber_weights = fiber_weight_factors
-        .iter()
-        .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-        .collect::<Vec<_>>();
     let classical_diagonal = twisted_classical_limit_diagonal_coefficients_ratfun(
         n,
         twist,
         z_order,
-        &base_weights,
-        &fiber_weights,
+        base_weights,
+        fiber_weights,
     )?;
     let coefficients = solve_twisted_r_coefficients(
         &canonical.roots,
@@ -2954,7 +2939,7 @@ fn negative_split_twisted_birkhoff_calibration_candidate_ratfun_with_validation(
         q_degree,
         z_order,
         coefficients,
-        CalibrationId("negative-split-lambda-line-birkhoff-qrr-candidate".to_string()),
+        CalibrationId("negative-split-ratfun-birkhoff-qrr-candidate".to_string()),
         CanonicalFrameConvention::RelativeNormalizedCanonicalIdempotents,
     )?;
     if validation.runs_expensive_checks() {
@@ -4322,12 +4307,14 @@ pub struct TwistedProjectiveSpaceProvider {
     calibration_mode: TwistedCalibrationMode,
     fiber_weight_scale: Rational,
     custom_fiber_weights: Option<Vec<Rational>>,
+    fiber_parameter_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum TwistedLineMode {
     EarlyRational,
     SymbolicLimit,
+    FiberEquivariant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -4386,6 +4373,7 @@ struct TwistedGraphKernelCacheKey {
     graph_dimension: usize,
     base_weights: Vec<Rational>,
     fiber_weights: Vec<Rational>,
+    fiber_parameter_names: Vec<String>,
     line_mode: TwistedLineMode,
     calibration_mode: TwistedCalibrationMode,
     validation: TwistedCalibrationValidation,
@@ -4427,14 +4415,8 @@ pub fn compute_negative_split_twisted(
 ) -> Result<InvariantResult, GwError> {
     // Public local/twisted path: construct a semisimple provider from the
     // hypergeometric/Birkhoff/QRR calibration, run the generic Givental graph
-    // evaluator, and finally take the one-parameter lambda-line limit if a
-    // residual rational function remains.
-    if req.equivariant {
-        return Err(GwError::UnsupportedInvariant(
-            "symbolic equivariant negative split-bundle output is not implemented yet; the current twisted calibration uses a generic rational lambda line"
-                .to_string(),
-        ));
-    }
+    // evaluator, and either take the one-parameter lambda-line limit or keep the
+    // fiber equivariant parameters as symbolic rational variables.
     if req.degree == 0 {
         return Err(GwError::UnsupportedInvariant(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
@@ -4442,8 +4424,11 @@ pub fn compute_negative_split_twisted(
         ));
     }
 
-    let provider =
-        TwistedProjectiveSpaceProvider::new(req.n, req.twist.degrees().to_vec(), req.equivariant)?;
+    let provider = if req.equivariant {
+        TwistedProjectiveSpaceProvider::fiber_equivariant(req.n, req.twist.degrees().to_vec())?
+    } else {
+        TwistedProjectiveSpaceProvider::new(req.n, req.twist.degrees().to_vec(), false)?
+    };
     if let Some((virtual_dimension, total_degree)) =
         twisted_dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
     {
@@ -4464,15 +4449,31 @@ pub fn compute_negative_split_twisted(
         &req.insertions,
         req.truncation.as_ref(),
     )?;
-    let value = match raw.as_rational() {
-        Some(value) => RatFun::from_rational(value),
-        None => RatFun::from_rational(raw.nonequivariant_limit_line(0, &[Rational::one()])?),
+    let value = if req.equivariant {
+        raw
+    } else {
+        match raw.as_rational() {
+            Some(value) => RatFun::from_rational(value),
+            None => RatFun::from_rational(raw.nonequivariant_limit_line(0, &[Rational::one()])?),
+        }
     };
     Ok(InvariantResult {
         value,
-        engine: "twisted-negative-split-givental-birkhoff-early-line",
+        engine: if req.equivariant {
+            "twisted-negative-split-fiber-equivariant-givental-birkhoff"
+        } else {
+            "twisted-negative-split-givental-birkhoff-early-line"
+        },
         notes: vec![if unstable_two_point {
-            "computed by the genus-zero two-point unstable S-matrix convention from the same early rational one-parameter lambda-line hypergeometric/Birkhoff calibration; no local oracle shortcut is used"
+            if req.equivariant {
+                "computed by the genus-zero two-point unstable S-matrix convention from the fiber-equivariant hypergeometric/Birkhoff calibration; base weights are early-specialized and fiber weights are symbolic mu_i"
+                    .to_string()
+            } else {
+                "computed by the genus-zero two-point unstable S-matrix convention from the same early rational one-parameter lambda-line hypergeometric/Birkhoff calibration; no local oracle shortcut is used"
+                    .to_string()
+            }
+        } else if req.equivariant {
+            "computed by fiber-equivariant hypergeometric/Birkhoff S and QRR R stable-graph expansion; base weights are early-specialized and fiber weights are symbolic mu_i"
                 .to_string()
         } else {
             "computed by early rational one-parameter lambda-line hypergeometric/Birkhoff S and QRR R stable-graph expansion; no local oracle shortcut is used; fast validation currently covers resolved conifold genus 2 degree 1"
@@ -4487,12 +4488,6 @@ pub fn compute_negative_split_twisted_resolvent_packed(
     req: &ResolventRequest,
     equivariant: bool,
 ) -> Result<ResolventResult, GwError> {
-    if equivariant {
-        return Err(GwError::UnsupportedInvariant(
-            "symbolic equivariant negative split-bundle output is not implemented yet; the current twisted calibration uses a generic rational lambda line"
-                .to_string(),
-        ));
-    }
     if req.degree == 0 {
         return Err(GwError::UnsupportedInvariant(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
@@ -4500,17 +4495,34 @@ pub fn compute_negative_split_twisted_resolvent_packed(
         ));
     }
 
-    let provider = TwistedProjectiveSpaceProvider::new(target_n, degrees, equivariant)?;
+    let provider = if equivariant {
+        TwistedProjectiveSpaceProvider::fiber_equivariant(target_n, degrees)?
+    } else {
+        TwistedProjectiveSpaceProvider::new(target_n, degrees, false)?
+    };
     crate::givental::compute_packed_resolvent_with_provider(
         req,
         provider,
-        "twisted-negative-split-packed-resolvent",
-        "computed by packed twisted S/R external-leg graph kernel; all resolvent coefficients share one stable-graph contraction",
-        |raw| match raw.as_rational() {
-            Some(value) => Ok(RatFun::from_rational(value)),
-            None => Ok(RatFun::from_rational(
-                raw.nonequivariant_limit_line(0, &[Rational::one()])?,
-            )),
+        if equivariant {
+            "twisted-negative-split-fiber-equivariant-packed-resolvent"
+        } else {
+            "twisted-negative-split-packed-resolvent"
+        },
+        if equivariant {
+            "computed by packed fiber-equivariant twisted S/R external-leg graph kernel; base weights are early-specialized and fiber weights are symbolic mu_i"
+        } else {
+            "computed by packed twisted S/R external-leg graph kernel; all resolvent coefficients share one stable-graph contraction"
+        },
+        move |raw| {
+            if equivariant {
+                return Ok(raw);
+            }
+            match raw.as_rational() {
+                Some(value) => Ok(RatFun::from_rational(value)),
+                None => Ok(RatFun::from_rational(
+                    raw.nonequivariant_limit_line(0, &[Rational::one()])?,
+                )),
+            }
         },
     )
 }
@@ -4538,7 +4550,15 @@ impl TwistedProjectiveSpaceProvider {
             calibration_mode: TwistedCalibrationMode::InverseEuler,
             fiber_weight_scale: Rational::one(),
             custom_fiber_weights: None,
+            fiber_parameter_names: Vec::new(),
         })
+    }
+
+    pub fn fiber_equivariant(n: usize, degrees: Vec<usize>) -> Result<Self, GwError> {
+        let mut out = Self::new(n, degrees, false)?;
+        out.line_mode = TwistedLineMode::FiberEquivariant;
+        out.fiber_parameter_names = default_fiber_parameter_names(out.twist.rank());
+        Ok(out)
     }
 
     pub fn symbolic_lambda_line(
@@ -4567,7 +4587,7 @@ impl TwistedProjectiveSpaceProvider {
     }
 
     fn flat_metric_matrix(&self, q_degree: usize) -> Result<SeriesMatrix, GwError> {
-        let fiber_weights = self.fiber_weights();
+        let fiber_weights = self.rational_fiber_weights();
         match self.line_mode {
             TwistedLineMode::EarlyRational => twisted_inverse_euler_flat_metric_matrix(
                 self.base.n,
@@ -4576,23 +4596,15 @@ impl TwistedProjectiveSpaceProvider {
                 self.base_weights(),
                 &fiber_weights,
             ),
-            TwistedLineMode::SymbolicLimit => {
-                let lambda = crate::algebra::lambda(0);
-                let base_weight_line = self
-                    .base_weights()
-                    .iter()
-                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-                    .collect::<Vec<_>>();
-                let fiber_weight_line = fiber_weights
-                    .iter()
-                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-                    .collect::<Vec<_>>();
+            TwistedLineMode::SymbolicLimit | TwistedLineMode::FiberEquivariant => {
+                let base_weights = self.ratfun_base_weights();
+                let fiber_weights = self.ratfun_fiber_weights();
                 twisted_inverse_euler_flat_metric_matrix_ratfun(
                     self.base.n,
                     q_degree,
                     &self.twist,
-                    &base_weight_line,
-                    &fiber_weight_line,
+                    &base_weights,
+                    &fiber_weights,
                 )
             }
         }
@@ -4689,7 +4701,7 @@ impl TwistedProjectiveSpaceProvider {
         &self.base.weights
     }
 
-    fn fiber_weights(&self) -> Vec<Rational> {
+    fn rational_fiber_weights(&self) -> Vec<Rational> {
         if let Some(weights) = &self.custom_fiber_weights {
             return weights.clone();
         }
@@ -4698,10 +4710,55 @@ impl TwistedProjectiveSpaceProvider {
             .map(|idx| Rational::from(start + 2 * idx) * self.fiber_weight_scale.clone())
             .collect()
     }
+
+    fn ratfun_base_weights(&self) -> Vec<RatFun> {
+        match self.line_mode {
+            TwistedLineMode::SymbolicLimit => {
+                let lambda = crate::algebra::lambda(0);
+                self.base_weights()
+                    .iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
+                    .collect()
+            }
+            TwistedLineMode::EarlyRational | TwistedLineMode::FiberEquivariant => self
+                .base_weights()
+                .iter()
+                .cloned()
+                .map(RatFun::from_rational)
+                .collect(),
+        }
+    }
+
+    fn ratfun_fiber_weights(&self) -> Vec<RatFun> {
+        match self.line_mode {
+            TwistedLineMode::SymbolicLimit => {
+                let lambda = crate::algebra::lambda(0);
+                self.rational_fiber_weights()
+                    .into_iter()
+                    .map(|weight| lambda.clone() * RatFun::from_rational(weight))
+                    .collect()
+            }
+            TwistedLineMode::FiberEquivariant => self
+                .fiber_parameter_names
+                .iter()
+                .cloned()
+                .map(RatFun::variable)
+                .collect(),
+            TwistedLineMode::EarlyRational => self
+                .rational_fiber_weights()
+                .into_iter()
+                .map(RatFun::from_rational)
+                .collect(),
+        }
+    }
 }
 
 fn twisted_default_base_weights(n: usize) -> Vec<Rational> {
     (0..=n).map(|idx| Rational::from(1usize << idx)).collect()
+}
+
+fn default_fiber_parameter_names(rank: usize) -> Vec<String> {
+    (0..rank).map(|idx| format!("mu_{idx}")).collect()
 }
 
 impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
@@ -4769,7 +4826,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         // The Birkhoff factor produces the fundamental-solution convention.
         // The graph evaluator expects the descendant insertion operator, which
         // is the adjoint with respect to the twisted flat metric.
-        let fiber_weights = self.fiber_weights();
+        let rational_fiber_weights = self.rational_fiber_weights();
         let (s_matrix, flat_metric) = match self.line_mode {
             TwistedLineMode::EarlyRational => {
                 let s_matrix =
@@ -4779,7 +4836,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
                         q_degree,
                         z_order,
                         self.base_weights().to_vec(),
-                        fiber_weights.clone(),
+                        rational_fiber_weights.clone(),
                     )?
                     .birkhoff_descendant_s_matrix(z_order)?;
                 let flat_metric = twisted_inverse_euler_flat_metric_matrix(
@@ -4787,36 +4844,28 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
                     q_degree,
                     &self.twist,
                     self.base_weights(),
-                    &fiber_weights,
+                    &rational_fiber_weights,
                 )?;
                 (s_matrix, flat_metric)
             }
-            TwistedLineMode::SymbolicLimit => {
-                let s_matrix = NegativeSplitLineHypergeometricModel::new(
+            TwistedLineMode::SymbolicLimit | TwistedLineMode::FiberEquivariant => {
+                let base_weights = self.ratfun_base_weights();
+                let fiber_weights = self.ratfun_fiber_weights();
+                let s_matrix = NegativeSplitLineHypergeometricModel::from_ratfun_weights(
                     self.base.n,
                     self.twist.clone(),
                     q_degree,
                     z_order,
-                    self.base_weights(),
+                    base_weights.clone(),
                     &fiber_weights,
                 )?
                 .birkhoff_descendant_s_matrix(z_order)?;
-                let lambda = crate::algebra::lambda(0);
-                let base_weight_line = self
-                    .base_weights()
-                    .iter()
-                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-                    .collect::<Vec<_>>();
-                let fiber_weight_line = fiber_weights
-                    .iter()
-                    .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
-                    .collect::<Vec<_>>();
                 let flat_metric = twisted_inverse_euler_flat_metric_matrix_ratfun(
                     self.base.n,
                     q_degree,
                     &self.twist,
-                    &base_weight_line,
-                    &fiber_weight_line,
+                    &base_weights,
+                    &fiber_weights,
                 )?;
                 (s_matrix, flat_metric)
             }
@@ -4836,7 +4885,7 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         static CACHE: OnceLock<
             Mutex<HashMap<TwistedGraphKernelCacheKey, Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
-        let fiber_weights = self.fiber_weights();
+        let rational_fiber_weights = self.rational_fiber_weights();
         let validation = twisted_calibration_validation_from_env();
         let key = TwistedGraphKernelCacheKey {
             n: self.base.n,
@@ -4845,7 +4894,8 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
             r_order,
             graph_dimension,
             base_weights: self.base_weights().to_vec(),
-            fiber_weights: fiber_weights.clone(),
+            fiber_weights: rational_fiber_weights.clone(),
+            fiber_parameter_names: self.fiber_parameter_names.clone(),
             line_mode: self.line_mode.clone(),
             calibration_mode: self.calibration_mode.clone(),
             validation,
@@ -4863,18 +4913,20 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
                     q_degree,
                     r_order,
                     self.base_weights(),
-                    &fiber_weights,
+                    &rational_fiber_weights,
                     self.calibration_mode.clone(),
                     validation,
                 )?
             }
-            TwistedLineMode::SymbolicLimit => {
-                negative_split_twisted_birkhoff_calibration_candidate_ratfun_with_validation(
+            TwistedLineMode::SymbolicLimit | TwistedLineMode::FiberEquivariant => {
+                let base_weights = self.ratfun_base_weights();
+                let fiber_weights = self.ratfun_fiber_weights();
+                negative_split_twisted_birkhoff_calibration_candidate_for_ratfun_weights_with_validation(
                     self.base.n,
                     &self.twist,
                     q_degree,
                     r_order,
-                    self.base_weights(),
+                    &base_weights,
                     &fiber_weights,
                     validation,
                 )?
@@ -4938,6 +4990,7 @@ mod tests {
     use crate::algebra::Rational;
     use crate::geometry::CohomologyClass;
     use crate::tau;
+    use std::collections::BTreeMap;
 
     #[test]
     fn negative_split_degrees_must_be_positive() {
@@ -5713,6 +5766,110 @@ mod tests {
 
         assert_ne!(raw, oracle);
         assert_eq!(limit, oracle);
+    }
+
+    #[test]
+    fn fiber_equivariant_i_function_specializes_to_rational_fiber_weights() {
+        let twist = NegativeSplitBundleTwist::new(vec![1, 1]).unwrap();
+        let base = vec![Rational::from(1usize), Rational::from(2usize)];
+        let rational_fiber = vec![Rational::from(3usize), Rational::from(5usize)];
+        let symbolic_base = base
+            .iter()
+            .cloned()
+            .map(RatFun::from_rational)
+            .collect::<Vec<_>>();
+        let symbolic_fiber = vec![RatFun::variable("mu_0"), RatFun::variable("mu_1")];
+        let symbolic = negative_split_equivariant_i_function_coefficient_ratfun(
+            1,
+            &twist,
+            1,
+            &symbolic_base,
+            &symbolic_fiber,
+            -4,
+        )
+        .unwrap();
+        let rational = negative_split_equivariant_i_function_coefficient(
+            1,
+            &twist,
+            1,
+            &base,
+            &rational_fiber,
+            -4,
+        )
+        .unwrap();
+        let mut values = BTreeMap::new();
+        values.insert("mu_0".to_string(), Rational::from(3usize));
+        values.insert("mu_1".to_string(), Rational::from(5usize));
+
+        let rendered = (0..=1)
+            .flat_map(|h_power| (-4..=0).map(move |z_power| (h_power, z_power)))
+            .map(|(h_power, z_power)| symbolic.coefficient(h_power, z_power).to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(rendered.contains("mu_0"));
+        assert!(rendered.contains("mu_1"));
+        for h_power in 0..=1 {
+            for z_power in -4..=0 {
+                let specialized = symbolic
+                    .coefficient(h_power, z_power)
+                    .evaluate_variables(&values)
+                    .unwrap();
+                assert_eq!(specialized, rational.coefficient(h_power, z_power));
+            }
+        }
+    }
+
+    #[test]
+    fn fiber_equivariant_inverse_euler_pairing_specializes_to_rational_weights() {
+        let twist = NegativeSplitBundleTwist::new(vec![3]).unwrap();
+        let base = vec![
+            Rational::from(1usize),
+            Rational::from(2usize),
+            Rational::from(4usize),
+        ];
+        let rational_fiber = vec![Rational::from(7usize)];
+        let symbolic_base = base
+            .iter()
+            .cloned()
+            .map(RatFun::from_rational)
+            .collect::<Vec<_>>();
+        let symbolic_fiber = vec![RatFun::variable("mu_0")];
+        let symbolic = twisted_inverse_euler_flat_metric_matrix_ratfun(
+            2,
+            0,
+            &twist,
+            &symbolic_base,
+            &symbolic_fiber,
+        )
+        .unwrap();
+        let rational =
+            twisted_inverse_euler_flat_metric_matrix(2, 0, &twist, &base, &rational_fiber).unwrap();
+        let mut values = BTreeMap::new();
+        values.insert("mu_0".to_string(), Rational::from(7usize));
+
+        assert!(symbolic
+            .entry(0, 0)
+            .coeff(0)
+            .unwrap()
+            .to_string()
+            .contains("mu_0"));
+        for row in 0..=2 {
+            for col in 0..=2 {
+                let specialized = symbolic
+                    .entry(row, col)
+                    .coeff(0)
+                    .unwrap()
+                    .evaluate_variables(&values)
+                    .unwrap();
+                let expected = rational
+                    .entry(row, col)
+                    .coeff(0)
+                    .unwrap()
+                    .as_rational()
+                    .unwrap();
+                assert_eq!(specialized, expected);
+            }
+        }
     }
 
     #[test]

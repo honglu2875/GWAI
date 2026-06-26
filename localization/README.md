@@ -173,8 +173,21 @@ Notes:
 
 - The current public twisted path computes non-equivariant negative split
   twists through an early rational lambda-line specialization.
-- Full symbolic equivariant twisted output is not enabled from this command.
+- `--equivariant` on a twisted command uses early-specialized base weights and
+  keeps one symbolic fiber parameter `mu_i` for each summand `O(-a_i)`.  The
+  hypergeometric calibration and twisted pairing are covered by specialization
+  tests.  Full high-genus graph contraction with these symbolic fiber
+  parameters is still a performance frontier because the current `RatFun`
+  representation expands numerator and denominator polynomials.
 - Degree-zero local twisted invariants are not implemented in this path.
+
+For formula/calibration inspection with fiber parameters:
+
+```bash
+cargo run --quiet -- formula --n 2 --twist -3 --g 2 --markings 1 \
+  --basis raw \
+  --equivariant
+```
 
 ## `formula`
 
@@ -394,7 +407,9 @@ cargo run --quiet -- series --n 2 --g 2 --d-max 4 \
 Useful flags:
 
 - `--include-zero` prints zero coefficients too.
-- `--equivariant` requests equivariant projective-space data where supported.
+- `--equivariant` requests equivariant projective-space data where supported;
+  for negative split twists it means symbolic fiber parameters over an
+  early-specialized base.
 
 If the series command produces warnings or skipped coefficients, the CLI writes
 them to a temporary file and prints the path on stderr.
@@ -413,9 +428,10 @@ computation shortcuts.
 
 ## TODO
 
-- Enable full symbolic equivariant output for negative split-bundle twisted
-  theories. The current public twisted command computes non-equivariant answers
-  by early rational lambda-line specialization.
+- Add a factored rational-function engine for full symbolic equivariant
+  negative split-bundle graph contractions.  The current twisted calibration can
+  keep independent fiber parameters `mu_i`, but expanded `RatFun` arithmetic is
+  not the right long-term representation for large symbolic graph sums.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.

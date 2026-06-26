@@ -107,7 +107,7 @@ fn render_twisted_text(n: usize, degrees: &[usize], equivariant: bool) -> String
     ));
     if equivariant {
         out.push_str(
-            "Engine: symbolic equivariant negative-split formulas are not a compute backend yet; this document records the intended calibration data.\n",
+            "Engine: fiber-equivariant negative-split calibration keeps symbolic fiber parameters mu_i over early-specialized base weights; large graph contractions still need factored rational arithmetic.\n",
         );
     } else {
         out.push_str(
@@ -162,7 +162,7 @@ fn render_twisted_raw_text(n: usize, degrees: &[usize], equivariant: bool) -> St
             .join(" + ")
     ));
     if equivariant {
-        out.push_str("Full symbolic equivariant negative-split raw output is a planned extension; the displayed formulas describe the specialized calibration data.\n");
+        out.push_str("Fiber-equivariant negative-split calibration keeps one symbolic parameter mu_i for each split summand while base weights are early-specialized.  Large symbolic graph contractions remain a performance frontier for the expanded RatFun engine.\n");
     } else {
         out.push_str("The implemented twisted backend uses a generic rational lambda-line specialization with a non-equivariant limit when available.\n");
     }
@@ -229,7 +229,7 @@ fn render_twisted_tex(n: usize, degrees: &[usize], equivariant: bool) -> String 
     out.push_str(&format!("Twist: ${twist}$.\n\n"));
     if equivariant {
         out.push_str(
-            "Engine note: full symbolic equivariant negative-split output is not yet a compute backend; this document records the calibration data it would expand to.\n\n",
+            "Engine note: the fiber-equivariant negative-split calibration keeps symbolic fiber parameters $\\mu_i$ over early-specialized base weights.  Large symbolic graph contractions still need factored rational arithmetic.\n\n",
         );
     } else {
         out.push_str(
@@ -309,7 +309,7 @@ fn render_twisted_raw_tex(n: usize, degrees: &[usize], equivariant: bool) -> Str
         .join("\\oplus ");
     out.push_str(&format!("Twist: ${twist}$.\n\n"));
     if equivariant {
-        out.push_str("Full symbolic equivariant negative-split raw output is a planned extension; this display records the specialized calibration data.\n\n");
+        out.push_str("Fiber-equivariant negative-split calibration keeps one symbolic parameter $\\mu_i$ for each split summand while base weights are early-specialized.  Large symbolic graph contractions remain a performance frontier for the expanded \\texttt{RatFun} engine.\n\n");
     } else {
         out.push_str("The implemented twisted backend uses a generic rational $\\lambda$-line specialization with a non-equivariant limit when available.\n\n");
     }
