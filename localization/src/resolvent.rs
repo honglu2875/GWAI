@@ -7,10 +7,10 @@
 //!     prod_i t_i^{a_i}/a_i! * z_i^{-k_i-1}.
 //! ```
 //!
-//! The virtual dimension fixes `sum_i (a_i+k_i)`, so the sum is finite.  The
-//! backend is supplied as a callback, which keeps this layer independent of the
-//! ordinary/twisted/future CohFT implementation used to compute individual
-//! coefficients.
+//! The virtual dimension fixes `sum_i (a_i+k_i)`, so the sum is finite.  This
+//! module owns the finite index set and Laurent-polynomial output type.  It
+//! also provides a callback-based coefficient-wise evaluator, while packed
+//! S/R graph evaluators can reuse the same index and polynomial types.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,10 +43,58 @@ pub struct ResolventPolynomial {
     terms: BTreeMap<ResolventMonomial, RatFun>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolventIndex {
+    h_powers: Vec<usize>,
+    descendant_powers: Vec<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ResolventMonomial {
     t_powers: Vec<usize>,
     z_denominator_powers: Vec<usize>,
+}
+
+impl ResolventIndex {
+    pub fn empty() -> Self {
+        Self {
+            h_powers: Vec::new(),
+            descendant_powers: Vec::new(),
+        }
+    }
+
+    pub fn new(h_powers: Vec<usize>, descendant_powers: Vec<usize>) -> Self {
+        assert_eq!(
+            h_powers.len(),
+            descendant_powers.len(),
+            "resolvent index must have one H-power and one descendant power per marking"
+        );
+        Self {
+            h_powers,
+            descendant_powers,
+        }
+    }
+
+    pub fn h_powers(&self) -> &[usize] {
+        &self.h_powers
+    }
+
+    pub fn descendant_powers(&self) -> &[usize] {
+        &self.descendant_powers
+    }
+
+    pub fn to_insertions(&self, target_n: usize) -> Vec<Insertion> {
+        self.h_powers
+            .iter()
+            .zip(self.descendant_powers.iter())
+            .map(|(&h_power, &descendant_power)| {
+                tau(
+                    descendant_power,
+                    CohomologyClass::h_power(target_n, h_power),
+                )
+            })
+            .collect()
+    }
 }
 
 impl ResolventPolynomial {
@@ -82,6 +130,10 @@ impl ResolventPolynomial {
     ) {
         let (monomial, scalar) = resolvent_monomial(h_powers, descendant_powers);
         self.add_term(monomial, &coefficient * &scalar);
+    }
+
+    pub fn add_index_coefficient(&mut self, index: &ResolventIndex, coefficient: RatFun) {
+        self.add_coefficient(&index.h_powers, &index.descendant_powers, coefficient);
     }
 }
 
@@ -123,9 +175,6 @@ where
         });
     }
 
-    let target_degree = req.virtual_dimension as usize;
-    let mut h_powers = vec![0; req.markings];
-    let mut descendant_powers = vec![0; req.markings];
     let mut state = Accumulator {
         req,
         coefficient: &mut coefficient,
@@ -135,17 +184,9 @@ where
         engine: "resolvent",
         notes: Vec::new(),
     };
-    let mut visit = |h_powers: &[usize], descendant_powers: &[usize]| {
-        add_resolvent_term(h_powers, descendant_powers, &mut state)
-    };
-    enumerate_h_powers_with_bound(
-        0,
-        target_degree,
-        req.target_n,
-        &mut h_powers,
-        &mut descendant_powers,
-        &mut visit,
-    )?;
+    enumerate_resolvent_indices(req, |index| {
+        add_resolvent_term(index.h_powers(), index.descendant_powers(), &mut state)
+    })?;
     Ok(ResolventResult {
         value: state.value,
         candidate_terms: state.candidate_terms,
@@ -160,7 +201,7 @@ pub fn enumerate_resolvent_indices<F>(
     mut visitor: F,
 ) -> Result<usize, GwError>
 where
-    F: FnMut(&[usize], &[usize]) -> Result<(), GwError>,
+    F: FnMut(ResolventIndex) -> Result<(), GwError>,
 {
     if req.virtual_dimension < 0 {
         return Ok(0);
@@ -170,7 +211,10 @@ where
     let mut count = 0usize;
     let mut visit = |h_powers: &[usize], descendant_powers: &[usize]| {
         count += 1;
-        visitor(h_powers, descendant_powers)
+        visitor(ResolventIndex::new(
+            h_powers.to_vec(),
+            descendant_powers.to_vec(),
+        ))
     };
     enumerate_h_powers_with_bound(
         0,
@@ -449,6 +493,33 @@ mod tests {
             compute_resolvent_generating_function(&req, |_| unreachable!("no terms")).unwrap();
         assert!(result.value.is_zero());
         assert_eq!(result.candidate_terms, 0);
+    }
+
+    #[test]
+    fn enumerated_indices_convert_to_insertions() {
+        let req = ResolventRequest {
+            target_n: 1,
+            genus: 0,
+            degree: 0,
+            markings: 1,
+            virtual_dimension: 1,
+        };
+        let mut indices = Vec::new();
+        let count = enumerate_resolvent_indices(&req, |index| {
+            indices.push(index);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(count, 2);
+        assert_eq!(indices[0].h_powers(), &[0]);
+        assert_eq!(indices[0].descendant_powers(), &[1]);
+        assert_eq!(indices[1].h_powers(), &[1]);
+        assert_eq!(indices[1].descendant_powers(), &[0]);
+        assert_eq!(
+            indices[1].to_insertions(1),
+            vec![tau(0, CohomologyClass::h_power(1, 1))]
+        );
     }
 
     #[test]

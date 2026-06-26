@@ -26,7 +26,8 @@ use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
 use crate::graphs::{stable_graphs, StableGraph};
 use crate::resolvent::{
-    enumerate_resolvent_indices, ResolventPolynomial, ResolventRequest, ResolventResult,
+    enumerate_resolvent_indices, ResolventIndex, ResolventPolynomial, ResolventRequest,
+    ResolventResult,
 };
 use crate::series::{QSeries, RationalQSeries, SeriesMatrix};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
@@ -2334,21 +2335,17 @@ where
     }
 
     let max_descendant_power = req.virtual_dimension as usize;
-    let series_req = SeriesRequest {
-        n: req.target_n,
-        genus: req.genus,
-        degree_max: req.degree,
-        max_markings: req.markings,
+    let mut evaluator = GiventalMasterEvaluator::for_problem(
+        provider,
+        req.genus,
+        req.degree,
         max_descendant_power,
-        include_zero: false,
-        equivariant: false,
-        mode: ComputeMode::Givental,
-        truncation: None,
-    };
-    let mut evaluator = GiventalMasterEvaluator::with_provider(&series_req, provider);
+        None,
+    );
     let mut tasks = Vec::new();
-    let candidate_terms = enumerate_resolvent_indices(req, |h_powers, descendant_powers| {
-        let insertions = resolvent_insertions(req.target_n, h_powers, descendant_powers);
+    let mut task_indices = Vec::<ResolventIndex>::new();
+    let candidate_terms = enumerate_resolvent_indices(req, |index| {
+        let insertions = index.to_insertions(req.target_n);
         if evaluator.is_dimension_mismatch(req.degree, &insertions) {
             return Ok(());
         }
@@ -2368,21 +2365,35 @@ where
             markings: req.markings,
             leg_options,
         });
+        task_indices.push(index);
         Ok(())
     })?;
+    if tasks.is_empty() {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms,
+            nonzero_terms: 0,
+            engine,
+            notes: vec![note.into()],
+        });
+    }
 
     let coefficients =
         evaluator.contract_restricted_tasks(req.markings, req.degree, &tasks, false)?;
     let mut value = ResolventPolynomial::zero();
     let mut nonzero_terms = 0usize;
     for coefficient in coefficients {
-        let (h_powers, descendant_powers) =
-            resolvent_indices_from_insertions(&coefficient.coefficient.insertions)?;
+        let index = task_indices.get(coefficient.ordinal).ok_or_else(|| {
+            GwError::AlgebraFailure(format!(
+                "packed resolvent task ordinal {} is out of range",
+                coefficient.ordinal
+            ))
+        })?;
         let normalized = normalize(coefficient.coefficient.value)?;
         if normalized.is_zero() {
             continue;
         }
-        value.add_coefficient(&h_powers, &descendant_powers, normalized);
+        value.add_index_coefficient(index, normalized);
         nonzero_terms += 1;
     }
 
@@ -2433,7 +2444,7 @@ where
             compute_semisimple_graph_value(provider, req.genus, req.degree, &[], None)?;
         let normalized = normalize(coefficient)?;
         if !normalized.is_zero() {
-            value.add_coefficient(&[], &[], normalized);
+            value.add_index_coefficient(&ResolventIndex::empty(), normalized);
             nonzero_terms = 1;
         }
     }
@@ -2445,40 +2456,6 @@ where
         engine,
         notes: vec![note.into()],
     })
-}
-
-fn resolvent_insertions(
-    target_n: usize,
-    h_powers: &[usize],
-    descendant_powers: &[usize],
-) -> Vec<Insertion> {
-    h_powers
-        .iter()
-        .zip(descendant_powers.iter())
-        .map(|(&h_power, &descendant_power)| {
-            crate::tau(
-                descendant_power,
-                crate::geometry::CohomologyClass::h_power(target_n, h_power),
-            )
-        })
-        .collect()
-}
-
-fn resolvent_indices_from_insertions(
-    insertions: &[Insertion],
-) -> Result<(Vec<usize>, Vec<usize>), GwError> {
-    let mut h_powers = Vec::with_capacity(insertions.len());
-    let mut descendant_powers = Vec::with_capacity(insertions.len());
-    for insertion in insertions {
-        let h_power = insertion.class.pure_power().ok_or_else(|| {
-            GwError::AlgebraFailure(
-                "packed resolvent task contained a non-pure H insertion".to_string(),
-            )
-        })?;
-        h_powers.push(h_power);
-        descendant_powers.push(insertion.descendant_power);
-    }
-    Ok((h_powers, descendant_powers))
 }
 
 fn shared_kernel_task_counts(
@@ -2532,12 +2509,28 @@ where
     P: SemisimpleCohftProvider<Insertion = Insertion>,
 {
     fn with_provider(req: &SeriesRequest, provider: P) -> Self {
+        Self::for_problem(
+            provider,
+            req.genus,
+            req.degree_max,
+            req.max_descendant_power,
+            req.truncation.clone(),
+        )
+    }
+
+    fn for_problem(
+        provider: P,
+        genus: usize,
+        degree_max: usize,
+        max_descendant_power: usize,
+        truncation: Option<Truncation>,
+    ) -> Self {
         Self {
             provider,
-            genus: req.genus,
-            degree_max: req.degree_max,
-            max_descendant_power: req.max_descendant_power,
-            truncation: req.truncation.clone(),
+            genus,
+            degree_max,
+            max_descendant_power,
+            truncation,
             descendant_s_cache: HashMap::new(),
             external_kernel_cache: HashMap::new(),
             leg_options_cache: HashMap::new(),
