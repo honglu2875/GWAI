@@ -21,8 +21,10 @@
 
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
+use crate::factored::FactoredRatFun;
 use crate::givental::{
-    CalibrationId, CanonicalFrameConvention, GiventalGraphKernel, ProjectiveSpaceProvider,
+    compute_semisimple_graph_value_with_coeff, CalibrationId, CanonicalFrameConvention,
+    CoefficientSemisimpleCohftProvider, GiventalGraphKernel, ProjectiveSpaceProvider,
     SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix,
 };
 use crate::resolvent::{ResolventRequest, ResolventResult};
@@ -4482,6 +4484,41 @@ pub fn compute_negative_split_twisted(
     })
 }
 
+pub fn compute_negative_split_twisted_factored(
+    req: &TwistedInvariantRequest,
+) -> Result<FactoredRatFun, GwError> {
+    if !req.equivariant {
+        return Err(GwError::UnsupportedInvariant(
+            "factored twisted mode is currently for fiber-equivariant computations; pass --equivariant"
+                .to_string(),
+        ));
+    }
+    if req.degree == 0 {
+        return Err(GwError::UnsupportedInvariant(
+            "degree-zero local invariants are not implemented in the negative split-bundle path"
+                .to_string(),
+        ));
+    }
+
+    let provider = FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(
+        req.n,
+        req.twist.degrees().to_vec(),
+    )?;
+    if twisted_dimension_mismatch(provider.inner(), req.genus, req.degree, &req.insertions)
+        .is_some()
+    {
+        return Ok(FactoredRatFun::zero());
+    }
+
+    compute_semisimple_graph_value_with_coeff::<FactoredRatFun, _>(
+        &provider,
+        req.genus,
+        req.degree,
+        &req.insertions,
+        req.truncation.as_ref(),
+    )
+}
+
 pub fn compute_negative_split_twisted_resolvent_packed(
     target_n: usize,
     degrees: Vec<usize>,
@@ -4759,6 +4796,198 @@ fn twisted_default_base_weights(n: usize) -> Vec<Rational> {
 
 fn default_fiber_parameter_names(rank: usize) -> Vec<String> {
     (0..rank).map(|idx| format!("mu_{idx}")).collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoredTwistedProjectiveSpaceProvider {
+    inner: TwistedProjectiveSpaceProvider,
+}
+
+impl FactoredTwistedProjectiveSpaceProvider {
+    pub fn fiber_equivariant(n: usize, degrees: Vec<usize>) -> Result<Self, GwError> {
+        Ok(Self {
+            inner: TwistedProjectiveSpaceProvider::fiber_equivariant(n, degrees)?,
+        })
+    }
+
+    pub fn inner(&self) -> &TwistedProjectiveSpaceProvider {
+        &self.inner
+    }
+}
+
+impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProjectiveSpaceProvider {
+    type Insertion = Insertion;
+
+    fn coeff_colors(&self) -> usize {
+        self.inner.colors()
+    }
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        self.inner.descendant_power(insertion)
+    }
+
+    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        self.inner.insertion_degree(insertions)
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Option<isize> {
+        self.inner.virtual_dimension(genus, degree, markings)
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        genus: usize,
+        insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        self.inner.expected_degree_from_dimension(genus, insertions)
+    }
+
+    fn coeff_candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        self.inner
+            .candidate_degrees_from_dimension(genus, degree_max, insertions)
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
+        series_s_matrix_to_factored(&self.inner.descendant_s_matrix(q_degree, z_order)?)
+    }
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
+        let ratfun_kernel = self
+            .inner
+            .graph_kernel(q_degree, r_order, graph_dimension)?;
+        let calibration = semisimple_calibration_to_factored(ratfun_kernel.calibration())?;
+        Ok(Arc::new(GiventalGraphKernel::from_calibration(
+            calibration,
+            graph_dimension,
+        )?))
+    }
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries<FactoredRatFun>>, GwError> {
+        Ok(self
+            .inner
+            .insertion_vector(insertion, q_degree)?
+            .iter()
+            .map(qseries_to_factored)
+            .collect())
+    }
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<FactoredRatFun>, GwError> {
+        Ok(self
+            .inner
+            .scalar_fallback_value(genus, degree, insertions, truncation)?
+            .map(FactoredRatFun::from_ratfun))
+    }
+}
+
+fn semisimple_calibration_to_factored(
+    calibration: &SemisimpleCalibration,
+) -> Result<SemisimpleCalibration<FactoredRatFun>, GwError> {
+    Ok(SemisimpleCalibration {
+        r_matrix: series_r_matrix_to_factored(&calibration.r_matrix)?,
+        metric: series_matrix_to_factored(&calibration.metric),
+        psi: series_matrix_to_factored(&calibration.psi),
+        psi_inverse: series_matrix_to_factored(&calibration.psi_inverse),
+        connection: series_matrix_to_factored(&calibration.connection),
+        delta: calibration.delta.iter().map(qseries_to_factored).collect(),
+        inverse_delta: calibration
+            .inverse_delta
+            .iter()
+            .map(qseries_to_factored)
+            .collect(),
+        relative_sqrt_delta: calibration
+            .relative_sqrt_delta
+            .iter()
+            .map(qseries_to_factored)
+            .collect(),
+        relative_sqrt_delta_inverse: calibration
+            .relative_sqrt_delta_inverse
+            .iter()
+            .map(qseries_to_factored)
+            .collect(),
+    })
+}
+
+fn series_r_matrix_to_factored(
+    matrix: &SeriesRMatrix,
+) -> Result<SeriesRMatrix<FactoredRatFun>, GwError> {
+    SeriesRMatrix::from_coefficients(
+        matrix.size(),
+        matrix.q_degree(),
+        matrix.z_order(),
+        matrix
+            .coefficients()
+            .iter()
+            .map(series_matrix_to_factored)
+            .collect(),
+        matrix.calibration().clone(),
+        matrix.convention(),
+    )
+}
+
+fn series_s_matrix_to_factored(
+    matrix: &SeriesSMatrix,
+) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
+    SeriesSMatrix::from_coefficients(
+        matrix.size(),
+        matrix.q_degree(),
+        matrix.z_order(),
+        matrix
+            .coefficients()
+            .iter()
+            .map(series_matrix_to_factored)
+            .collect(),
+        matrix.calibration().clone(),
+    )
+}
+
+fn series_matrix_to_factored(matrix: &SeriesMatrix) -> SeriesMatrix<FactoredRatFun> {
+    SeriesMatrix::from_entries(
+        matrix
+            .entries()
+            .iter()
+            .map(|row| row.iter().map(qseries_to_factored).collect())
+            .collect(),
+    )
+}
+
+fn qseries_to_factored(series: &QSeries) -> QSeries<FactoredRatFun> {
+    QSeries::from_coeffs(
+        series
+            .coeffs()
+            .iter()
+            .cloned()
+            .map(FactoredRatFun::from_ratfun)
+            .collect(),
+    )
 }
 
 impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
@@ -5879,6 +6108,52 @@ mod tests {
         assert_eq!(
             result.value,
             RatFun::from_rational(crate::validation_backends::local_cy::local_p2_gw(2, 1).unwrap(),)
+        );
+    }
+
+    #[test]
+    fn factored_twisted_compute_requires_equivariant_mode() {
+        let req = TwistedInvariantRequest::new(
+            2,
+            vec![1],
+            0,
+            2,
+            vec![
+                tau(2, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+            ],
+        )
+        .unwrap();
+        let err = compute_negative_split_twisted_factored(&req).unwrap_err();
+
+        assert!(err.to_string().contains("--equivariant"));
+    }
+
+    #[test]
+    fn factored_s_matrix_conversion_round_trips_to_ratfun() {
+        let mu = RatFun::variable("mu_0");
+        let entry = &mu / &(&mu + &RatFun::from(1usize));
+        let matrix = SeriesMatrix::constant(vec![vec![entry.clone()]], 0);
+        let expanded =
+            SeriesSMatrix::from_coefficients(1, 0, 0, vec![matrix], CalibrationId("test".into()))
+                .unwrap();
+        let factored = series_s_matrix_to_factored(&expanded).unwrap();
+
+        assert_eq!(
+            factored
+                .coefficient(0)
+                .unwrap()
+                .entry(0, 0)
+                .coeff(0)
+                .unwrap()
+                .to_ratfun(),
+            expanded
+                .coefficient(0)
+                .unwrap()
+                .entry(0, 0)
+                .coeff(0)
+                .unwrap()
+                .clone()
         );
     }
 

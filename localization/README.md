@@ -175,10 +175,12 @@ Notes:
   twists through an early rational lambda-line specialization.
 - `--equivariant` on a twisted command uses early-specialized base weights and
   keeps one symbolic fiber parameter `mu_i` for each summand `O(-a_i)`.  The
-  hypergeometric calibration and twisted pairing are covered by specialization
-  tests.  Full high-genus graph contraction with these symbolic fiber
-  parameters is still a performance frontier because the current `RatFun`
-  representation expands numerator and denominator polynomials.
+  default output uses the expanded `RatFun` engine.
+- Add `--factored` with `--equivariant` to use the factored rational
+  coefficient engine for the same fiber-equivariant target.  This keeps
+  denominator factors unexpanded during graph contraction; current calibration
+  construction still enters through the existing expanded data and is being
+  replaced incrementally.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -187,6 +189,16 @@ For formula/calibration inspection with fiber parameters:
 cargo run --quiet -- formula --n 2 --twist -3 --g 2 --markings 1 \
   --basis raw \
   --equivariant
+```
+
+For factored symbolic fiber-equivariant invariant output:
+
+```bash
+cargo run --quiet -- twisted --n 2 --twist -1 --g 0 --d 1 \
+  --insert 'tau1(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant \
+  --factored
 ```
 
 ## `formula`
@@ -432,9 +444,10 @@ computation shortcuts.
   negative split-bundle graph contractions.  A standalone factored coefficient
   type now exists and keeps denominator factors unexpanded, and the R/S
   calibration, graph-kernel construction, direct scalar contraction, and
-  batched/external-leg contraction layers can carry it.  The remaining work is
-  public symbolic twisted integration that chooses this coefficient engine end
-  to end instead of converting graph contributions back to expanded `RatFun`.
+  batched/external-leg contraction layers can carry it.  The public twisted
+  CLI has an explicit `--equivariant --factored` mode; the remaining work is
+  replacing the upstream symbolic twisted calibration builders with native
+  factored arithmetic instead of first constructing expanded `RatFun` data.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.

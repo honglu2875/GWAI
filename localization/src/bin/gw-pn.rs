@@ -5,8 +5,9 @@ use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
 use gw_pn::twisted::{
-    compute_negative_split_twisted, compute_negative_split_twisted_resolvent_packed,
-    NegativeSplitBundleTwist, TwistedInvariantRequest,
+    compute_negative_split_twisted, compute_negative_split_twisted_factored,
+    compute_negative_split_twisted_resolvent_packed, NegativeSplitBundleTwist,
+    TwistedInvariantRequest,
 };
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
@@ -181,6 +182,7 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--degree"),
             CliFlag::value("--insert"),
             CliFlag::switch("--equivariant"),
+            CliFlag::switch("--factored"),
         ],
     )?;
     let n = required_usize(args, "--n")?;
@@ -197,6 +199,19 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
 
     let mut req = TwistedInvariantRequest::new(n, twist, genus, degree, insertions)?;
     req.equivariant = has_flag(args, "--equivariant");
+    if has_flag(args, "--factored") {
+        if !req.equivariant {
+            return Err(GwError::ParseError(
+                "--factored for twisted computations currently requires --equivariant".to_string(),
+            ));
+        }
+        let value = compute_negative_split_twisted_factored(&req)?;
+        println!("{value}");
+        println!(
+            "note: computed by fiber-equivariant twisted S/R graph expansion using the factored rational coefficient engine"
+        );
+        return Ok(());
+    }
     let result = compute_negative_split_twisted(&req)?;
     println!("{}", result.value);
     for note in result.notes {
@@ -1235,6 +1250,7 @@ Commands:\n\
   gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
+  gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant --factored\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
