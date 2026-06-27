@@ -20,7 +20,7 @@
 //! twisted-projective-space code only differ in how they construct the
 //! calibration package.
 
-use crate::algebra::{lambda, RatFun, Rational};
+use crate::algebra::{lambda, Coeff, RatFun, Rational};
 use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
@@ -131,21 +131,21 @@ impl RMatrix {
 /// into the target CohFT after the descendant/ancestor calibration has been
 /// applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesRMatrix {
+pub struct SeriesRMatrix<C = RatFun> {
     size: usize,
     q_degree: usize,
     z_order: usize,
-    coefficients: Vec<SeriesMatrix>,
+    coefficients: Vec<SeriesMatrix<C>>,
     calibration: CalibrationId,
     convention: CanonicalFrameConvention,
 }
 
-impl SeriesRMatrix {
+impl<C: Coeff> SeriesRMatrix<C> {
     pub fn from_coefficients(
         size: usize,
         q_degree: usize,
         z_order: usize,
-        coefficients: Vec<SeriesMatrix>,
+        coefficients: Vec<SeriesMatrix<C>>,
         calibration: CalibrationId,
         convention: CanonicalFrameConvention,
     ) -> Result<Self, GwError> {
@@ -217,15 +217,15 @@ impl SeriesRMatrix {
         self.convention
     }
 
-    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix> {
+    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix<C>> {
         self.coefficients.get(order)
     }
 
-    pub fn coefficients(&self) -> &[SeriesMatrix] {
+    pub fn coefficients(&self) -> &[SeriesMatrix<C>] {
         &self.coefficients
     }
 
-    pub fn entry(&self, z_order: usize, row: usize, col: usize) -> Option<&crate::series::QSeries> {
+    pub fn entry(&self, z_order: usize, row: usize, col: usize) -> Option<&QSeries<C>> {
         self.coefficient(z_order)
             .and_then(|matrix| matrix.entries().get(row))
             .and_then(|row_values| row_values.get(col))
@@ -257,7 +257,7 @@ impl SeriesRMatrix {
     /// This is the most useful local sanity check for an `R`-matrix: if it
     /// fails, the edge propagator would not define a CohFT-compatible graph
     /// sum.
-    pub fn check_unitarity(&self, metric: &SeriesMatrix) -> Result<(), GwError> {
+    pub fn check_unitarity(&self, metric: &SeriesMatrix<C>) -> Result<(), GwError> {
         if metric.rows() != self.size || metric.cols() != self.size {
             return Err(GwError::ConventionMismatch(format!(
                 "metric shape {}x{} does not match R-matrix size {}",
@@ -304,20 +304,20 @@ impl SeriesRMatrix {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesSMatrix {
+pub struct SeriesSMatrix<C = RatFun> {
     size: usize,
     q_degree: usize,
     z_order: usize,
-    coefficients: Vec<SeriesMatrix>,
+    coefficients: Vec<SeriesMatrix<C>>,
     calibration: CalibrationId,
 }
 
-impl SeriesSMatrix {
+impl<C: Coeff> SeriesSMatrix<C> {
     pub fn from_coefficients(
         size: usize,
         q_degree: usize,
         z_order: usize,
-        coefficients: Vec<SeriesMatrix>,
+        coefficients: Vec<SeriesMatrix<C>>,
         calibration: CalibrationId,
     ) -> Result<Self, GwError> {
         if coefficients.len() != z_order + 1 {
@@ -377,11 +377,11 @@ impl SeriesSMatrix {
         &self.calibration
     }
 
-    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix> {
+    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix<C>> {
         self.coefficients.get(order)
     }
 
-    pub fn coefficients(&self) -> &[SeriesMatrix] {
+    pub fn coefficients(&self) -> &[SeriesMatrix<C>] {
         &self.coefficients
     }
 
