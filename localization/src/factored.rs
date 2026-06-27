@@ -47,6 +47,10 @@ impl FactoredRatFun {
         Self::from_sparse_fraction_factors(num, vec![den])
     }
 
+    pub fn from_ratfun(value: RatFun) -> Self {
+        Self::from_sparse_fraction(value.num, value.den)
+    }
+
     pub fn from_sparse_fraction_factors(num: SparsePoly, factors: Vec<SparsePoly>) -> Self {
         if num.is_zero() {
             return Self::zero();
@@ -254,6 +258,12 @@ impl From<i32> for FactoredRatFun {
     }
 }
 
+impl From<RatFun> for FactoredRatFun {
+    fn from(value: RatFun) -> Self {
+        Self::from_ratfun(value)
+    }
+}
+
 impl<'a, 'b> Add<&'b FactoredRatFun> for &'a FactoredRatFun {
     type Output = FactoredRatFun;
 
@@ -428,6 +438,21 @@ mod tests {
             expr.evaluate_variables(&values).unwrap(),
             expr.to_ratfun().evaluate_variables(&values).unwrap()
         );
+    }
+
+    #[test]
+    fn expanded_ratfun_round_trips_through_factored_bridge() {
+        let mu = RatFun::variable("mu_0");
+        let expanded = &(&mu + &RatFun::from(1usize)) / &(&mu - &RatFun::from(3usize));
+        let factored = FactoredRatFun::from_ratfun(expanded.clone());
+        let mut values = BTreeMap::new();
+        values.insert("mu_0".to_string(), Rational::from(7usize));
+
+        assert_eq!(
+            factored.evaluate_variables(&values).unwrap(),
+            expanded.evaluate_variables(&values).unwrap()
+        );
+        assert_eq!(factored.to_ratfun(), expanded);
     }
 
     #[test]
