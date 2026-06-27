@@ -54,6 +54,26 @@ impl<C: Coeff> QSeries<C> {
         self.coeffs.iter().all(Coeff::is_zero)
     }
 
+    pub fn is_structurally_zero(&self) -> bool {
+        self.coeffs.iter().all(Coeff::is_structurally_zero)
+    }
+
+    pub fn is_structurally_one(&self) -> bool {
+        self.coeffs.first().is_some_and(Coeff::is_structurally_one)
+            && self.coeffs.iter().skip(1).all(Coeff::is_structurally_zero)
+    }
+
+    pub fn complexity_terms(&self) -> usize {
+        self.coeffs.iter().map(Coeff::complexity_terms).sum()
+    }
+
+    pub fn complexity_denominator_factors(&self) -> usize {
+        self.coeffs
+            .iter()
+            .map(Coeff::complexity_denominator_factors)
+            .sum()
+    }
+
     pub fn add(&self, rhs: &Self) -> Self {
         self.assert_same_truncation(rhs);
         Self {
@@ -108,14 +128,23 @@ impl<C: Coeff> QSeries<C> {
 
     pub fn mul(&self, rhs: &Self) -> Self {
         self.assert_same_truncation(rhs);
+        if self.is_structurally_zero() || rhs.is_structurally_zero() {
+            return Self::zero(self.max_degree());
+        }
+        if self.is_structurally_one() {
+            return rhs.clone();
+        }
+        if rhs.is_structurally_one() {
+            return self.clone();
+        }
         let max_degree = self.max_degree();
         let mut out = vec![C::zero(); max_degree + 1];
         for i in 0..=max_degree {
-            if self.coeffs[i].is_zero() {
+            if self.coeffs[i].is_structurally_zero() {
                 continue;
             }
             for j in 0..=max_degree - i {
-                if rhs.coeffs[j].is_zero() {
+                if rhs.coeffs[j].is_structurally_zero() {
                     continue;
                 }
                 let term = self.coeffs[i].mul(&rhs.coeffs[j]);
@@ -164,8 +193,7 @@ impl<C: Coeff> QSeries<C> {
 
     pub fn sqrt_with_constant_one(&self) -> Result<Self, GwError> {
         let max_degree = self.max_degree();
-        let one = C::one();
-        if self.coeff(0) != Some(&one) {
+        if !self.coeff(0).is_some_and(Coeff::is_one) {
             return Err(GwError::AlgebraFailure(
                 "sqrt_with_constant_one requires constant coefficient 1".to_string(),
             ));
@@ -347,6 +375,11 @@ impl<C: Coeff> SeriesMatrix<C> {
             for col in 0..rhs.cols {
                 let mut total = QSeries::<C>::zero(max_degree);
                 for k in 0..self.cols {
+                    if self.entries[row][k].is_structurally_zero()
+                        || rhs.entries[k][col].is_structurally_zero()
+                    {
+                        continue;
+                    }
                     total = total.add(&self.entries[row][k].mul(&rhs.entries[k][col]));
                 }
                 out.entries[row][col] = total;
@@ -367,6 +400,12 @@ impl<C: Coeff> SeriesMatrix<C> {
         self.entries
             .iter()
             .all(|row| row.iter().all(QSeries::<C>::is_zero))
+    }
+
+    pub fn is_structurally_zero(&self) -> bool {
+        self.entries
+            .iter()
+            .all(|row| row.iter().all(QSeries::<C>::is_structurally_zero))
     }
 }
 

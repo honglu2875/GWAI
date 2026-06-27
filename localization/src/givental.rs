@@ -504,6 +504,16 @@ pub trait SemisimpleCohftProvider {
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError>;
 
+    fn direct_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        Ok(None)
+    }
+
     /// Optional scalar fallback for intentionally small seed cases.
     ///
     /// This is used only after the graph path reports that an unstable range or
@@ -589,6 +599,16 @@ pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
         q_degree: usize,
     ) -> Result<Vec<QSeries<C>>, GwError>;
 
+    fn coeff_direct_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<C>, GwError> {
+        Ok(None)
+    }
+
     fn coeff_scalar_fallback_value(
         &self,
         _genus: usize,
@@ -669,6 +689,16 @@ where
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError> {
         SemisimpleCohftProvider::insertion_vector(self, insertion, q_degree)
+    }
+
+    fn coeff_direct_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        SemisimpleCohftProvider::direct_value(self, genus, degree, insertions, truncation)
     }
 
     fn coeff_scalar_fallback_value(
@@ -2007,6 +2037,9 @@ pub fn compute_semisimple_graph_value<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    if let Some(value) = provider.direct_value(genus, degree, insertions, truncation)? {
+        return Ok(value);
+    }
     if !is_stable_cohft_range(genus, insertions.len()) {
         if let Some(value) =
             provider.scalar_fallback_value(genus, degree, insertions, truncation)?
@@ -2029,6 +2062,9 @@ where
     C: Coeff + Send + Sync,
     P: CoefficientSemisimpleCohftProvider<C>,
 {
+    if let Some(value) = provider.coeff_direct_value(genus, degree, insertions, truncation)? {
+        return Ok(value);
+    }
     if !is_stable_cohft_range(genus, insertions.len()) {
         if let Some(value) =
             provider.coeff_scalar_fallback_value(genus, degree, insertions, truncation)?
@@ -2263,6 +2299,14 @@ where
         .map(Vec::len)
         .sum();
     profile.add_option_elapsed(options_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_options_total={:.3}s leg_options={} edge_options={}",
+            options_started.elapsed().as_secs_f64(),
+            profile.leg_options,
+            profile.edge_options
+        );
+    }
 
     let graphs = prepared_stable_graphs(genus, insertions.len(), provider.colors());
     profile.stable_graphs = graphs.len();
@@ -2340,12 +2384,26 @@ where
     let calibration_started = Instant::now();
     let kernel = provider.coeff_graph_kernel(q_degree, needed_r_order, graph_dimension)?;
     profile.add_calibration_elapsed(calibration_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_kernel_total={:.3}s",
+            calibration_started.elapsed().as_secs_f64()
+        );
+    }
 
     let options_started = Instant::now();
     let leg_options = if insertions.is_empty() {
         Vec::new()
     } else {
+        let descendant_started = Instant::now();
         let descendant_s = provider.coeff_descendant_s_matrix(q_degree, needed_s_order)?;
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_descendant_s={:.3}s",
+                descendant_started.elapsed().as_secs_f64()
+            );
+        }
+        let insertion_started = Instant::now();
         let insertion_terms = ancestor_insertion_terms_from_provider(
             provider,
             insertions,
@@ -2354,13 +2412,27 @@ where
             q_degree,
             graph_dimension,
         )?;
-        leg_options_by_marking_color(
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_ancestor_terms={:.3}s",
+                insertion_started.elapsed().as_secs_f64()
+            );
+        }
+        let leg_started = Instant::now();
+        let leg_options = leg_options_by_marking_color(
             &insertion_terms,
             &kernel.inverse_r,
             q_degree,
             graph_dimension,
             provider.coeff_colors(),
-        )
+        );
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_leg_options={:.3}s",
+                leg_started.elapsed().as_secs_f64()
+            );
+        }
+        leg_options
     };
     profile.leg_options = leg_options
         .iter()
@@ -2388,6 +2460,12 @@ where
         &mut profile,
     );
     profile.add_graph_elapsed(graphs_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_graphs_total={:.3}s",
+            graphs_started.elapsed().as_secs_f64()
+        );
+    }
     profile.finish();
     Ok(total)
 }
@@ -3640,7 +3718,7 @@ fn accumulate_rational_no_insertion_graph_factors(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -3672,7 +3750,7 @@ fn accumulate_rational_no_insertion_graph_factors(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -3725,7 +3803,7 @@ fn accumulate_rational_no_insertion_graph_factors(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4142,7 +4220,7 @@ impl<C: Coeff> ExternalLegKernel<C> {
     }
 
     fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries<C>) {
-        if value.is_zero() {
+        if value.is_structurally_zero() {
             return;
         }
         let index = self.tensor_index(states);
@@ -4155,7 +4233,7 @@ impl<C: Coeff> ExternalLegKernel<C> {
         debug_assert_eq!(self.max_power, rhs.max_power);
         debug_assert_eq!(self.q_degree, rhs.q_degree);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
-            if !right.is_zero() {
+            if !right.is_structurally_zero() {
                 *left = left.add(right);
             }
         }
@@ -4259,7 +4337,7 @@ impl<C: Coeff> RestrictedExternalLegKernel<C> {
     }
 
     fn add_term(&mut self, state_indices: &[usize], value: &QSeries<C>) {
-        if value.is_zero() || self.entries.is_empty() {
+        if value.is_structurally_zero() || self.entries.is_empty() {
             return;
         }
         let index = self.tensor_index_from_state_indices(state_indices);
@@ -4273,7 +4351,7 @@ impl<C: Coeff> RestrictedExternalLegKernel<C> {
         debug_assert_eq!(self.q_degree, rhs.q_degree);
         debug_assert_eq!(self.state_counts, rhs.state_counts);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
-            if !right.is_zero() {
+            if !right.is_structurally_zero() {
                 *left = left.add(right);
             }
         }
@@ -4317,12 +4395,12 @@ fn contract_external_leg_kernel_coeff_generic_rec<C: Coeff>(
     state_indices: &mut [usize],
     total: &mut C,
 ) {
-    if coefficient.is_zero() {
+    if coefficient.is_structurally_zero() {
         return;
     }
     if marking == kernel.markings {
         let index = kernel.tensor_index_from_state_indices(state_indices);
-        if kernel.entries[index].is_zero() {
+        if kernel.entries[index].is_structurally_zero() {
             return;
         }
         *total = total.add(&qseries_mul_coeff_generic(
@@ -4339,7 +4417,7 @@ fn contract_external_leg_kernel_coeff_generic_rec<C: Coeff>(
                 continue;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             state_indices[marking] = kernel.state_index(color, option.power);
@@ -4396,12 +4474,12 @@ fn contract_restricted_external_leg_kernel_coeff_generic_rec<C: Coeff>(
     state_indices: &mut [usize],
     total: &mut C,
 ) {
-    if coefficient.is_zero() {
+    if coefficient.is_structurally_zero() {
         return;
     }
     if marking == kernel.markings {
         let index = kernel.tensor_index_from_state_indices(state_indices);
-        if kernel.entries[index].is_zero() {
+        if kernel.entries[index].is_structurally_zero() {
             return;
         }
         *total = total.add(&qseries_mul_coeff_generic(
@@ -4423,7 +4501,7 @@ fn contract_restricted_external_leg_kernel_coeff_generic_rec<C: Coeff>(
                 continue;
             };
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             state_indices[marking] = state_index;
@@ -4451,13 +4529,13 @@ fn qseries_mul_coeff_generic<C: Coeff>(left: &QSeries<C>, right: &QSeries<C>, de
         let left_coeff = left
             .coeff(left_degree)
             .expect("left q-series degree is bounded");
-        if left_coeff.is_zero() {
+        if left_coeff.is_structurally_zero() {
             continue;
         }
         let right_coeff = right
             .coeff(right_degree)
             .expect("right q-series degree is bounded");
-        if right_coeff.is_zero() {
+        if right_coeff.is_structurally_zero() {
             continue;
         }
         total = total.add(&left_coeff.mul(right_coeff));
@@ -4490,7 +4568,7 @@ fn accumulate_external_leg_graph_factors<C>(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -4564,7 +4642,7 @@ fn accumulate_external_leg_graph_factors<C>(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -4621,7 +4699,7 @@ fn accumulate_external_leg_graph_factors<C>(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4657,7 +4735,7 @@ fn accumulate_restricted_external_leg_graph_factors<C>(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -4737,7 +4815,7 @@ fn accumulate_restricted_external_leg_graph_factors<C>(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -4795,7 +4873,7 @@ fn accumulate_restricted_external_leg_graph_factors<C>(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4824,11 +4902,20 @@ where
     // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
     // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
     // the canonical idempotent basis used by the graph colors.
+    let profile_enabled = std::env::var_os("GW_PROFILE").is_some();
     insertions
         .iter()
-        .map(|insertion| {
+        .enumerate()
+        .map(|(idx, insertion)| {
+            let insertion_started = Instant::now();
             let descendant_power = provider.coeff_descendant_power(insertion);
             let flat_class_vector = provider.coeff_insertion_vector(insertion, q_degree)?;
+            if profile_enabled {
+                eprintln!(
+                    "GW_PROFILE ancestor_insertion_vector[{idx}]={:.3}s",
+                    insertion_started.elapsed().as_secs_f64()
+                );
+            }
             let max_order =
                 descendant_power.min(descendant_s.coefficients().len().saturating_sub(1));
             let mut terms = Vec::new();
@@ -4837,17 +4924,37 @@ where
                 if base_power > max_power {
                     continue;
                 }
+                let s_started = Instant::now();
                 let flat_vector = apply_s_coefficient_to_vector(
                     descendant_s,
                     s_order,
                     &flat_class_vector,
                     q_degree,
                 );
-                if flat_vector.iter().all(QSeries::is_zero) {
+                if profile_enabled {
+                    let (terms, factors) = qseries_vector_complexity(&flat_vector);
+                    eprintln!(
+                        "GW_PROFILE ancestor_apply_s[{idx},{s_order}]={:.3}s terms={} factors={}",
+                        s_started.elapsed().as_secs_f64(),
+                        terms,
+                        factors
+                    );
+                }
+                if flat_vector.iter().all(QSeries::is_structurally_zero) {
                     continue;
                 }
+                let psi_started = Instant::now();
                 let canonical_vector = apply_matrix_to_vector(psi_inverse, &flat_vector, q_degree);
-                if canonical_vector.iter().all(QSeries::is_zero) {
+                if profile_enabled {
+                    let (terms, factors) = qseries_vector_complexity(&canonical_vector);
+                    eprintln!(
+                        "GW_PROFILE ancestor_apply_psi_inverse[{idx},{s_order}]={:.3}s terms={} factors={}",
+                        psi_started.elapsed().as_secs_f64(),
+                        terms,
+                        factors
+                    );
+                }
+                if canonical_vector.iter().all(QSeries::is_structurally_zero) {
                     continue;
                 }
                 terms.push(AncestorLegTerm {
@@ -4893,6 +5000,16 @@ where
             total
         })
         .collect()
+}
+
+fn qseries_vector_complexity<C: Coeff>(vector: &[QSeries<C>]) -> (usize, usize) {
+    (
+        vector.iter().map(QSeries::complexity_terms).sum(),
+        vector
+            .iter()
+            .map(QSeries::complexity_denominator_factors)
+            .sum(),
+    )
 }
 
 fn inverse_r_coefficients<C: Coeff>(coefficients: &[SeriesMatrix<C>]) -> Vec<SeriesMatrix<C>> {
@@ -5043,7 +5160,7 @@ fn accumulate_graph_factors<C>(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -5063,7 +5180,7 @@ fn accumulate_graph_factors<C>(
                 continue;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             vertex_power_sums[vertex] = next_vertex_power;
@@ -5123,7 +5240,7 @@ fn accumulate_graph_factors<C>(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -5180,7 +5297,7 @@ fn accumulate_graph_factors<C>(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -5225,7 +5342,7 @@ fn leg_options_for_color<C: Coeff>(
             for (source, source_coeff) in term.vector.iter().enumerate() {
                 coefficient = coefficient.add(&matrix.entry(color, source).mul(source_coeff));
             }
-            if !coefficient.is_zero() {
+            if !coefficient.is_structurally_zero() {
                 by_power[power] = by_power[power].add(&coefficient);
             }
         }
@@ -5234,7 +5351,7 @@ fn leg_options_for_color<C: Coeff>(
         .into_iter()
         .enumerate()
         .filter_map(|(power, coefficient)| {
-            (!coefficient.is_zero()).then_some(LegFactorOption { power, coefficient })
+            (!coefficient.is_structurally_zero()).then_some(LegFactorOption { power, coefficient })
         })
         .collect()
 }
@@ -5273,7 +5390,7 @@ where
             }
             let coefficient =
                 edge_coefficients[left_color][right_color][left_power][right_power].clone();
-            if !coefficient.is_zero() {
+            if !coefficient.is_structurally_zero() {
                 out.push(EdgeFactorOption {
                     left_power,
                     right_power,
@@ -5358,7 +5475,7 @@ where
             }
 
             coefficient = coefficient.mul(&translation[color][power].pow_usize(multiplicity));
-            if coefficient.is_zero() {
+            if coefficient.is_structurally_zero() {
                 break;
             }
             powers.extend(std::iter::repeat(power).take(multiplicity));
@@ -5366,7 +5483,7 @@ where
             let multiplicity_factor = C::from_usize(factorial(multiplicity));
             symmetry = symmetry.mul(&multiplicity_factor);
         }
-        if coefficient.is_zero() {
+        if coefficient.is_structurally_zero() {
             continue;
         }
 

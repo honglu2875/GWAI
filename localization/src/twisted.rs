@@ -13,10 +13,11 @@
 //! line.  A fiber-equivariant mode keeps independent symbolic parameters
 //! `mu_i` for the split summands while keeping the base weights
 //! early-specialized; calibration-level specialization tests cover this mode.
-//! Large symbolic graph contractions still need a factored rational
-//! representation to avoid expanded numerator/denominator blow-up.  Fast
-//! validation currently covers several resolved-conifold rows and the first
-//! local-`P^2` genus-2 row; genus-4 local curve computations are the next
+//! The factored coefficient path keeps fiber-equivariant denominators
+//! unexpanded through S/R calibration and graph-kernel construction.  Dense
+//! symbolic stable-graph leg products remain the main performance frontier.
+//! Fast validation currently covers several resolved-conifold rows and the
+//! first local-`P^2` genus-2 row; genus-4 local curve computations are the next
 //! observed performance frontier.
 
 use crate::algebra::{Coeff, RatFun, Rational};
@@ -2509,12 +2510,12 @@ pub struct SpecializedTwistedCanonicalData {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpecializedTwistedBirkhoffCanonicalData {
-    pub roots: Vec<QSeries>,
-    pub metric_norms: Vec<QSeries>,
-    pub inverse_metric_norms: Vec<QSeries>,
-    pub transition_to_flat: Vec<Vec<QSeries>>,
-    pub quantum_h: SeriesMatrix,
+pub struct SpecializedTwistedBirkhoffCanonicalData<C = RatFun> {
+    pub roots: Vec<QSeries<C>>,
+    pub metric_norms: Vec<QSeries<C>>,
+    pub inverse_metric_norms: Vec<QSeries<C>>,
+    pub transition_to_flat: Vec<Vec<QSeries<C>>>,
+    pub quantum_h: SeriesMatrix<C>,
 }
 
 pub fn specialized_twisted_birkhoff_canonical_data(
@@ -2660,15 +2661,15 @@ fn specialized_twisted_birkhoff_canonical_data_with_mode_and_validation(
     })
 }
 
-fn specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validation(
+fn specialized_twisted_birkhoff_canonical_data_for_coeff_weights_with_validation<C: Coeff>(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     max_q_degree: usize,
-    base_weights: &[RatFun],
-    fiber_weights: &[RatFun],
+    base_weights: &[C],
+    fiber_weights: &[C],
     validation: TwistedCalibrationValidation,
-) -> Result<SpecializedTwistedBirkhoffCanonicalData, GwError> {
-    let model = NegativeSplitLineHypergeometricModel::from_ratfun_weights(
+) -> Result<SpecializedTwistedBirkhoffCanonicalData<C>, GwError> {
+    let model = NegativeSplitLineHypergeometricModel::<C>::from_coeff_weights(
         n,
         twist.clone(),
         max_q_degree,
@@ -2678,13 +2679,13 @@ fn specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validatio
     )?;
     let descendant_s = model.birkhoff_descendant_s_matrix(1)?;
     let classical_h =
-        twisted_classical_h_multiplication_matrix_ratfun(n, max_q_degree, &model.base_weights)?;
-    let quantum_h = twisted_quantum_multiplication_from_s(
+        twisted_classical_h_multiplication_matrix_coeff(n, max_q_degree, &model.base_weights)?;
+    let quantum_h = twisted_quantum_multiplication_from_s_coeff(
         &descendant_s,
         &classical_h,
         &TwistedCalibrationMode::InverseEuler,
     )?;
-    let flat_metric = twisted_inverse_euler_flat_metric_matrix_ratfun(
+    let flat_metric = twisted_inverse_euler_flat_metric_matrix_coeff(
         n,
         max_q_degree,
         twist,
@@ -2705,17 +2706,17 @@ fn specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validatio
         }
     }
 
-    let charpoly = charpoly_qseries_coefficients(&quantum_h)?;
+    let charpoly = charpoly_qseries_coefficients_coeff(&quantum_h)?;
     let roots = (0..=n)
         .map(|branch| {
-            root_series_from_charpoly_ratfun(
+            root_series_from_charpoly_coeff(
                 &charpoly,
                 model.base_weights[branch].clone(),
                 max_q_degree,
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let transition = spectral_transition_matrix_from_roots(&quantum_h, &roots)?;
+    let transition = spectral_transition_matrix_from_roots_coeff(&quantum_h, &roots)?;
     let transition_to_flat = transition.entries().to_vec();
     let canonical_metric = transition.transpose().mul(&flat_metric).mul(&transition);
 
@@ -2794,12 +2795,22 @@ fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
     z_order: usize,
     canonical: &SpecializedTwistedBirkhoffCanonicalData,
 ) -> Result<SemisimpleCalibration, GwError> {
+    negative_split_twisted_birkhoff_calibration_skeleton_from_canonical_coeff(
+        q_degree, z_order, canonical,
+    )
+}
+
+fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonical_coeff<C: Coeff>(
+    q_degree: usize,
+    z_order: usize,
+    canonical: &SpecializedTwistedBirkhoffCanonicalData<C>,
+) -> Result<SemisimpleCalibration<C>, GwError> {
     let size = canonical.roots.len();
     let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
     let relative_sqrt_delta = canonical
         .inverse_metric_norms
         .iter()
-        .map(relative_sqrt_delta_series_local)
+        .map(relative_sqrt_delta_series_coeff)
         .collect::<Result<Vec<_>, _>>()?;
     let relative_sqrt_delta_inv = relative_sqrt_delta
         .iter()
@@ -2808,7 +2819,7 @@ fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
 
     let relative_scale = SeriesMatrix::diagonal(relative_sqrt_delta.clone());
     let relative_scale_inv = SeriesMatrix::diagonal(relative_sqrt_delta_inv.clone());
-    let transition_inverse = invert_series_matrix(&transition)?;
+    let transition_inverse = invert_series_matrix_coeff(&transition)?;
     let psi = transition.mul(&relative_scale);
     let psi_inverse = relative_scale_inv.mul(&transition_inverse);
     let connection = psi_inverse.mul(&psi.q_derivative());
@@ -2816,17 +2827,12 @@ fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
         canonical
             .metric_norms
             .iter()
-            .map(|norm| {
-                QSeries::constant(
-                    norm.coeff(0).cloned().unwrap_or_else(RatFun::zero),
-                    q_degree,
-                )
-            })
+            .map(|norm| QSeries::constant(norm.coeff(0).cloned().unwrap_or_else(C::zero), q_degree))
             .collect(),
     );
 
     Ok(SemisimpleCalibration {
-        r_matrix: SeriesRMatrix::identity(
+        r_matrix: SeriesRMatrix::<C>::identity(
             size,
             q_degree,
             z_order,
@@ -2946,7 +2952,29 @@ fn negative_split_twisted_birkhoff_calibration_candidate_for_ratfun_weights_with
     fiber_weights: &[RatFun],
     validation: TwistedCalibrationValidation,
 ) -> Result<SemisimpleCalibration, GwError> {
-    let canonical = specialized_twisted_birkhoff_canonical_data_for_ratfun_weights_with_validation(
+    negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation(
+        n,
+        twist,
+        q_degree,
+        z_order,
+        base_weights,
+        fiber_weights,
+        validation,
+    )
+}
+
+fn negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation<
+    C: Coeff,
+>(
+    n: usize,
+    twist: &NegativeSplitBundleTwist,
+    q_degree: usize,
+    z_order: usize,
+    base_weights: &[C],
+    fiber_weights: &[C],
+    validation: TwistedCalibrationValidation,
+) -> Result<SemisimpleCalibration<C>, GwError> {
+    let canonical = specialized_twisted_birkhoff_canonical_data_for_coeff_weights_with_validation(
         n,
         twist,
         q_degree,
@@ -2954,24 +2982,25 @@ fn negative_split_twisted_birkhoff_calibration_candidate_for_ratfun_weights_with
         fiber_weights,
         validation,
     )?;
-    let mut calibration = negative_split_twisted_birkhoff_calibration_skeleton_from_canonical(
-        q_degree, z_order, &canonical,
-    )?;
-    let classical_diagonal = twisted_classical_limit_diagonal_coefficients_ratfun(
+    let mut calibration =
+        negative_split_twisted_birkhoff_calibration_skeleton_from_canonical_coeff(
+            q_degree, z_order, &canonical,
+        )?;
+    let classical_diagonal = twisted_classical_limit_diagonal_coefficients_coeff(
         n,
         twist,
         z_order,
         base_weights,
         fiber_weights,
     )?;
-    let coefficients = solve_twisted_r_coefficients(
+    let coefficients = solve_twisted_r_coefficients_coeff(
         &canonical.roots,
         &calibration.connection,
         &classical_diagonal,
         q_degree,
         z_order,
     )?;
-    calibration.r_matrix = SeriesRMatrix::from_coefficients(
+    calibration.r_matrix = SeriesRMatrix::<C>::from_coefficients(
         n + 1,
         q_degree,
         z_order,
@@ -3361,11 +3390,11 @@ fn twisted_base_polynomial_coefficients(
     Ok(out)
 }
 
-fn twisted_base_polynomial_coefficients_ratfun(
+fn twisted_base_polynomial_coefficients_coeff<C: Coeff>(
     n: usize,
     q_degree: usize,
-    base_weights: &[RatFun],
-) -> Result<Vec<QSeries>, GwError> {
+    base_weights: &[C],
+) -> Result<Vec<QSeries<C>>, GwError> {
     if base_weights.len() != n + 1 {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",
@@ -3373,11 +3402,11 @@ fn twisted_base_polynomial_coefficients_ratfun(
             base_weights.len()
         )));
     }
-    let mut out = vec![QSeries::one(q_degree)];
+    let mut out = vec![QSeries::<C>::one(q_degree)];
     for weight in base_weights {
         out = multiply_polynomial_by_linear_series(
             &out,
-            &QSeries::constant(-weight.clone(), q_degree),
+            &QSeries::constant(weight.neg(), q_degree),
             q_degree,
         );
     }
@@ -3681,19 +3710,19 @@ fn twisted_classical_h_multiplication_matrix(
     companion_multiplication_matrix_from_monic_polynomial(n + 1, &coefficients)
 }
 
-fn twisted_classical_h_multiplication_matrix_ratfun(
+fn twisted_classical_h_multiplication_matrix_coeff<C: Coeff>(
     n: usize,
     q_degree: usize,
-    base_weights: &[RatFun],
-) -> Result<SeriesMatrix, GwError> {
-    let coefficients = twisted_base_polynomial_coefficients_ratfun(n, q_degree, base_weights)?;
+    base_weights: &[C],
+) -> Result<SeriesMatrix<C>, GwError> {
+    let coefficients = twisted_base_polynomial_coefficients_coeff(n, q_degree, base_weights)?;
     companion_multiplication_matrix_from_monic_polynomial(n + 1, &coefficients)
 }
 
-fn companion_multiplication_matrix_from_monic_polynomial(
+fn companion_multiplication_matrix_from_monic_polynomial<C: Coeff>(
     size: usize,
-    coefficients: &[QSeries],
-) -> Result<SeriesMatrix, GwError> {
+    coefficients: &[QSeries<C>],
+) -> Result<SeriesMatrix<C>, GwError> {
     if coefficients.len() != size + 1 {
         return Err(GwError::ConventionMismatch(format!(
             "expected monic polynomial of degree {size}, got degree {}",
@@ -3705,9 +3734,9 @@ fn companion_multiplication_matrix_from_monic_polynomial(
         .map(QSeries::max_degree)
         .unwrap_or_default();
     let leading = coefficients[size].inverse()?;
-    let mut entries = vec![vec![QSeries::zero(q_degree); size]; size];
+    let mut entries = vec![vec![QSeries::<C>::zero(q_degree); size]; size];
     for col in 0..size.saturating_sub(1) {
-        entries[col + 1][col] = QSeries::one(q_degree);
+        entries[col + 1][col] = QSeries::<C>::one(q_degree);
     }
     for row in 0..size {
         entries[row][size - 1] = coefficients[row].mul(&leading).neg();
@@ -3720,6 +3749,14 @@ fn twisted_quantum_multiplication_from_s(
     classical_h: &SeriesMatrix,
     mode: &TwistedCalibrationMode,
 ) -> Result<SeriesMatrix, GwError> {
+    twisted_quantum_multiplication_from_s_coeff(descendant_s, classical_h, mode)
+}
+
+fn twisted_quantum_multiplication_from_s_coeff<C: Coeff>(
+    descendant_s: &SeriesSMatrix<C>,
+    classical_h: &SeriesMatrix<C>,
+    mode: &TwistedCalibrationMode,
+) -> Result<SeriesMatrix<C>, GwError> {
     let s1 = descendant_s.coefficient(1).ok_or_else(|| {
         GwError::ConventionMismatch("need S-matrix through z^{-1} to recover product".to_string())
     })?;
@@ -3810,6 +3847,12 @@ fn substitute_scaled_generator_in_polynomial(
 }
 
 fn charpoly_qseries_coefficients(matrix: &SeriesMatrix) -> Result<Vec<QSeries>, GwError> {
+    charpoly_qseries_coefficients_coeff(matrix)
+}
+
+fn charpoly_qseries_coefficients_coeff<C: Coeff>(
+    matrix: &SeriesMatrix<C>,
+) -> Result<Vec<QSeries<C>>, GwError> {
     if matrix.rows() != matrix.cols() {
         return Err(GwError::ConventionMismatch(
             "characteristic polynomial requires a square matrix".to_string(),
@@ -3817,18 +3860,18 @@ fn charpoly_qseries_coefficients(matrix: &SeriesMatrix) -> Result<Vec<QSeries>, 
     }
     let size = matrix.rows();
     let q_degree = matrix.max_degree();
-    let mut polynomial_matrix = vec![vec![vec![QSeries::zero(q_degree)]; size]; size];
+    let mut polynomial_matrix = vec![vec![vec![QSeries::<C>::zero(q_degree)]; size]; size];
     for (row, out_row) in polynomial_matrix.iter_mut().enumerate() {
         for (col, entry) in out_row.iter_mut().enumerate() {
             let mut poly = vec![matrix.entry(row, col).neg()];
             if row == col {
-                poly.push(QSeries::one(q_degree));
+                poly.push(QSeries::<C>::one(q_degree));
             }
             *entry = poly;
         }
     }
     let mut charpoly = determinant_qseries_polynomial_matrix(&polynomial_matrix, q_degree);
-    charpoly.resize(size + 1, QSeries::zero(q_degree));
+    charpoly.resize(size + 1, QSeries::<C>::zero(q_degree));
     Ok(charpoly)
 }
 
@@ -3850,11 +3893,11 @@ fn root_series_from_charpoly(
     Ok(root)
 }
 
-fn root_series_from_charpoly_ratfun(
-    coefficients: &[QSeries],
-    branch_root: RatFun,
+fn root_series_from_charpoly_coeff<C: Coeff>(
+    coefficients: &[QSeries<C>],
+    branch_root: C,
     max_q_degree: usize,
-) -> Result<QSeries, GwError> {
+) -> Result<QSeries<C>, GwError> {
     let derivative = derivative_qseries_polynomial_coefficients(coefficients, max_q_degree);
     let mut root = QSeries::constant(branch_root, max_q_degree);
     for _ in 0..=max_q_degree {
@@ -3872,13 +3915,20 @@ fn spectral_transition_matrix_from_roots(
     multiplication: &SeriesMatrix,
     roots: &[QSeries],
 ) -> Result<SeriesMatrix, GwError> {
+    spectral_transition_matrix_from_roots_coeff(multiplication, roots)
+}
+
+fn spectral_transition_matrix_from_roots_coeff<C: Coeff>(
+    multiplication: &SeriesMatrix<C>,
+    roots: &[QSeries<C>],
+) -> Result<SeriesMatrix<C>, GwError> {
     let size = roots.len();
     let q_degree = multiplication.max_degree();
-    let identity = SeriesMatrix::identity(size, q_degree);
-    let mut columns = vec![vec![QSeries::zero(q_degree); size]; size];
+    let identity = SeriesMatrix::<C>::identity(size, q_degree);
+    let mut columns = vec![vec![QSeries::<C>::zero(q_degree); size]; size];
 
     for branch in 0..size {
-        let mut projector = SeriesMatrix::identity(size, q_degree);
+        let mut projector = SeriesMatrix::<C>::identity(size, q_degree);
         for other in 0..size {
             if other == branch {
                 continue;
@@ -3896,19 +3946,19 @@ fn spectral_transition_matrix_from_roots(
     Ok(SeriesMatrix::from_entries(columns))
 }
 
-fn determinant_qseries_polynomial_matrix(
-    matrix: &[Vec<Vec<QSeries>>],
+fn determinant_qseries_polynomial_matrix<C: Coeff>(
+    matrix: &[Vec<Vec<QSeries<C>>>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>> {
     let size = matrix.len();
     if size == 0 {
-        return vec![QSeries::one(q_degree)];
+        return vec![QSeries::<C>::one(q_degree)];
     }
     if size == 1 {
         return matrix[0][0].clone();
     }
 
-    let mut total = vec![QSeries::zero(q_degree)];
+    let mut total = vec![QSeries::<C>::zero(q_degree)];
     for col in 0..size {
         let mut minor = Vec::with_capacity(size - 1);
         for source_row in matrix.iter().skip(1) {
@@ -3934,42 +3984,54 @@ fn determinant_qseries_polynomial_matrix(
     total
 }
 
-fn qseries_polynomial_add(left: &[QSeries], right: &[QSeries], q_degree: usize) -> Vec<QSeries> {
+fn qseries_polynomial_add<C: Coeff>(
+    left: &[QSeries<C>],
+    right: &[QSeries<C>],
+    q_degree: usize,
+) -> Vec<QSeries<C>> {
     let size = left.len().max(right.len());
-    let mut out = vec![QSeries::zero(q_degree); size];
+    let mut out = vec![QSeries::<C>::zero(q_degree); size];
     for degree in 0..size {
         let left_coeff = left
             .get(degree)
             .cloned()
-            .unwrap_or_else(|| QSeries::zero(q_degree));
+            .unwrap_or_else(|| QSeries::<C>::zero(q_degree));
         let right_coeff = right
             .get(degree)
             .cloned()
-            .unwrap_or_else(|| QSeries::zero(q_degree));
+            .unwrap_or_else(|| QSeries::<C>::zero(q_degree));
         out[degree] = left_coeff.add(&right_coeff);
     }
     out
 }
 
-fn qseries_polynomial_sub(left: &[QSeries], right: &[QSeries], q_degree: usize) -> Vec<QSeries> {
+fn qseries_polynomial_sub<C: Coeff>(
+    left: &[QSeries<C>],
+    right: &[QSeries<C>],
+    q_degree: usize,
+) -> Vec<QSeries<C>> {
     let size = left.len().max(right.len());
-    let mut out = vec![QSeries::zero(q_degree); size];
+    let mut out = vec![QSeries::<C>::zero(q_degree); size];
     for degree in 0..size {
         let left_coeff = left
             .get(degree)
             .cloned()
-            .unwrap_or_else(|| QSeries::zero(q_degree));
+            .unwrap_or_else(|| QSeries::<C>::zero(q_degree));
         let right_coeff = right
             .get(degree)
             .cloned()
-            .unwrap_or_else(|| QSeries::zero(q_degree));
+            .unwrap_or_else(|| QSeries::<C>::zero(q_degree));
         out[degree] = left_coeff.sub(&right_coeff);
     }
     out
 }
 
-fn qseries_polynomial_mul(left: &[QSeries], right: &[QSeries], q_degree: usize) -> Vec<QSeries> {
-    let mut out = vec![QSeries::zero(q_degree); left.len() + right.len() - 1];
+fn qseries_polynomial_mul<C: Coeff>(
+    left: &[QSeries<C>],
+    right: &[QSeries<C>],
+    q_degree: usize,
+) -> Vec<QSeries<C>> {
+    let mut out = vec![QSeries::<C>::zero(q_degree); left.len() + right.len() - 1];
     for (left_degree, left_coeff) in left.iter().enumerate() {
         if left_coeff.is_zero() {
             continue;
@@ -3985,7 +4047,7 @@ fn qseries_polynomial_mul(left: &[QSeries], right: &[QSeries], q_degree: usize) 
     out
 }
 
-fn series_matrix_scale(matrix: &SeriesMatrix, scalar: &QSeries) -> SeriesMatrix {
+fn series_matrix_scale<C: Coeff>(matrix: &SeriesMatrix<C>, scalar: &QSeries<C>) -> SeriesMatrix<C> {
     SeriesMatrix::from_entries(
         matrix
             .entries()
@@ -3993,10 +4055,6 @@ fn series_matrix_scale(matrix: &SeriesMatrix, scalar: &QSeries) -> SeriesMatrix 
             .map(|row| row.iter().map(|entry| entry.mul(scalar)).collect())
             .collect(),
     )
-}
-
-fn invert_series_matrix(matrix: &SeriesMatrix) -> Result<SeriesMatrix, GwError> {
-    invert_series_matrix_coeff(matrix)
 }
 
 fn invert_series_matrix_coeff<C: Coeff>(
@@ -4055,22 +4113,25 @@ fn qseries_has_invertible_constant_coeff<C: Coeff>(series: &QSeries<C>) -> bool 
     series.coeff(0).is_some_and(|constant| !constant.is_zero())
 }
 
-fn derivative_qseries_polynomial_coefficients(
-    coefficients: &[QSeries],
+fn derivative_qseries_polynomial_coefficients<C: Coeff>(
+    coefficients: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>> {
     coefficients
         .iter()
         .enumerate()
         .skip(1)
-        .map(|(power, coeff)| coeff.scale(&RatFun::from(power)))
-        .chain(std::iter::once(QSeries::zero(q_degree)))
+        .map(|(power, coeff)| coeff.scale(&C::from_usize(power)))
+        .chain(std::iter::once(QSeries::<C>::zero(q_degree)))
         .collect::<Vec<_>>()
 }
 
-fn evaluate_qseries_polynomial(coefficients: &[QSeries], x: &QSeries) -> QSeries {
+fn evaluate_qseries_polynomial<C: Coeff>(
+    coefficients: &[QSeries<C>],
+    x: &QSeries<C>,
+) -> QSeries<C> {
     let q_degree = x.max_degree();
-    let mut out = QSeries::zero(q_degree);
+    let mut out = QSeries::<C>::zero(q_degree);
     for coeff in coefficients.iter().rev() {
         out = out.mul(x).add(coeff);
     }
@@ -4091,13 +4152,17 @@ fn canonical_evaluation_matrix_local(roots: &[QSeries]) -> SeriesMatrix {
 }
 
 fn relative_sqrt_delta_series_local(delta: &QSeries) -> Result<QSeries, GwError> {
+    relative_sqrt_delta_series_coeff(delta)
+}
+
+fn relative_sqrt_delta_series_coeff<C: Coeff>(delta: &QSeries<C>) -> Result<QSeries<C>, GwError> {
     let delta0 = delta
         .coeff(0)
         .ok_or_else(|| GwError::AlgebraFailure("empty twisted Delta series".to_string()))?;
     if delta0.is_zero() {
         return Err(GwError::NonSemisimplePoint);
     }
-    let inv_delta0 = &RatFun::one() / delta0;
+    let inv_delta0 = C::one().div(delta0);
     delta.scale(&inv_delta0).sqrt_with_constant_one()
 }
 
@@ -4142,13 +4207,13 @@ fn twisted_classical_limit_diagonal_coefficients_with_mode(
         .collect()
 }
 
-fn twisted_classical_limit_diagonal_coefficients_ratfun(
+fn twisted_classical_limit_diagonal_coefficients_coeff<C: Coeff>(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     z_order: usize,
-    base_weights: &[RatFun],
-    fiber_weights: &[RatFun],
-) -> Result<Vec<Vec<RatFun>>, GwError> {
+    base_weights: &[C],
+    fiber_weights: &[C],
+) -> Result<Vec<Vec<C>>, GwError> {
     if base_weights.len() != n + 1 {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",
@@ -4165,7 +4230,7 @@ fn twisted_classical_limit_diagonal_coefficients_ratfun(
     }
     (0..=n)
         .map(|branch| {
-            twisted_classical_limit_diagonal_coefficients_for_branch_ratfun(
+            twisted_classical_limit_diagonal_coefficients_for_branch_coeff(
                 n,
                 twist,
                 branch,
@@ -4220,42 +4285,42 @@ fn twisted_classical_limit_diagonal_coefficients_for_branch(
     Ok(exp_scalar_z_series_local(&exponent))
 }
 
-fn twisted_classical_limit_diagonal_coefficients_for_branch_ratfun(
+fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: Coeff>(
     n: usize,
     twist: &NegativeSplitBundleTwist,
     branch: usize,
     z_order: usize,
-    base_weights: &[RatFun],
-    fiber_weights: &[RatFun],
-) -> Result<Vec<RatFun>, GwError> {
-    let mut exponent = vec![RatFun::zero(); z_order + 1];
+    base_weights: &[C],
+    fiber_weights: &[C],
+) -> Result<Vec<C>, GwError> {
+    let mut exponent = vec![C::zero(); z_order + 1];
     for r in 1..=((z_order + 1) / 2) {
         let order = 2 * r - 1;
-        let coefficient = RatFun::from_rational(
+        let coefficient = C::from_rational(
             bernoulli_number_local(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1)),
         );
-        let mut weight_sum = RatFun::zero();
+        let mut weight_sum = C::zero();
         for other in 0..=n {
             if other == branch {
                 continue;
             }
-            let difference = base_weights[other].clone() - base_weights[branch].clone();
+            let difference = base_weights[other].sub(&base_weights[branch]);
             if difference.is_zero() {
                 return Err(GwError::NonSemisimplePoint);
             }
-            weight_sum = weight_sum + RatFun::one() / difference.pow_usize(order);
+            weight_sum = weight_sum.add(&C::one().div(&difference.pow_usize(order)));
         }
         for (bundle_degree, fiber_weight) in twist.degrees().iter().zip(fiber_weights) {
             let fiber_root =
-                fiber_weight.clone() - RatFun::from(*bundle_degree) * base_weights[branch].clone();
+                fiber_weight.sub(&C::from_usize(*bundle_degree).mul(&base_weights[branch]));
             if fiber_root.is_zero() {
                 return Err(GwError::NonSemisimplePoint);
             }
-            weight_sum = weight_sum - RatFun::one() / fiber_root.pow_usize(order);
+            weight_sum = weight_sum.sub(&C::one().div(&fiber_root.pow_usize(order)));
         }
-        exponent[order] = coefficient * weight_sum;
+        exponent[order] = coefficient.mul(&weight_sum);
     }
-    Ok(exp_scalar_z_series_local(&exponent))
+    Ok(exp_scalar_z_series_coeff(&exponent))
 }
 
 fn solve_twisted_r_coefficients(
@@ -4265,18 +4330,28 @@ fn solve_twisted_r_coefficients(
     q_degree: usize,
     z_order: usize,
 ) -> Result<Vec<SeriesMatrix>, GwError> {
+    solve_twisted_r_coefficients_coeff(roots, connection, classical_diagonal, q_degree, z_order)
+}
+
+fn solve_twisted_r_coefficients_coeff<C: Coeff>(
+    roots: &[QSeries<C>],
+    connection: &SeriesMatrix<C>,
+    classical_diagonal: &[Vec<C>],
+    q_degree: usize,
+    z_order: usize,
+) -> Result<Vec<SeriesMatrix<C>>, GwError> {
     // Flatness recursion in canonical coordinates.  Off-diagonal entries are
     // determined by dividing by root differences u_j-u_i; diagonal entries are
     // integrated from the diagonal flatness equation with the classical
     // Bernoulli/QRR value as the q^0 constant.
     let size = roots.len();
     let mut coefficients = Vec::with_capacity(z_order + 1);
-    coefficients.push(SeriesMatrix::identity(size, q_degree));
+    coefficients.push(SeriesMatrix::<C>::identity(size, q_degree));
 
     for order in 1..=z_order {
         let previous = &coefficients[order - 1];
         let recursion_source = previous.q_derivative().add(&connection.mul(previous));
-        let mut entries = vec![vec![QSeries::zero(q_degree); size]; size];
+        let mut entries = vec![vec![QSeries::<C>::zero(q_degree); size]; size];
 
         for row in 0..size {
             for col in 0..size {
@@ -4292,7 +4367,7 @@ fn solve_twisted_r_coefficients(
         }
 
         for branch in 0..size {
-            entries[branch][branch] = solve_twisted_r_diagonal_from_flatness(
+            entries[branch][branch] = solve_twisted_r_diagonal_from_flatness_coeff(
                 connection,
                 &entries,
                 branch,
@@ -4307,17 +4382,17 @@ fn solve_twisted_r_coefficients(
     Ok(coefficients)
 }
 
-fn solve_twisted_r_diagonal_from_flatness(
-    connection: &SeriesMatrix,
-    entries: &[Vec<QSeries>],
+fn solve_twisted_r_diagonal_from_flatness_coeff<C: Coeff>(
+    connection: &SeriesMatrix<C>,
+    entries: &[Vec<QSeries<C>>],
     branch: usize,
-    constant: RatFun,
+    constant: C,
     q_degree: usize,
-) -> QSeries {
+) -> QSeries<C> {
     // Solves (q d/dq + A_ii) R_k,ii = known one q-coefficient at a time.
     // This is the piece that prevents the diagonal gauge from being silently
     // frozen at its q^0 value.
-    let mut known = QSeries::zero(q_degree);
+    let mut known = QSeries::<C>::zero(q_degree);
     for (source, row) in entries.iter().enumerate() {
         if source == branch {
             continue;
@@ -4329,40 +4404,46 @@ fn solve_twisted_r_diagonal_from_flatness(
     let a0 = diagonal_connection
         .coeff(0)
         .cloned()
-        .unwrap_or_else(RatFun::zero);
+        .unwrap_or_else(C::zero);
 
-    let mut coeffs = vec![RatFun::zero(); q_degree + 1];
+    let mut coeffs = vec![C::zero(); q_degree + 1];
     coeffs[0] = constant;
     for degree in 1..=q_degree {
-        let mut numerator = target.coeff(degree).cloned().unwrap_or_else(RatFun::zero);
+        let mut numerator = target.coeff(degree).cloned().unwrap_or_else(C::zero);
         for connection_degree in 1..=degree {
             let term = diagonal_connection
                 .coeff(connection_degree)
                 .cloned()
-                .unwrap_or_else(RatFun::zero)
-                * coeffs[degree - connection_degree].clone();
-            numerator = numerator - term;
+                .unwrap_or_else(C::zero)
+                .mul(&coeffs[degree - connection_degree]);
+            numerator = numerator.sub(&term);
         }
-        let denominator = RatFun::from(degree) + a0.clone();
-        coeffs[degree] = numerator / denominator;
+        let denominator = C::from_usize(degree).add(&a0);
+        coeffs[degree] = numerator.div(&denominator);
     }
     QSeries::from_coeffs(coeffs)
 }
 
 fn exp_scalar_z_series_local(exponent: &[RatFun]) -> Vec<RatFun> {
+    exp_scalar_z_series_coeff(exponent)
+}
+
+fn exp_scalar_z_series_coeff<C: Coeff>(exponent: &[C]) -> Vec<C> {
     let z_order = exponent.len().saturating_sub(1);
-    let mut out = vec![RatFun::zero(); z_order + 1];
-    out[0] = RatFun::one();
+    let mut out = vec![C::zero(); z_order + 1];
+    out[0] = C::one();
     for degree in 1..=z_order {
-        let mut total = RatFun::zero();
+        let mut total = C::zero();
         for part in 1..=degree {
             if exponent[part].is_zero() {
                 continue;
             }
-            total =
-                total + RatFun::from(part) * exponent[part].clone() * out[degree - part].clone();
+            let term = C::from_usize(part)
+                .mul(&exponent[part])
+                .mul(&out[degree - part]);
+            total = total.add(&term);
         }
-        out[degree] = total / RatFun::from(degree);
+        out[degree] = total.div(&C::from_usize(degree));
     }
     out
 }
@@ -4380,26 +4461,26 @@ fn bernoulli_number_local(n: usize) -> Rational {
     bernoulli[n].clone()
 }
 
-fn multiply_polynomial_by_linear_series(
-    poly: &[QSeries],
-    constant: &QSeries,
+fn multiply_polynomial_by_linear_series<C: Coeff>(
+    poly: &[QSeries<C>],
+    constant: &QSeries<C>,
     max_q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>> {
     multiply_polynomial_by_affine_h_series(
         poly,
         constant,
-        &QSeries::one(max_q_degree),
+        &QSeries::<C>::one(max_q_degree),
         max_q_degree,
     )
 }
 
-fn multiply_polynomial_by_affine_h_series(
-    poly: &[QSeries],
-    constant: &QSeries,
-    h_coeff: &QSeries,
+fn multiply_polynomial_by_affine_h_series<C: Coeff>(
+    poly: &[QSeries<C>],
+    constant: &QSeries<C>,
+    h_coeff: &QSeries<C>,
     max_q_degree: usize,
-) -> Vec<QSeries> {
-    let mut out = vec![QSeries::zero(max_q_degree); poly.len() + 1];
+) -> Vec<QSeries<C>> {
+    let mut out = vec![QSeries::<C>::zero(max_q_degree); poly.len() + 1];
     for (degree, coeff) in poly.iter().enumerate() {
         out[degree] = out[degree].add(&coeff.mul(constant));
         out[degree + 1] = out[degree + 1].add(&coeff.mul(h_coeff));
@@ -4601,6 +4682,7 @@ pub fn compute_negative_split_twisted(
     }
 
     let unstable_two_point = req.genus == 0 && req.insertions.len() == 2;
+    let primary_three_point = req.genus == 0 && genus_zero_three_primary_layout(&req.insertions);
     let raw = crate::givental::compute_semisimple_graph_value(
         &provider,
         req.genus,
@@ -4629,6 +4711,14 @@ pub fn compute_negative_split_twisted(
                     .to_string()
             } else {
                 "computed by the genus-zero two-point unstable S-matrix convention from the same early rational one-parameter lambda-line hypergeometric/Birkhoff calibration; no local oracle shortcut is used"
+                    .to_string()
+            }
+        } else if primary_three_point {
+            if req.equivariant {
+                "computed by the fiber-equivariant twisted genus-zero Frobenius quantum product from the same hypergeometric/Birkhoff calibration; base weights are early-specialized and fiber weights are symbolic mu_i"
+                    .to_string()
+            } else {
+                "computed by the twisted genus-zero Frobenius quantum product from the same early rational hypergeometric/Birkhoff calibration"
                     .to_string()
             }
         } else if req.equivariant {
@@ -4976,6 +5066,124 @@ fn genus_zero_two_point_s_matrix_pairing_coeff<C: Coeff>(
     Ok(paired.coeff(degree).cloned().unwrap_or_else(C::zero))
 }
 
+fn genus_zero_three_primary_layout(insertions: &[Insertion]) -> bool {
+    insertions.len() == 3
+        && insertions
+            .iter()
+            .all(|insertion| insertion.descendant_power == 0)
+}
+
+fn twisted_genus_zero_three_primary_value_coeff<C: Coeff>(
+    n: usize,
+    twist: &NegativeSplitBundleTwist,
+    degree: usize,
+    calibration_mode: &TwistedCalibrationMode,
+    base_weights: &[C],
+    fiber_weights: &[C],
+    insertions: &[Vec<QSeries<C>>],
+) -> Result<C, GwError> {
+    debug_assert_eq!(insertions.len(), 3);
+    let model = NegativeSplitLineHypergeometricModel::<C>::from_coeff_weights(
+        n,
+        twist.clone(),
+        degree,
+        1,
+        base_weights.to_vec(),
+        fiber_weights,
+    )?;
+    let descendant_s = model.birkhoff_descendant_s_matrix(1)?;
+    let classical_h = twisted_classical_h_multiplication_matrix_coeff(n, degree, base_weights)?;
+    let quantum_h =
+        twisted_quantum_multiplication_from_s_coeff(&descendant_s, &classical_h, calibration_mode)?;
+    let metric = twisted_inverse_euler_flat_metric_matrix_coeff(
+        n,
+        degree,
+        twist,
+        base_weights,
+        fiber_weights,
+    )?;
+    let product = quantum_product_vectors_coeff(&quantum_h, &insertions[0], &insertions[1], degree);
+    pair_vectors_coeff(&metric, &product, &insertions[2], degree)
+}
+
+fn quantum_product_vectors_coeff<C: Coeff>(
+    quantum_h: &SeriesMatrix<C>,
+    left: &[QSeries<C>],
+    right: &[QSeries<C>],
+    q_degree: usize,
+) -> Vec<QSeries<C>> {
+    let colors = quantum_h.rows();
+    debug_assert_eq!(left.len(), colors);
+    debug_assert_eq!(right.len(), colors);
+    let mut result = vec![QSeries::<C>::zero(q_degree); colors];
+    let mut h_power_right = right.to_vec();
+    for (power, left_coeff) in left.iter().enumerate() {
+        if !left_coeff.is_structurally_zero() {
+            for row in 0..colors {
+                result[row] = result[row].add(&h_power_right[row].mul(left_coeff));
+            }
+        }
+        if power + 1 < left.len() {
+            h_power_right =
+                apply_series_matrix_to_vector_coeff(quantum_h, &h_power_right, q_degree);
+        }
+    }
+    result
+}
+
+fn apply_series_matrix_to_vector_coeff<C: Coeff>(
+    matrix: &SeriesMatrix<C>,
+    vector: &[QSeries<C>],
+    q_degree: usize,
+) -> Vec<QSeries<C>> {
+    debug_assert_eq!(matrix.cols(), vector.len());
+    (0..matrix.rows())
+        .map(|row| {
+            let mut total = QSeries::<C>::zero(q_degree);
+            for (col, vector_coeff) in vector.iter().enumerate() {
+                if vector_coeff.is_structurally_zero()
+                    || matrix.entry(row, col).is_structurally_zero()
+                {
+                    continue;
+                }
+                total = total.add(&matrix.entry(row, col).mul(vector_coeff));
+            }
+            total
+        })
+        .collect()
+}
+
+fn pair_vectors_coeff<C: Coeff>(
+    metric: &SeriesMatrix<C>,
+    left: &[QSeries<C>],
+    right: &[QSeries<C>],
+    degree: usize,
+) -> Result<C, GwError> {
+    let colors = metric.rows();
+    debug_assert_eq!(metric.cols(), colors);
+    debug_assert_eq!(left.len(), colors);
+    debug_assert_eq!(right.len(), colors);
+    let mut paired = QSeries::<C>::zero(degree);
+    for (left_idx, left_coeff) in left.iter().enumerate() {
+        if left_coeff.is_structurally_zero() {
+            continue;
+        }
+        for (right_idx, right_coeff) in right.iter().enumerate() {
+            if right_coeff.is_structurally_zero()
+                || metric.entry(left_idx, right_idx).is_structurally_zero()
+            {
+                continue;
+            }
+            paired = paired.add(
+                &left_coeff
+                    .mul(metric.entry(left_idx, right_idx))
+                    .mul(right_coeff),
+            );
+        }
+    }
+    Ok(paired.coeff(degree).cloned().unwrap_or_else(C::zero))
+}
+
 fn twisted_default_base_weights(n: usize) -> Vec<Rational> {
     (0..=n).map(|idx| Rational::from(1usize << idx)).collect()
 }
@@ -5138,14 +5346,38 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         r_order: usize,
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
-        let ratfun_kernel = self
-            .inner
-            .graph_kernel(q_degree, r_order, graph_dimension)?;
-        let calibration = semisimple_calibration_to_factored(ratfun_kernel.calibration())?;
-        Ok(Arc::new(GiventalGraphKernel::from_calibration(
+        let profile_enabled = std::env::var_os("GW_PROFILE").is_some();
+        let started = std::time::Instant::now();
+        let base_weights = self.factored_base_weights();
+        let fiber_weights = self.factored_fiber_weights();
+        let calibration =
+            negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation(
+                self.inner.base.n,
+                &self.inner.twist,
+                q_degree,
+                r_order,
+                &base_weights,
+                &fiber_weights,
+                twisted_calibration_validation_from_env(),
+            )?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE factored_twisted_calibration={:.3}s",
+                started.elapsed().as_secs_f64()
+            );
+        }
+        let kernel_started = std::time::Instant::now();
+        let kernel = Arc::new(GiventalGraphKernel::from_calibration(
             calibration,
             graph_dimension,
-        )?))
+        )?);
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE factored_graph_kernel={:.3}s",
+                kernel_started.elapsed().as_secs_f64()
+            );
+        }
+        Ok(kernel)
     }
 
     fn coeff_insertion_vector(
@@ -5159,6 +5391,34 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
             .iter()
             .map(qseries_to_factored)
             .collect())
+    }
+
+    fn coeff_direct_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<FactoredRatFun>, GwError> {
+        if genus != 0 || !genus_zero_three_primary_layout(insertions) {
+            return Ok(None);
+        }
+        let base_weights = self.factored_base_weights();
+        let fiber_weights = self.factored_fiber_weights();
+        let insertion_vectors = insertions
+            .iter()
+            .map(|insertion| self.coeff_insertion_vector(insertion, degree))
+            .collect::<Result<Vec<_>, _>>()?;
+        twisted_genus_zero_three_primary_value_coeff(
+            self.inner.base.n,
+            &self.inner.twist,
+            degree,
+            &self.inner.calibration_mode,
+            &base_weights,
+            &fiber_weights,
+            &insertion_vectors,
+        )
+        .map(Some)
     }
 
     fn coeff_scalar_fallback_value(
@@ -5178,51 +5438,6 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
     }
 }
 
-fn semisimple_calibration_to_factored(
-    calibration: &SemisimpleCalibration,
-) -> Result<SemisimpleCalibration<FactoredRatFun>, GwError> {
-    Ok(SemisimpleCalibration {
-        r_matrix: series_r_matrix_to_factored(&calibration.r_matrix)?,
-        metric: series_matrix_to_factored(&calibration.metric),
-        psi: series_matrix_to_factored(&calibration.psi),
-        psi_inverse: series_matrix_to_factored(&calibration.psi_inverse),
-        connection: series_matrix_to_factored(&calibration.connection),
-        delta: calibration.delta.iter().map(qseries_to_factored).collect(),
-        inverse_delta: calibration
-            .inverse_delta
-            .iter()
-            .map(qseries_to_factored)
-            .collect(),
-        relative_sqrt_delta: calibration
-            .relative_sqrt_delta
-            .iter()
-            .map(qseries_to_factored)
-            .collect(),
-        relative_sqrt_delta_inverse: calibration
-            .relative_sqrt_delta_inverse
-            .iter()
-            .map(qseries_to_factored)
-            .collect(),
-    })
-}
-
-fn series_r_matrix_to_factored(
-    matrix: &SeriesRMatrix,
-) -> Result<SeriesRMatrix<FactoredRatFun>, GwError> {
-    SeriesRMatrix::from_coefficients(
-        matrix.size(),
-        matrix.q_degree(),
-        matrix.z_order(),
-        matrix
-            .coefficients()
-            .iter()
-            .map(series_matrix_to_factored)
-            .collect(),
-        matrix.calibration().clone(),
-        matrix.convention(),
-    )
-}
-
 #[cfg(test)]
 fn series_s_matrix_to_factored(
     matrix: &SeriesSMatrix,
@@ -5240,6 +5455,7 @@ fn series_s_matrix_to_factored(
     )
 }
 
+#[cfg(test)]
 fn series_matrix_to_factored(matrix: &SeriesMatrix) -> SeriesMatrix<FactoredRatFun> {
     SeriesMatrix::from_entries(
         matrix
@@ -5446,6 +5662,34 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError> {
         self.base.insertion_vector(insertion, q_degree)
+    }
+
+    fn direct_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        if genus != 0 || !genus_zero_three_primary_layout(insertions) {
+            return Ok(None);
+        }
+        let base_weights = self.ratfun_base_weights();
+        let fiber_weights = self.ratfun_fiber_weights();
+        let insertion_vectors = insertions
+            .iter()
+            .map(|insertion| self.insertion_vector(insertion, degree))
+            .collect::<Result<Vec<_>, _>>()?;
+        twisted_genus_zero_three_primary_value_coeff(
+            self.base.n,
+            &self.twist,
+            degree,
+            &self.calibration_mode,
+            &base_weights,
+            &fiber_weights,
+            &insertion_vectors,
+        )
+        .map(Some)
     }
 
     fn scalar_fallback_value(
@@ -6255,6 +6499,47 @@ mod tests {
         let result = compute_negative_split_twisted(&req).unwrap();
         assert_eq!(result.value, RatFun::from_rational(Rational::new(-1, 2)));
         assert!(result.notes[0].contains("two-point unstable S-matrix"));
+    }
+
+    #[test]
+    fn o_minus_one_p2_genus_zero_three_primary_uses_frobenius_product() {
+        let mut req = TwistedInvariantRequest::new(
+            2,
+            vec![1],
+            0,
+            1,
+            vec![
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 1)),
+            ],
+        )
+        .unwrap();
+        req.equivariant = true;
+
+        let result = compute_negative_split_twisted(&req).unwrap();
+        assert_eq!(result.value, RatFun::one());
+        assert!(result.notes[0].contains("Frobenius quantum product"));
+    }
+
+    #[test]
+    fn factored_o_minus_one_p2_three_primary_matches_expanded_product() {
+        let mut req = TwistedInvariantRequest::new(
+            2,
+            vec![1],
+            0,
+            1,
+            vec![
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 1)),
+            ],
+        )
+        .unwrap();
+        req.equivariant = true;
+
+        let factored = compute_negative_split_twisted_factored(&req).unwrap();
+        assert_eq!(factored.to_ratfun(), RatFun::one());
     }
 
     #[test]

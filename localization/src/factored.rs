@@ -85,7 +85,20 @@ impl FactoredRatFun {
         self.to_ratfun().is_zero()
     }
 
+    pub fn is_structurally_zero(&self) -> bool {
+        self.terms.is_empty()
+            || (self.terms.len() == 1
+                && self.terms.values().next().is_some_and(SparsePoly::is_zero))
+    }
+
     pub fn is_one(&self) -> bool {
+        if self.is_structurally_one() {
+            return true;
+        }
+        self.to_ratfun().is_one()
+    }
+
+    pub fn is_structurally_one(&self) -> bool {
         self.terms.len() == 1
             && self
                 .terms
@@ -236,6 +249,18 @@ impl Coeff for FactoredRatFun {
         self.is_zero()
     }
 
+    fn is_structurally_zero(&self) -> bool {
+        self.is_structurally_zero()
+    }
+
+    fn is_one(&self) -> bool {
+        self.is_one()
+    }
+
+    fn is_structurally_one(&self) -> bool {
+        self.is_structurally_one()
+    }
+
     fn neg(&self) -> Self {
         -self.clone()
     }
@@ -254,6 +279,14 @@ impl Coeff for FactoredRatFun {
 
     fn div(&self, rhs: &Self) -> Self {
         self / rhs
+    }
+
+    fn complexity_terms(&self) -> usize {
+        self.term_count()
+    }
+
+    fn complexity_denominator_factors(&self) -> usize {
+        self.total_denominator_factor_count()
     }
 }
 
@@ -305,7 +338,7 @@ impl<'a, 'b> Mul<&'b FactoredRatFun> for &'a FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn mul(self, rhs: &'b FactoredRatFun) -> Self::Output {
-        if self.is_zero() || rhs.is_zero() {
+        if self.is_structurally_zero() || rhs.is_structurally_zero() {
             return FactoredRatFun::zero();
         }
         let mut out = FactoredRatFun::zero();
@@ -487,6 +520,14 @@ mod tests {
         assert!(expr.is_zero());
         assert_eq!(expr.to_ratfun(), RatFun::zero());
         assert_eq!((&mu / &mu).to_string(), "1");
+    }
+
+    #[test]
+    fn quotient_with_matching_factor_is_one() {
+        let factor = mu_shift(1);
+        let quotient = FactoredRatFun::from_sparse_fraction(factor.clone(), factor);
+
+        assert!(quotient.is_one());
     }
 
     #[test]

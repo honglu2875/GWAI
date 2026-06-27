@@ -207,9 +207,21 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
         }
         let value = compute_negative_split_twisted_factored(&req)?;
         println!("{value}");
-        println!(
-            "note: computed by fiber-equivariant twisted S/R graph expansion using the factored rational coefficient engine"
-        );
+        if genus == 0
+            && req.insertions.len() == 3
+            && req
+                .insertions
+                .iter()
+                .all(|insertion| insertion.descendant_power == 0)
+        {
+            println!(
+                "note: computed by the fiber-equivariant twisted genus-zero Frobenius quantum product using the factored rational coefficient engine"
+            );
+        } else {
+            println!(
+                "note: computed by fiber-equivariant twisted S/R graph expansion using the factored rational coefficient engine"
+            );
+        }
         return Ok(());
     }
     let result = compute_negative_split_twisted(&req)?;

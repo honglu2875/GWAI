@@ -178,10 +178,11 @@ Notes:
   default output uses the expanded `RatFun` engine.
 - Add `--factored` with `--equivariant` to use the factored rational
   coefficient engine for the same fiber-equivariant target.  This keeps
-  denominator factors unexpanded during graph contraction.  The descendant
-  S-calibration is built natively in the factored engine; stable-graph
-  R/kernel construction still converts from the existing expanded calibration
-  data and is being replaced incrementally.
+  denominator factors unexpanded during symbolic coefficient arithmetic.  The
+  descendant S-calibration, Birkhoff/QRR R-calibration, and graph-kernel
+  construction are built natively in the factored engine.  Genus-zero
+  three-point primary requests use the equivalent Frobenius quantum product
+  directly instead of expanding the stable graph formula.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -441,14 +442,11 @@ computation shortcuts.
 
 ## TODO
 
-- Add a factored rational-function engine for full symbolic equivariant
-  negative split-bundle graph contractions.  A standalone factored coefficient
-  type now exists and keeps denominator factors unexpanded; the descendant
-  S-calibration, direct scalar contraction, and batched/external-leg
-  contraction layers can carry it.  The public twisted CLI has an explicit
-  `--equivariant --factored` mode.  Remaining work: finish native factored
-  R/calibration and graph-kernel construction instead of converting that part
-  from expanded `RatFun` data.
+- Continue improving the factored rational-function engine for full symbolic
+  equivariant negative split-bundle graph contractions.  The public twisted CLI
+  has an explicit `--equivariant --factored` mode with native factored S/R
+  calibration and graph kernels.  Remaining work: avoid dense canonical-leg
+  product blow-up in larger stable symbolic graph contractions.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.

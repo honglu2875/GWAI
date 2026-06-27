@@ -156,6 +156,15 @@ pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
     fn one() -> Self;
     fn from_rational(value: Rational) -> Self;
     fn is_zero(&self) -> bool;
+    fn is_structurally_zero(&self) -> bool {
+        self.is_zero()
+    }
+    fn is_one(&self) -> bool {
+        self == &Self::one()
+    }
+    fn is_structurally_one(&self) -> bool {
+        self.is_one()
+    }
     fn neg(&self) -> Self;
     fn add(&self, rhs: &Self) -> Self;
     fn sub(&self, rhs: &Self) -> Self;
@@ -172,6 +181,14 @@ pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
             out = out.mul(self);
         }
         out
+    }
+
+    fn complexity_terms(&self) -> usize {
+        usize::from(!self.is_structurally_zero())
+    }
+
+    fn complexity_denominator_factors(&self) -> usize {
+        0
     }
 }
 
