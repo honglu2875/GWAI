@@ -6654,6 +6654,89 @@ mod tests {
     }
 
     #[test]
+    fn fiber_equivariant_degree_one_top_terms_match_higher_projective_spaces() {
+        let cases = [
+            (
+                3,
+                vec![4],
+                vec![
+                    tau(0, CohomologyClass::h_power(3, 3)),
+                    tau(0, CohomologyClass::h_power(3, 3)),
+                    tau(0, CohomologyClass::h_power(3, 1)),
+                ],
+                {
+                    let mu = RatFun::variable("mu_0");
+                    &(&mu * &mu) * &mu
+                },
+            ),
+            (
+                3,
+                vec![2, 2],
+                vec![
+                    tau(0, CohomologyClass::h_power(3, 3)),
+                    tau(0, CohomologyClass::h_power(3, 3)),
+                    tau(0, CohomologyClass::h_power(3, 1)),
+                ],
+                {
+                    let mu0 = RatFun::variable("mu_0");
+                    let mu1 = RatFun::variable("mu_1");
+                    &mu0 * &mu1
+                },
+            ),
+        ];
+
+        for (n, twist, insertions, expected) in cases {
+            let untwisted =
+                crate::compute(crate::InvariantRequest::new(n, 0, 1, insertions.clone())).unwrap();
+            assert_eq!(untwisted.value, RatFun::one(), "untwisted P^{n}");
+
+            let nonequivariant =
+                TwistedInvariantRequest::new(n, twist.clone(), 0, 1, insertions).unwrap();
+            let local_constant_term = compute_negative_split_twisted(&nonequivariant).unwrap();
+            assert_eq!(
+                local_constant_term.value,
+                RatFun::zero(),
+                "constant term for P^{n}, twist {twist:?}"
+            );
+
+            let mut equivariant = nonequivariant;
+            equivariant.equivariant = true;
+            let value = compute_negative_split_twisted_factored(&equivariant).unwrap();
+            assert_eq!(value.to_ratfun(), expected, "top term for twist {twist:?}");
+        }
+    }
+
+    #[test]
+    fn fiber_equivariant_factored_constant_matches_local_limit() {
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(3, 2)),
+            tau(0, CohomologyClass::h_power(3, 1)),
+            tau(0, CohomologyClass::h_power(3, 1)),
+        ];
+        let nonequivariant =
+            TwistedInvariantRequest::new(3, vec![4], 0, 1, insertions.clone()).unwrap();
+        let local = compute_negative_split_twisted(&nonequivariant).unwrap();
+        assert_eq!(local.value, RatFun::from_rational(Rational::from(-40)));
+
+        let ordinary =
+            crate::compute(crate::InvariantRequest::new(3, 0, 1, insertions.clone())).unwrap();
+        assert_eq!(ordinary.value, RatFun::zero());
+
+        let mut equivariant = TwistedInvariantRequest::new(3, vec![4], 0, 1, insertions).unwrap();
+        equivariant.equivariant = true;
+        let factored = compute_negative_split_twisted_factored(&equivariant).unwrap();
+        for weight in [0usize, 1, 2, 5] {
+            let mut values = BTreeMap::new();
+            values.insert("mu_0".to_string(), Rational::from(weight));
+            assert_eq!(
+                factored.evaluate_variables(&values).unwrap(),
+                Rational::from(-40),
+                "fiber weight mu_0={weight}"
+            );
+        }
+    }
+
+    #[test]
     fn early_rational_twisted_graph_value_matches_lambda_line_limit() {
         let provider = TwistedProjectiveSpaceProvider::new(1, vec![1, 1], false).unwrap();
         let raw =

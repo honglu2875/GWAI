@@ -224,6 +224,52 @@ terms match the corresponding non-equivariant local dimension check, while the
 top fiber-weight coefficients match the ordinary untwisted degree-one line
 count in `P^2`.
 
+The same top-term check works in higher projective dimension:
+
+```bash
+cargo run --quiet -- twisted --n 3 --twist -4 --g 0 --d 1 \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H)' \
+  --equivariant
+
+cargo run --quiet -- twisted --n 3 --twist -2,-2 --g 0 --d 1 \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+These print `mu_0^3` and `mu_0*mu_1`.  For a local-dimension constant-term
+check, this command prints a factored expression that evaluates to `-40` for
+generic `mu_0` and specializes to the same value as the non-equivariant twisted
+path:
+
+```bash
+cargo run --quiet -- twisted --n 3 --twist -4 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+Genus-one and degree-two symbolic fiber-equivariant contractions are currently
+useful stress tests rather than default quick checks.  For example, the
+comparison values are already available from the familiar paths:
+
+```bash
+cargo run --quiet -- compute --n 2 --g 1 --d 1 --insert 'tau3(H)' --mode givental
+cargo run --quiet -- compute --n 2 --g 0 --d 2 \
+  --insert 'tau4(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(1)' \
+  --mode givental
+```
+
+They return `1/8` and `1/2`.  The corresponding fiber-equivariant top terms
+should have those coefficients after the appropriate obstruction-weight power,
+but the full symbolic contractions are still part of the performance frontier.
+
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
