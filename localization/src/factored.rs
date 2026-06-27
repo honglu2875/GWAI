@@ -463,4 +463,32 @@ mod tests {
             .mul(&crate::series::QSeries::constant(coeff, 2));
         assert_eq!(series.coeff(0).unwrap().max_denominator_factor_count(), 2);
     }
+
+    #[test]
+    fn semisimple_calibration_can_use_factored_coefficients() {
+        let q_degree = 1;
+        let z_order = 1;
+        let size = 1;
+        let matrix = crate::series::SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
+        let scalar = crate::series::QSeries::<FactoredRatFun>::one(q_degree);
+        let calibration = crate::givental::SemisimpleCalibration {
+            r_matrix: crate::givental::SeriesRMatrix::identity(
+                size,
+                q_degree,
+                z_order,
+                crate::givental::CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+            ),
+            metric: matrix.clone(),
+            psi: matrix.clone(),
+            psi_inverse: matrix.clone(),
+            connection: matrix,
+            delta: vec![scalar.clone()],
+            inverse_delta: vec![scalar.clone()],
+            relative_sqrt_delta: vec![scalar.clone()],
+            relative_sqrt_delta_inverse: vec![scalar],
+        };
+
+        assert_eq!(calibration.r_matrix.size(), size);
+        assert_eq!(calibration.r_matrix.q_degree(), q_degree);
+    }
 }
