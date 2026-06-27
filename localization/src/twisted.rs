@@ -349,48 +349,11 @@ fn h_basis_powers_mod_relation(
     max_h_power: usize,
     h_power_relation: &[Rational],
 ) -> Vec<Vec<Rational>> {
-    let mut powers = vec![vec![Rational::zero(); max_h_power + 1]; 2 * max_h_power + 1];
-    powers[0][0] = Rational::one();
-    for power in 1..=2 * max_h_power {
-        for h_power in 0..max_h_power {
-            powers[power][h_power + 1] =
-                powers[power][h_power + 1].clone() + powers[power - 1][h_power].clone();
-        }
-        let top_coeff = powers[power - 1][max_h_power].clone();
-        if !top_coeff.is_zero() {
-            for (reduced_h, relation_coeff) in h_power_relation.iter().enumerate() {
-                powers[power][reduced_h] =
-                    powers[power][reduced_h].clone() + top_coeff.clone() * relation_coeff.clone();
-            }
-        }
-    }
-    powers
+    h_basis_powers_mod_relation_coeff(max_h_power, h_power_relation)
 }
 
 fn base_h_power_relation(n: usize, base_weights: &[Rational]) -> Result<Vec<Rational>, GwError> {
-    if base_weights.len() != n + 1 {
-        return Err(GwError::AlgebraFailure(format!(
-            "expected {} base weights, got {}",
-            n + 1,
-            base_weights.len()
-        )));
-    }
-    let mut coefficients = vec![Rational::one()];
-    for weight in base_weights {
-        let mut next = vec![Rational::zero(); coefficients.len() + 1];
-        for (power, coeff) in coefficients.iter().enumerate() {
-            next[power] = next[power].clone() - coeff.clone() * weight.clone();
-            next[power + 1] = next[power + 1].clone() + coeff.clone();
-        }
-        coefficients = next;
-    }
-    let leading = coefficients[n + 1].clone();
-    if leading.is_zero() {
-        return Err(GwError::NonSemisimplePoint);
-    }
-    Ok((0..=n)
-        .map(|power| -coefficients[power].clone() / leading.clone())
-        .collect())
+    base_h_power_relation_coeff(n, base_weights)
 }
 
 fn h_affine_power_mod_relation(
@@ -400,32 +363,7 @@ fn h_affine_power_mod_relation(
     exponent: usize,
     h_power_relation: &[Rational],
 ) -> Vec<Rational> {
-    let mut out = vec![Rational::zero(); max_h_power + 1];
-    out[0] = Rational::one();
-    for _ in 0..exponent {
-        let mut next = vec![Rational::zero(); max_h_power + 1];
-        for h_power in 0..=max_h_power {
-            if out[h_power].is_zero() {
-                continue;
-            }
-            if !constant.is_zero() {
-                next[h_power] = next[h_power].clone() + out[h_power].clone() * constant.clone();
-            }
-            if !h_coeff.is_zero() {
-                if h_power < max_h_power {
-                    next[h_power + 1] =
-                        next[h_power + 1].clone() + out[h_power].clone() * h_coeff.clone();
-                } else {
-                    for (reduced_h, relation_coeff) in h_power_relation.iter().enumerate() {
-                        next[reduced_h] = next[reduced_h].clone()
-                            + out[h_power].clone() * h_coeff.clone() * relation_coeff.clone();
-                    }
-                }
-            }
-        }
-        out = next;
-    }
-    out
+    h_affine_power_mod_relation_coeff(max_h_power, h_coeff, constant, exponent, h_power_relation)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3504,13 +3442,7 @@ fn twisted_fiber_euler_at_fixed_point(
     fiber_weights: &[Rational],
     lambda: &Rational,
 ) -> Rational {
-    twist
-        .degrees()
-        .iter()
-        .zip(fiber_weights)
-        .fold(Rational::one(), |acc, (degree, weight)| {
-            acc * (weight.clone() - Rational::from(*degree) * lambda.clone())
-        })
+    twisted_fiber_euler_at_fixed_point_coeff(twist, fiber_weights, lambda)
 }
 
 fn twisted_fiber_euler_at_fixed_point_coeff<C: Coeff>(
