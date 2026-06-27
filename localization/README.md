@@ -430,9 +430,11 @@ computation shortcuts.
 
 - Add a factored rational-function engine for full symbolic equivariant
   negative split-bundle graph contractions.  A standalone factored coefficient
-  type now exists and keeps denominator factors unexpanded; the next step is
-  threading it through the symbolic twisted graph kernel instead of converting
-  back to expanded `RatFun`.
+  type now exists and keeps denominator factors unexpanded, and the R/S
+  calibration plus graph-kernel construction layers can carry it.  The
+  remaining work is a factored contraction/evaluation path for symbolic
+  twisted graph sums, instead of converting graph contributions back to
+  expanded `RatFun`.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.
