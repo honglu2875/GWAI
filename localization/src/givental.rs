@@ -3130,6 +3130,7 @@ fn evaluate_scalar_graph_chunk(
             let mut graph_total = QSeries::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
             accumulate_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3151,7 +3152,7 @@ fn evaluate_scalar_graph_chunk(
                 &mut profile,
             );
 
-            total = total.add(&graph_total.scale(&coloring.factor));
+            total = total.add(&graph_total.scale(&coloring_factor));
         }
     }
     ScalarGraphChunkResult {
@@ -3308,9 +3309,7 @@ fn evaluate_rational_no_insertion_graph_chunk(
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
         for coloring in prepared.colorings.iter() {
-            let Some(coloring_factor) = coloring.factor.as_rational() else {
-                continue;
-            };
+            let coloring_factor = coloring.factor.clone();
             let mut graph_total = RationalQSeries::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
@@ -3640,6 +3639,7 @@ fn evaluate_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_states = Vec::with_capacity(markings);
+            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
             accumulate_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3652,7 +3652,7 @@ fn evaluate_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring.factor),
+                QSeries::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3752,6 +3752,7 @@ fn evaluate_restricted_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_state_indices = Vec::with_capacity(template.markings);
+            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
             accumulate_restricted_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3764,7 +3765,7 @@ fn evaluate_restricted_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring.factor),
+                QSeries::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -5130,7 +5131,7 @@ struct ColoringOrbit {
 #[derive(Debug, Clone)]
 struct PreparedColoringOrbit {
     colors: Vec<usize>,
-    factor: RatFun,
+    factor: Rational,
 }
 
 #[derive(Debug, Clone)]
@@ -5159,12 +5160,13 @@ fn prepared_stable_graphs(
     let graphs = stable_graphs(genus, markings)
         .into_iter()
         .map(|graph| {
-            let automorphism_factor = &RatFun::one() / &RatFun::from(graph.automorphism_order());
+            let automorphism_factor =
+                Rational::one() / Rational::from(graph.automorphism_order());
             let colorings = vertex_coloring_orbits(&graph, colors)
                 .iter()
                 .map(|orbit| PreparedColoringOrbit {
                     colors: orbit.colors.clone(),
-                    factor: &automorphism_factor * &RatFun::from(orbit.multiplicity),
+                    factor: automorphism_factor.clone() * Rational::from(orbit.multiplicity),
                 })
                 .collect::<Vec<_>>();
             let vertex_power_caps = graph
@@ -5790,14 +5792,14 @@ mod tests {
             }
 
             let automorphism_factor =
-                &RatFun::one() / &RatFun::from(prepared.graph.automorphism_order());
+                Rational::one() / Rational::from(prepared.graph.automorphism_order());
             for (prepared_coloring, raw_coloring) in
                 prepared.colorings.iter().zip(raw_colorings.iter())
             {
                 assert_eq!(prepared_coloring.colors, raw_coloring.colors);
                 assert_eq!(
                     prepared_coloring.factor,
-                    &automorphism_factor * &RatFun::from(raw_coloring.multiplicity)
+                    automorphism_factor.clone() * Rational::from(raw_coloring.multiplicity)
                 );
             }
         }
