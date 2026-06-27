@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+const SCALAR_DISPLAY_EXPANSION_TERM_LIMIT: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoredRatFun {
     terms: BTreeMap<Vec<SparsePoly>, SparsePoly>,
@@ -74,7 +76,13 @@ impl FactoredRatFun {
     }
 
     pub fn is_zero(&self) -> bool {
-        self.terms.is_empty()
+        if self.terms.is_empty() {
+            return true;
+        }
+        if self.terms.len() == 1 {
+            return self.terms.values().next().is_some_and(SparsePoly::is_zero);
+        }
+        self.to_ratfun().is_zero()
     }
 
     pub fn is_one(&self) -> bool {
@@ -114,11 +122,20 @@ impl FactoredRatFun {
         let mut total = Rational::zero();
         for (factors, numerator) in &self.terms {
             if !factors.is_empty() {
-                return None;
+                return self
+                    .can_expand_for_scalar_display()
+                    .then(|| self.to_ratfun().as_rational())
+                    .flatten();
             }
             total += numerator.constant_term()?;
         }
         Some(total)
+    }
+
+    fn can_expand_for_scalar_display(&self) -> bool {
+        self.terms.len() <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
+            && self.expanded_denominator_term_count_upper_bound()
+                <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
@@ -381,6 +398,9 @@ impl fmt::Display for FactoredRatFun {
         if self.terms.is_empty() {
             return write!(f, "0");
         }
+        if let Some(value) = self.as_rational() {
+            return write!(f, "{value}");
+        }
         let mut first = true;
         for (factors, numerator) in &self.terms {
             if !first {
@@ -395,7 +415,11 @@ impl fmt::Display for FactoredRatFun {
                     if idx > 0 {
                         write!(f, " * ")?;
                     }
-                    write!(f, "{factor}")?;
+                    if factor.term_count() > 1 {
+                        write!(f, "({factor})")?;
+                    } else {
+                        write!(f, "{factor}")?;
+                    }
                 }
                 write!(f, ")")?;
             }
@@ -453,6 +477,16 @@ mod tests {
             expanded.evaluate_variables(&values).unwrap()
         );
         assert_eq!(factored.to_ratfun(), expanded);
+    }
+
+    #[test]
+    fn cross_denominator_cancellation_is_zero() {
+        let mu = FactoredRatFun::variable("mu_0");
+        let expr = &(&mu / &mu) - &FactoredRatFun::one();
+
+        assert!(expr.is_zero());
+        assert_eq!(expr.to_ratfun(), RatFun::zero());
+        assert_eq!((&mu / &mu).to_string(), "1");
     }
 
     #[test]

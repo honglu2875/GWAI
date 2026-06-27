@@ -178,9 +178,10 @@ Notes:
   default output uses the expanded `RatFun` engine.
 - Add `--factored` with `--equivariant` to use the factored rational
   coefficient engine for the same fiber-equivariant target.  This keeps
-  denominator factors unexpanded during graph contraction; current calibration
-  construction still enters through the existing expanded data and is being
-  replaced incrementally.
+  denominator factors unexpanded during graph contraction.  The descendant
+  S-calibration is built natively in the factored engine; stable-graph
+  R/kernel construction still converts from the existing expanded calibration
+  data and is being replaced incrementally.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -442,12 +443,12 @@ computation shortcuts.
 
 - Add a factored rational-function engine for full symbolic equivariant
   negative split-bundle graph contractions.  A standalone factored coefficient
-  type now exists and keeps denominator factors unexpanded, and the R/S
-  calibration, graph-kernel construction, direct scalar contraction, and
-  batched/external-leg contraction layers can carry it.  The public twisted
-  CLI has an explicit `--equivariant --factored` mode; the remaining work is
-  replacing the upstream symbolic twisted calibration builders with native
-  factored arithmetic instead of first constructing expanded `RatFun` data.
+  type now exists and keeps denominator factors unexpanded; the descendant
+  S-calibration, direct scalar contraction, and batched/external-leg
+  contraction layers can carry it.  The public twisted CLI has an explicit
+  `--equivariant --factored` mode.  Remaining work: finish native factored
+  R/calibration and graph-kernel construction instead of converting that part
+  from expanded `RatFun` data.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.
