@@ -4669,16 +4669,18 @@ pub fn compute_negative_split_twisted(
     } else {
         TwistedProjectiveSpaceProvider::new(req.n, req.twist.degrees().to_vec(), false)?
     };
-    if let Some((virtual_dimension, total_degree)) =
-        twisted_dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
-    {
-        return Ok(InvariantResult {
-            value: RatFun::zero(),
-            engine: "twisted-negative-split-dimension",
-            notes: vec![format!(
-                "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
-            )],
-        });
+    if !req.equivariant {
+        if let Some((virtual_dimension, total_degree)) =
+            twisted_dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
+        {
+            return Ok(InvariantResult {
+                value: RatFun::zero(),
+                engine: "twisted-negative-split-dimension",
+                notes: vec![format!(
+                    "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
+                )],
+            });
+        }
     }
 
     let unstable_two_point = req.genus == 0 && req.insertions.len() == 2;
@@ -4751,12 +4753,6 @@ pub fn compute_negative_split_twisted_factored(
         req.n,
         req.twist.degrees().to_vec(),
     )?;
-    if twisted_dimension_mismatch(provider.inner(), req.genus, req.degree, &req.insertions)
-        .is_some()
-    {
-        return Ok(FactoredRatFun::zero());
-    }
-
     compute_semisimple_graph_value_with_coeff::<FactoredRatFun, _>(
         &provider,
         req.genus,
@@ -5504,6 +5500,9 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
+        if self.line_mode == TwistedLineMode::FiberEquivariant {
+            return None;
+        }
         let insertion_degree = self.insertion_degree(insertions)? as isize;
         let constant_dimension = (1 - genus as isize)
             * (self.twist.total_space_dimension(self.base.n) as isize - 3)
@@ -5525,6 +5524,9 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         degree_max: usize,
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
+        if self.line_mode == TwistedLineMode::FiberEquivariant {
+            return (0..=degree_max).collect();
+        }
         self.twist.candidate_degrees(
             self.base.n,
             genus,
@@ -6540,6 +6542,43 @@ mod tests {
 
         let factored = compute_negative_split_twisted_factored(&req).unwrap();
         assert_eq!(factored.to_ratfun(), RatFun::one());
+    }
+
+    #[test]
+    fn fiber_equivariant_twisted_does_not_prune_dimension_mismatch() {
+        let mut req = TwistedInvariantRequest::new(
+            2,
+            vec![1],
+            0,
+            1,
+            vec![
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+            ],
+        )
+        .unwrap();
+        let expected = Rational::from(14usize);
+        let mut fiber_values = BTreeMap::new();
+        fiber_values.insert("mu_0".to_string(), Rational::from(7usize));
+
+        let nonequivariant = compute_negative_split_twisted(&req).unwrap();
+        assert_eq!(nonequivariant.value, RatFun::zero());
+        assert_eq!(nonequivariant.engine, "twisted-negative-split-dimension");
+
+        req.equivariant = true;
+        let expanded = compute_negative_split_twisted(&req).unwrap();
+        assert_eq!(
+            expanded.value.evaluate_variables(&fiber_values).unwrap(),
+            expected
+        );
+        assert!(expanded.notes[0].contains("Frobenius quantum product"));
+
+        let factored = compute_negative_split_twisted_factored(&req).unwrap();
+        assert_eq!(
+            factored.evaluate_variables(&fiber_values).unwrap(),
+            expected
+        );
     }
 
     #[test]
