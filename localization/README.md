@@ -173,15 +173,12 @@ Notes:
 
 - The current public twisted path computes non-equivariant negative split
   twists through an early rational lambda-line specialization.
-- `--equivariant` on a twisted command uses early-specialized base weights and
-  keeps one symbolic fiber parameter `mu_i` for each summand `O(-a_i)`.  The
-  default output uses the expanded `RatFun` engine.
-- `--factored` is accepted only together with `--equivariant`.  It uses a
-  factored rational coefficient engine for the same fiber-equivariant target,
-  keeping denominator factors unexpanded during symbolic coefficient
-  arithmetic.  It is not strictly better than expanded output: factored output
-  can be much smaller for symbolic denominators, while expanded `RatFun` output
-  can simplify better in small cases and remains useful for validation.
+- `--equivariant` on a twisted command keeps one symbolic fiber parameter
+  `mu_i` for each summand `O(-a_i)`.  The CLI uses the factored rational
+  coefficient engine by default in this mode because expanded symbolic output
+  can be much slower even in small examples.  `--factored` is still accepted
+  with `--equivariant` as an explicit spelling of the default behavior, and is
+  rejected without `--equivariant`.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -192,14 +189,13 @@ cargo run --quiet -- formula --n 2 --twist -3 --g 2 --markings 1 \
   --equivariant
 ```
 
-For factored symbolic fiber-equivariant invariant output:
+For symbolic fiber-equivariant invariant output:
 
 ```bash
 cargo run --quiet -- twisted --n 2 --twist -1 --g 0 --d 1 \
   --insert 'tau1(H^2)' \
   --insert 'tau0(H)' \
-  --equivariant \
-  --factored
+  --equivariant
 ```
 
 ## `formula`
@@ -441,11 +437,11 @@ computation shortcuts.
 
 ## TODO
 
-- Continue improving the optional factored rational-function engine for full
-  symbolic equivariant negative split-bundle graph contractions.  It is exposed
-  only as `--equivariant --factored`; non-equivariant computations use the
-  ordinary rational engine.  Remaining work: avoid dense canonical-leg product
-  blow-up in larger stable symbolic graph contractions.
+- Continue improving the factored rational-function engine for full symbolic
+  equivariant negative split-bundle graph contractions.  It is the default for
+  `twisted --equivariant`; non-equivariant computations use the ordinary
+  rational engine.  Remaining work: avoid dense canonical-leg product blow-up
+  in larger stable symbolic graph contractions.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.
