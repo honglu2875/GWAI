@@ -179,6 +179,11 @@ Notes:
   can be much slower even in small examples.  `--factored` is still accepted
   with `--equivariant` as an explicit spelling of the default behavior, and is
   rejected without `--equivariant`.
+- In this fiber-equivariant mode the base `P^n` weights are still taken to the
+  non-equivariant limit.  With ordinary non-equivariant insertions, the result
+  often collapses to a finite polynomial in the `mu_i`; the factored engine is
+  primarily a faster and safer evaluation strategy for these symbolic fiber
+  weights, not a separate enumerative theory.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -197,6 +202,27 @@ cargo run --quiet -- twisted --n 2 --twist -1 --g 0 --d 1 \
   --insert 'tau0(H)' \
   --equivariant
 ```
+
+Two quick equivariant obstruction-polynomial checks over `P^2`:
+
+```bash
+cargo run --quiet -- twisted --n 2 --twist -3 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant
+
+cargo run --quiet -- twisted --n 2 --twist -2,-2 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+These print `mu_0^2` and `mu_0*mu_1`, respectively.  Their `mu_i=0` constant
+terms match the corresponding non-equivariant local dimension check, while the
+top fiber-weight coefficients match the ordinary untwisted degree-one line
+count in `P^2`.
 
 ## `formula`
 

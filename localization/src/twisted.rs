@@ -6603,6 +6603,57 @@ mod tests {
     }
 
     #[test]
+    fn fiber_equivariant_degree_one_top_terms_match_untwisted_p2() {
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+        ];
+        let untwisted =
+            crate::compute(crate::InvariantRequest::new(2, 0, 1, insertions.clone())).unwrap();
+        assert_eq!(untwisted.value, RatFun::one());
+
+        let cases = [
+            (vec![2], RatFun::variable("mu_0")),
+            {
+                let mu = RatFun::variable("mu_0");
+                (vec![3], &mu * &mu)
+            },
+            {
+                let mu0 = RatFun::variable("mu_0");
+                let mu1 = RatFun::variable("mu_1");
+                (vec![2, 2], &mu0 * &mu1)
+            },
+        ];
+
+        for (twist, expected) in cases {
+            let nonequivariant =
+                TwistedInvariantRequest::new(2, twist.clone(), 0, 1, insertions.clone()).unwrap();
+            let local_constant_term = compute_negative_split_twisted(&nonequivariant).unwrap();
+            assert_eq!(
+                local_constant_term.value,
+                RatFun::zero(),
+                "constant term for twist {twist:?}"
+            );
+
+            let mut equivariant = nonequivariant;
+            equivariant.equivariant = true;
+            let value = compute_negative_split_twisted_factored(&equivariant).unwrap();
+            let mut zero_fiber_weights = BTreeMap::new();
+            for idx in 0..twist.len() {
+                zero_fiber_weights.insert(format!("mu_{idx}"), Rational::zero());
+            }
+
+            assert_eq!(value.to_ratfun(), expected, "top term for twist {twist:?}");
+            assert_eq!(
+                value.evaluate_variables(&zero_fiber_weights).unwrap(),
+                Rational::zero(),
+                "constant term by mu=0 for twist {twist:?}"
+            );
+        }
+    }
+
+    #[test]
     fn early_rational_twisted_graph_value_matches_lambda_line_limit() {
         let provider = TwistedProjectiveSpaceProvider::new(1, vec![1, 1], false).unwrap();
         let raw =
