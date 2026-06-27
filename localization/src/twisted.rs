@@ -29,7 +29,10 @@ use crate::givental::{
     SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix,
 };
 use crate::resolvent::{ResolventRequest, ResolventResult};
-use crate::series::{integrate_q_derivative_zero_constant_matrix, QSeries, SeriesMatrix};
+use crate::series::{
+    compose_plain_series, integrate_q_derivative_zero_constant_matrix, invert_mirror_map,
+    mul_plain_series, QSeries, SeriesMatrix,
+};
 use crate::{Insertion, InvariantResult, Truncation};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1262,7 +1265,7 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
     }
 
     fn inverse_mirror_map_coefficients(&self) -> Result<Vec<C>, GwError> {
-        Ok(invert_mirror_map_coeff(
+        Ok(invert_mirror_map(
             &self.mirror_map_coefficients()?,
             self.q_degree,
         ))
@@ -1486,165 +1489,6 @@ fn birkhoff_descendant_s_matrix_from_fundamental_coeff<C: Coeff>(
     let (_, s_factor) = birkhoff_factor_by_q_degree(size, q_degree, fundamental)?;
     let coefficients = negative_factor_to_s_coefficients(size, q_degree, z_order, &s_factor);
     SeriesSMatrix::from_coefficients(size, q_degree, z_order, coefficients, calibration)
-}
-
-fn invert_mirror_map(mirror: &[Rational], q_degree: usize) -> Vec<Rational> {
-    let exp_mirror = exp_series(mirror, q_degree);
-    let mut q_of_q = vec![Rational::zero(); q_degree + 1];
-    if q_degree >= 1 {
-        q_of_q[1] = Rational::one();
-    }
-    let target = mul_plain_series(&q_of_q, &exp_mirror, q_degree);
-    invert_series_with_linear_term_one(&target, q_degree)
-}
-
-fn invert_mirror_map_coeff<C: Coeff>(mirror: &[C], q_degree: usize) -> Vec<C> {
-    let exp_mirror = exp_series_coeff(mirror, q_degree);
-    let mut q_of_q = vec![C::zero(); q_degree + 1];
-    if q_degree >= 1 {
-        q_of_q[1] = C::one();
-    }
-    let target = mul_plain_series_coeff(&q_of_q, &exp_mirror, q_degree);
-    invert_series_with_linear_term_one_coeff(&target, q_degree)
-}
-
-fn exp_series(series: &[Rational], max_degree: usize) -> Vec<Rational> {
-    let mut out = vec![Rational::zero(); max_degree + 1];
-    out[0] = Rational::one();
-    for degree in 1..=max_degree {
-        let mut sum = Rational::zero();
-        for split in 1..=degree {
-            let coeff = series.get(split).cloned().unwrap_or_else(Rational::zero);
-            sum += Rational::from(split) * coeff * out[degree - split].clone();
-        }
-        out[degree] = sum / Rational::from(degree);
-    }
-    out
-}
-
-fn exp_series_coeff<C: Coeff>(series: &[C], max_degree: usize) -> Vec<C> {
-    let mut out = vec![C::zero(); max_degree + 1];
-    out[0] = C::one();
-    for degree in 1..=max_degree {
-        let mut sum = C::zero();
-        for split in 1..=degree {
-            let coeff = series.get(split).cloned().unwrap_or_else(C::zero);
-            let term = C::from_usize(split).mul(&coeff).mul(&out[degree - split]);
-            sum = sum.add(&term);
-        }
-        out[degree] = sum.div(&C::from_usize(degree));
-    }
-    out
-}
-
-fn invert_series_with_linear_term_one(series: &[Rational], max_degree: usize) -> Vec<Rational> {
-    assert_eq!(series.first(), Some(&Rational::zero()));
-    assert_eq!(series.get(1), Some(&Rational::one()));
-    let mut inverse = vec![Rational::zero(); max_degree + 1];
-    if max_degree >= 1 {
-        inverse[1] = Rational::one();
-    }
-    for degree in 2..=max_degree {
-        let mut trial = inverse.clone();
-        trial[degree] = Rational::one();
-        let contribution = compose_plain_series(series, &trial, max_degree)[degree].clone();
-        let mut baseline = inverse.clone();
-        baseline[degree] = Rational::zero();
-        let current = compose_plain_series(series, &baseline, max_degree)[degree].clone();
-        let sensitivity = contribution - current.clone();
-        inverse[degree] = -current / sensitivity;
-    }
-    inverse
-}
-
-fn invert_series_with_linear_term_one_coeff<C: Coeff>(series: &[C], max_degree: usize) -> Vec<C> {
-    assert_eq!(series.first(), Some(&C::zero()));
-    assert_eq!(series.get(1), Some(&C::one()));
-    let mut inverse = vec![C::zero(); max_degree + 1];
-    if max_degree >= 1 {
-        inverse[1] = C::one();
-    }
-    for degree in 2..=max_degree {
-        let mut trial = inverse.clone();
-        trial[degree] = C::one();
-        let contribution = compose_plain_series_coeff(series, &trial, max_degree)[degree].clone();
-        let mut baseline = inverse.clone();
-        baseline[degree] = C::zero();
-        let current = compose_plain_series_coeff(series, &baseline, max_degree)[degree].clone();
-        let sensitivity = contribution.sub(&current);
-        inverse[degree] = current.neg().div(&sensitivity);
-    }
-    inverse
-}
-
-fn compose_plain_series(
-    series: &[Rational],
-    input: &[Rational],
-    max_degree: usize,
-) -> Vec<Rational> {
-    let mut out = vec![Rational::zero(); max_degree + 1];
-    let mut power = vec![Rational::zero(); max_degree + 1];
-    power[0] = Rational::one();
-    for degree in 0..=max_degree {
-        let coefficient = series.get(degree).cloned().unwrap_or_else(Rational::zero);
-        if !coefficient.is_zero() {
-            for idx in 0..=max_degree {
-                out[idx] += coefficient.clone() * power[idx].clone();
-            }
-        }
-        power = mul_plain_series(&power, input, max_degree);
-    }
-    out
-}
-
-fn compose_plain_series_coeff<C: Coeff>(series: &[C], input: &[C], max_degree: usize) -> Vec<C> {
-    let mut out = vec![C::zero(); max_degree + 1];
-    let mut power = vec![C::zero(); max_degree + 1];
-    power[0] = C::one();
-    for degree in 0..=max_degree {
-        let coefficient = series.get(degree).cloned().unwrap_or_else(C::zero);
-        if !coefficient.is_zero() {
-            for idx in 0..=max_degree {
-                out[idx] = out[idx].add(&coefficient.mul(&power[idx]));
-            }
-        }
-        power = mul_plain_series_coeff(&power, input, max_degree);
-    }
-    out
-}
-
-fn mul_plain_series(left: &[Rational], right: &[Rational], max_degree: usize) -> Vec<Rational> {
-    let mut out = vec![Rational::zero(); max_degree + 1];
-    for left_degree in 0..=max_degree {
-        if left[left_degree].is_zero() {
-            continue;
-        }
-        for right_degree in 0..=max_degree - left_degree {
-            if right[right_degree].is_zero() {
-                continue;
-            }
-            out[left_degree + right_degree] +=
-                left[left_degree].clone() * right[right_degree].clone();
-        }
-    }
-    out
-}
-
-fn mul_plain_series_coeff<C: Coeff>(left: &[C], right: &[C], max_degree: usize) -> Vec<C> {
-    let mut out = vec![C::zero(); max_degree + 1];
-    for left_degree in 0..=max_degree {
-        if left[left_degree].is_zero() {
-            continue;
-        }
-        for right_degree in 0..=max_degree - left_degree {
-            if right[right_degree].is_zero() {
-                continue;
-            }
-            out[left_degree + right_degree] =
-                out[left_degree + right_degree].add(&left[left_degree].mul(&right[right_degree]));
-        }
-    }
-    out
 }
 
 fn exp_minus_h_mirror_over_z_coefficients(
@@ -1885,7 +1729,7 @@ fn compose_h_laurent_q_series_coeff<C: Coeff>(
             let term = series[source_degree].scale(power[target_degree].clone());
             out[target_degree] = out[target_degree].add(&term);
         }
-        power = mul_plain_series_coeff(&power, input, max_degree);
+        power = mul_plain_series(&power, input, max_degree);
     }
     out
 }

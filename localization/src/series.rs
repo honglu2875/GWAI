@@ -471,6 +471,105 @@ pub(crate) fn integrate_q_derivative_zero_constant_matrix(
     ))
 }
 
+// --- Generic formal power-series utilities over coefficient lists `Vec<C>` ---
+//
+// These are theory-agnostic operations on truncated power series represented as
+// coefficient vectors indexed by degree. They are generic over any [`Coeff`] and
+// are shared by the calibration paths.
+
+/// Formal exponential of a power series, assuming a zero constant term in the
+/// exponent (so the result has constant term one).
+pub(crate) fn exp_series<C: Coeff>(series: &[C], max_degree: usize) -> Vec<C> {
+    let mut out = vec![C::zero(); max_degree + 1];
+    out[0] = C::one();
+    for degree in 1..=max_degree {
+        let mut sum = C::zero();
+        for split in 1..=degree {
+            let coeff = series.get(split).cloned().unwrap_or_else(C::zero);
+            let term = C::from_usize(split).mul(&coeff).mul(&out[degree - split]);
+            sum = sum.add(&term);
+        }
+        out[degree] = sum.div(&C::from_usize(degree));
+    }
+    out
+}
+
+/// Truncated product of two power series up to `max_degree`.
+pub(crate) fn mul_plain_series<C: Coeff>(left: &[C], right: &[C], max_degree: usize) -> Vec<C> {
+    let mut out = vec![C::zero(); max_degree + 1];
+    for left_degree in 0..=max_degree {
+        if left[left_degree].is_zero() {
+            continue;
+        }
+        for right_degree in 0..=max_degree - left_degree {
+            if right[right_degree].is_zero() {
+                continue;
+            }
+            out[left_degree + right_degree] =
+                out[left_degree + right_degree].add(&left[left_degree].mul(&right[right_degree]));
+        }
+    }
+    out
+}
+
+/// Truncated composition `series(input)` up to `max_degree`, where `input` has
+/// zero constant term.
+pub(crate) fn compose_plain_series<C: Coeff>(
+    series: &[C],
+    input: &[C],
+    max_degree: usize,
+) -> Vec<C> {
+    let mut out = vec![C::zero(); max_degree + 1];
+    let mut power = vec![C::zero(); max_degree + 1];
+    power[0] = C::one();
+    for degree in 0..=max_degree {
+        let coefficient = series.get(degree).cloned().unwrap_or_else(C::zero);
+        if !coefficient.is_zero() {
+            for idx in 0..=max_degree {
+                out[idx] = out[idx].add(&coefficient.mul(&power[idx]));
+            }
+        }
+        power = mul_plain_series(&power, input, max_degree);
+    }
+    out
+}
+
+/// Compositional inverse of a series with zero constant term and linear
+/// coefficient one.
+pub(crate) fn invert_series_with_linear_term_one<C: Coeff>(
+    series: &[C],
+    max_degree: usize,
+) -> Vec<C> {
+    assert_eq!(series.first(), Some(&C::zero()));
+    assert_eq!(series.get(1), Some(&C::one()));
+    let mut inverse = vec![C::zero(); max_degree + 1];
+    if max_degree >= 1 {
+        inverse[1] = C::one();
+    }
+    for degree in 2..=max_degree {
+        let mut trial = inverse.clone();
+        trial[degree] = C::one();
+        let contribution = compose_plain_series(series, &trial, max_degree)[degree].clone();
+        let mut baseline = inverse.clone();
+        baseline[degree] = C::zero();
+        let current = compose_plain_series(series, &baseline, max_degree)[degree].clone();
+        let sensitivity = contribution.sub(&current);
+        inverse[degree] = current.neg().div(&sensitivity);
+    }
+    inverse
+}
+
+/// Invert a mirror map `q(Q) = Q * exp(mirror(Q))` to recover `Q(q)`.
+pub(crate) fn invert_mirror_map<C: Coeff>(mirror: &[C], q_degree: usize) -> Vec<C> {
+    let exp_mirror = exp_series(mirror, q_degree);
+    let mut q_of_q = vec![C::zero(); q_degree + 1];
+    if q_degree >= 1 {
+        q_of_q[1] = C::one();
+    }
+    let target = mul_plain_series(&q_of_q, &exp_mirror, q_degree);
+    invert_series_with_linear_term_one(&target, q_degree)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
