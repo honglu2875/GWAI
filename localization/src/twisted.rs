@@ -29,7 +29,7 @@ use crate::givental::{
     SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix,
 };
 use crate::resolvent::{ResolventRequest, ResolventResult};
-use crate::series::{QSeries, SeriesMatrix};
+use crate::series::{integrate_q_derivative_zero_constant_matrix, QSeries, SeriesMatrix};
 use crate::{Insertion, InvariantResult, Truncation};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -4505,38 +4505,6 @@ fn constant_matrix_at_q_degree(matrix: &SeriesMatrix, q_degree: usize) -> Series
             })
             .collect(),
     )
-}
-
-fn integrate_q_derivative_zero_constant_matrix(
-    matrix: &SeriesMatrix,
-) -> Result<SeriesMatrix, GwError> {
-    Ok(SeriesMatrix::from_entries(
-        matrix
-            .entries()
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(integrate_q_derivative_zero_constant)
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-fn integrate_q_derivative_zero_constant(series: &QSeries) -> Result<QSeries, GwError> {
-    if series.coeff(0).is_some_and(|constant| !constant.is_zero()) {
-        return Err(GwError::AlgebraFailure(
-            "cannot integrate q d/dq with nonzero constant term and zero integration constant"
-                .to_string(),
-        ));
-    }
-    let max_degree = series.max_degree();
-    let mut coeffs = vec![RatFun::zero(); max_degree + 1];
-    for degree in 1..=max_degree {
-        coeffs[degree] =
-            series.coeff(degree).cloned().unwrap_or_else(RatFun::zero) / RatFun::from(degree);
-    }
-    Ok(QSeries::from_coeffs(coeffs))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

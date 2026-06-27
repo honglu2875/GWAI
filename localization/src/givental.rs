@@ -29,7 +29,9 @@ use crate::resolvent::{
     enumerate_resolvent_indices, ResolventIndex, ResolventPolynomial, ResolventRequest,
     ResolventResult,
 };
-use crate::series::{QSeries, RationalQSeries, SeriesMatrix};
+use crate::series::{
+    integrate_q_derivative_zero_constant_matrix, QSeries, RationalQSeries, SeriesMatrix,
+};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
 use crate::{
@@ -1399,39 +1401,6 @@ fn elementary_symmetric_rational(weights: &[Rational]) -> Vec<Rational> {
         }
     }
     elementary
-}
-
-fn integrate_q_derivative_zero_constant_matrix(
-    matrix: &SeriesMatrix,
-) -> Result<SeriesMatrix, GwError> {
-    Ok(SeriesMatrix::from_entries(
-        matrix
-            .entries()
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(integrate_q_derivative_zero_constant)
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-fn integrate_q_derivative_zero_constant(series: &QSeries) -> Result<QSeries, GwError> {
-    let max_degree = series.max_degree();
-    if series.coeff(0).is_some_and(|constant| !constant.is_zero()) {
-        return Err(GwError::AlgebraFailure(
-            "cannot integrate q d/dq with nonzero constant term and zero integration constant"
-                .to_string(),
-        ));
-    }
-
-    let mut coeffs = vec![RatFun::zero(); max_degree + 1];
-    for degree in 1..=max_degree {
-        let denominator = RatFun::from(degree);
-        coeffs[degree] = series.coeff(degree).cloned().unwrap_or_else(RatFun::zero) / denominator;
-    }
-    Ok(QSeries::from_coeffs(coeffs))
 }
 
 fn relative_sqrt_delta_series(delta: &QSeries) -> Result<QSeries, GwError> {

@@ -432,6 +432,45 @@ impl<C: Coeff + fmt::Display> fmt::Display for QSeries<C> {
     }
 }
 
+/// Formally integrate `q d/dq` of a power series, taking the integration
+/// constant to be zero.
+///
+/// This inverts the `q`-derivation on the positive-degree part; it errors if the
+/// constant term is nonzero, since no zero integration constant can absorb it.
+/// Shared by the ordinary and twisted calibration paths.
+fn integrate_q_derivative_zero_constant(series: &QSeries) -> Result<QSeries, GwError> {
+    if series.coeff(0).is_some_and(|constant| !constant.is_zero()) {
+        return Err(GwError::AlgebraFailure(
+            "cannot integrate q d/dq with nonzero constant term and zero integration constant"
+                .to_string(),
+        ));
+    }
+    let max_degree = series.max_degree();
+    let mut coeffs = vec![RatFun::zero(); max_degree + 1];
+    for degree in 1..=max_degree {
+        coeffs[degree] =
+            series.coeff(degree).cloned().unwrap_or_else(RatFun::zero) / RatFun::from(degree);
+    }
+    Ok(QSeries::from_coeffs(coeffs))
+}
+
+/// Apply [`integrate_q_derivative_zero_constant`] entrywise to a series matrix.
+pub(crate) fn integrate_q_derivative_zero_constant_matrix(
+    matrix: &SeriesMatrix,
+) -> Result<SeriesMatrix, GwError> {
+    Ok(SeriesMatrix::from_entries(
+        matrix
+            .entries()
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(integrate_q_derivative_zero_constant)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
