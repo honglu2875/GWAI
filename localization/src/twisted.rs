@@ -46,7 +46,7 @@ impl NegativeSplitBundleTwist {
     /// of the type convention.  Negativity is what gives the concave Euler
     /// factors in the hypergeometric `I`-function below.
     pub fn new(degrees: Vec<usize>) -> Result<Self, GwError> {
-        if degrees.iter().any(|degree| *degree == 0) {
+        if degrees.contains(&0) {
             return Err(GwError::ParseError(
                 "negative split-bundle degrees must be positive".to_string(),
             ));
@@ -2355,7 +2355,7 @@ fn inverse_affine_z_laurent_coeff<C: Coeff>(
 }
 
 fn signed_binomial_negative_power(power: usize, h_power: usize) -> Rational {
-    let sign = if h_power % 2 == 0 {
+    let sign = if h_power.is_multiple_of(2) {
         Rational::one()
     } else {
         -Rational::one()
@@ -4078,7 +4078,7 @@ fn invert_series_matrix_coeff<C: Coeff>(
     for col in 0..size {
         let pivot = (col..size)
             .find(|row| qseries_has_invertible_constant_coeff(&augmented[*row][col]))
-            .ok_or_else(|| GwError::NonSemisimplePoint)?;
+            .ok_or(GwError::NonSemisimplePoint)?;
         if pivot != col {
             augmented.swap(pivot, col);
         }
@@ -4252,7 +4252,7 @@ fn twisted_classical_limit_diagonal_coefficients_for_branch(
     mode: TwistedCalibrationMode,
 ) -> Result<Vec<RatFun>, GwError> {
     let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
+    for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
         let coefficient =
             bernoulli_number_local(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
@@ -4294,7 +4294,7 @@ fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: Coeff>(
     fiber_weights: &[C],
 ) -> Result<Vec<C>, GwError> {
     let mut exponent = vec![C::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
+    for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
         let coefficient = C::from_rational(
             bernoulli_number_local(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1)),

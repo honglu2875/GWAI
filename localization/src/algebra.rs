@@ -559,7 +559,7 @@ impl SparsePoly {
     }
 }
 
-impl<'a, 'b> Add<&'b SparsePoly> for &'a SparsePoly {
+impl<'b> Add<&'b SparsePoly> for &SparsePoly {
     type Output = SparsePoly;
 
     fn add(self, rhs: &'b SparsePoly) -> Self::Output {
@@ -571,7 +571,7 @@ impl<'a, 'b> Add<&'b SparsePoly> for &'a SparsePoly {
     }
 }
 
-impl<'a, 'b> Sub<&'b SparsePoly> for &'a SparsePoly {
+impl<'b> Sub<&'b SparsePoly> for &SparsePoly {
     type Output = SparsePoly;
 
     fn sub(self, rhs: &'b SparsePoly) -> Self::Output {
@@ -583,7 +583,7 @@ impl<'a, 'b> Sub<&'b SparsePoly> for &'a SparsePoly {
     }
 }
 
-impl<'a, 'b> Mul<&'b SparsePoly> for &'a SparsePoly {
+impl<'b> Mul<&'b SparsePoly> for &SparsePoly {
     type Output = SparsePoly;
 
     fn mul(self, rhs: &'b SparsePoly) -> Self::Output {
@@ -1083,7 +1083,7 @@ impl From<usize> for RatFun {
     }
 }
 
-impl<'a, 'b> Add<&'b RatFun> for &'a RatFun {
+impl<'b> Add<&'b RatFun> for &RatFun {
     type Output = RatFun;
 
     fn add(self, rhs: &'b RatFun) -> Self::Output {
@@ -1100,7 +1100,7 @@ impl<'a, 'b> Add<&'b RatFun> for &'a RatFun {
     }
 }
 
-impl<'a, 'b> Sub<&'b RatFun> for &'a RatFun {
+impl<'b> Sub<&'b RatFun> for &RatFun {
     type Output = RatFun;
 
     fn sub(self, rhs: &'b RatFun) -> Self::Output {
@@ -1117,7 +1117,7 @@ impl<'a, 'b> Sub<&'b RatFun> for &'a RatFun {
     }
 }
 
-impl<'a, 'b> Mul<&'b RatFun> for &'a RatFun {
+impl<'b> Mul<&'b RatFun> for &RatFun {
     type Output = RatFun;
 
     fn mul(self, rhs: &'b RatFun) -> Self::Output {
@@ -1132,7 +1132,7 @@ impl<'a, 'b> Mul<&'b RatFun> for &'a RatFun {
     }
 }
 
-impl<'a, 'b> Div<&'b RatFun> for &'a RatFun {
+impl<'b> Div<&'b RatFun> for &RatFun {
     type Output = RatFun;
 
     fn div(self, rhs: &'b RatFun) -> Self::Output {

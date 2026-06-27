@@ -1570,7 +1570,7 @@ fn classical_limit_diagonal_coefficients_for_branch(
     z_order: usize,
 ) -> Vec<RatFun> {
     let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
+    for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
         let coefficient =
             bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
@@ -1596,7 +1596,7 @@ fn classical_limit_diagonal_coefficients_for_branch_at_lambda_weights(
     weights: &[Rational],
 ) -> Vec<RatFun> {
     let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
+    for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
         let coefficient =
             bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
@@ -2532,7 +2532,7 @@ where
     let mut evaluator = GiventalMasterEvaluator::with_provider(req, provider);
     evaluator.set_shared_kernel_task_counts(shared_kernel_task_counts.clone());
     for (markings, count) in shared_kernel_task_counts.iter().copied().enumerate() {
-        if count >= MASTER_MIN_RESTRICTED_KERNEL_TASKS && count < MASTER_MIN_SHARED_KERNEL_TASKS {
+        if (MASTER_MIN_RESTRICTED_KERNEL_TASKS..MASTER_MIN_SHARED_KERNEL_TASKS).contains(&count) {
             notes.push(format!(
                 "using restricted sparse S/R graph kernel for {count} coefficient(s) with {markings} marking(s); shared kernel threshold is {MASTER_MIN_SHARED_KERNEL_TASKS}"
             ));
@@ -4059,7 +4059,7 @@ fn rational_vertex_contribution_with_translations(
             if coefficient.is_zero() {
                 break;
             }
-            powers.extend(std::iter::repeat(power).take(multiplicity));
+            powers.extend(std::iter::repeat_n(power, multiplicity));
 
             symmetry = symmetry * Rational::from(factorial(multiplicity));
         }
@@ -5656,7 +5656,7 @@ where
             if coefficient.is_structurally_zero() {
                 break;
             }
-            powers.extend(std::iter::repeat(power).take(multiplicity));
+            powers.extend(std::iter::repeat_n(power, multiplicity));
 
             let multiplicity_factor = C::from_usize(factorial(multiplicity));
             symmetry = symmetry.mul(&multiplicity_factor);
@@ -6587,7 +6587,7 @@ mod tests {
             mode: ComputeMode::Givental,
             truncation: None,
         };
-        let cases = vec![
+        let cases = [
             (1, vec![tau(2, CohomologyClass::h_power(1, 1))]),
             (1, vec![tau(3, CohomologyClass::one(1))]),
         ];

@@ -325,7 +325,7 @@ impl From<RatFun> for FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Add<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Add<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn add(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -337,7 +337,7 @@ impl<'a, 'b> Add<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Sub<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Sub<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn sub(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -345,7 +345,7 @@ impl<'a, 'b> Sub<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Mul<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Mul<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn mul(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -364,7 +364,7 @@ impl<'a, 'b> Mul<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Div<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Div<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn div(self, rhs: &'b FactoredRatFun) -> Self::Output {
