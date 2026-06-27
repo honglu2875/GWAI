@@ -519,6 +519,169 @@ pub trait SemisimpleCohftProvider {
     }
 }
 
+/// Coefficient-generic provider boundary for semisimple graph reconstruction.
+///
+/// This is the extension point for alternate algebra engines such as
+/// `FactoredRatFun`.  The older [`SemisimpleCohftProvider`] remains the public
+/// `RatFun` API; this trait is deliberately parallel rather than replacing it,
+/// so existing projective and twisted providers do not see method-resolution
+/// churn.
+pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
+    type Insertion;
+
+    fn coeff_colors(&self) -> usize;
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize;
+
+    fn coeff_insertion_degree(&self, _insertions: &[Self::Insertion]) -> Option<usize> {
+        None
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _markings: usize,
+    ) -> Option<isize> {
+        None
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        _genus: usize,
+        _insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        None
+    }
+
+    fn coeff_candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        if self.coeff_insertion_degree(insertions).is_some() {
+            self.coeff_expected_degree_from_dimension(genus, insertions)
+                .filter(|degree| *degree <= degree_max)
+                .into_iter()
+                .collect()
+        } else {
+            (0..=degree_max).collect()
+        }
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<C>, GwError>;
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel<C>>, GwError>;
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries<C>>, GwError>;
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<C>, GwError> {
+        Ok(None)
+    }
+}
+
+impl<P> CoefficientSemisimpleCohftProvider<RatFun> for P
+where
+    P: SemisimpleCohftProvider,
+{
+    type Insertion = P::Insertion;
+
+    fn coeff_colors(&self) -> usize {
+        SemisimpleCohftProvider::colors(self)
+    }
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        SemisimpleCohftProvider::descendant_power(self, insertion)
+    }
+
+    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        SemisimpleCohftProvider::insertion_degree(self, insertions)
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Option<isize> {
+        SemisimpleCohftProvider::virtual_dimension(self, genus, degree, markings)
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        genus: usize,
+        insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        SemisimpleCohftProvider::expected_degree_from_dimension(self, genus, insertions)
+    }
+
+    fn coeff_candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        SemisimpleCohftProvider::candidate_degrees_from_dimension(
+            self, genus, degree_max, insertions,
+        )
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix, GwError> {
+        SemisimpleCohftProvider::descendant_s_matrix(self, q_degree, z_order)
+    }
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
+        SemisimpleCohftProvider::graph_kernel(self, q_degree, r_order, graph_dimension)
+    }
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries>, GwError> {
+        SemisimpleCohftProvider::insertion_vector(self, insertion, q_degree)
+    }
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        SemisimpleCohftProvider::scalar_fallback_value(self, genus, degree, insertions, truncation)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectiveSpaceProvider {
     pub n: usize,
@@ -1855,6 +2018,30 @@ where
     Ok(total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
 }
 
+pub fn compute_semisimple_graph_value_with_coeff<C, P>(
+    provider: &P,
+    genus: usize,
+    degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<C, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C>,
+{
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        if let Some(value) =
+            provider.coeff_scalar_fallback_value(genus, degree, insertions, truncation)?
+        {
+            return Ok(value);
+        }
+    }
+    let total = compute_semisimple_graph_series_with_coeff(
+        provider, genus, degree, insertions, truncation,
+    )?;
+    Ok(total.coeff(degree).cloned().unwrap_or_else(C::zero))
+}
+
 /// Computes all coefficients `q^0, ..., q^degree_max` for one fixed insertion
 /// list with a single graph-kernel construction and a single stable-graph sum.
 ///
@@ -2109,6 +2296,97 @@ where
             &mut profile,
         )
     };
+    profile.add_graph_elapsed(graphs_started.elapsed());
+    profile.finish();
+    Ok(total)
+}
+
+pub fn compute_semisimple_graph_series_with_coeff<C, P>(
+    provider: &P,
+    genus: usize,
+    q_degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<QSeries<C>, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C>,
+{
+    let mut profile = GraphEvalProfile::new();
+    let max_descendant_power = insertions
+        .iter()
+        .map(|insertion| provider.coeff_descendant_power(insertion))
+        .max()
+        .unwrap_or(0);
+
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        return Err(GwError::UnsupportedInvariant(
+            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let graph_dimension = 3 * genus + insertions.len() - 3;
+    let needed_r_order = graph_dimension + 1;
+    let needed_s_order = max_descendant_power;
+    let needed_z_order = needed_r_order.max(needed_s_order);
+    let z_order = truncation
+        .map(|truncation| truncation.z_order)
+        .unwrap_or(needed_z_order);
+    if z_order < needed_z_order {
+        return Err(GwError::TruncationTooLow);
+    }
+
+    let calibration_started = Instant::now();
+    let kernel = provider.coeff_graph_kernel(q_degree, needed_r_order, graph_dimension)?;
+    profile.add_calibration_elapsed(calibration_started.elapsed());
+
+    let options_started = Instant::now();
+    let leg_options = if insertions.is_empty() {
+        Vec::new()
+    } else {
+        let descendant_s = provider.coeff_descendant_s_matrix(q_degree, needed_s_order)?;
+        let insertion_terms = ancestor_insertion_terms_from_provider(
+            provider,
+            insertions,
+            &descendant_s,
+            &kernel.calibration.psi_inverse,
+            q_degree,
+            graph_dimension,
+        )?;
+        leg_options_by_marking_color(
+            &insertion_terms,
+            &kernel.inverse_r,
+            q_degree,
+            graph_dimension,
+            provider.coeff_colors(),
+        )
+    };
+    profile.leg_options = leg_options
+        .iter()
+        .flat_map(|by_color| by_color.iter())
+        .map(Vec::len)
+        .sum();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    profile.add_option_elapsed(options_started.elapsed());
+
+    let graphs = prepared_stable_graphs(genus, insertions.len(), provider.coeff_colors());
+    profile.stable_graphs = graphs.len();
+
+    let graphs_started = Instant::now();
+    let total = evaluate_scalar_graphs_parallel(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut profile,
+    );
     profile.add_graph_elapsed(graphs_started.elapsed());
     profile.finish();
     Ok(total)
@@ -4531,16 +4809,17 @@ fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
     2 * genus + markings > 2
 }
 
-fn ancestor_insertion_terms_from_provider<P>(
+fn ancestor_insertion_terms_from_provider<C, P>(
     provider: &P,
     insertions: &[P::Insertion],
-    descendant_s: &SeriesSMatrix,
-    psi_inverse: &SeriesMatrix,
+    descendant_s: &SeriesSMatrix<C>,
+    psi_inverse: &SeriesMatrix<C>,
     q_degree: usize,
     max_power: usize,
-) -> Result<Vec<Vec<AncestorLegTerm>>, GwError>
+) -> Result<Vec<Vec<AncestorLegTerm<C>>>, GwError>
 where
-    P: SemisimpleCohftProvider,
+    C: Coeff,
+    P: CoefficientSemisimpleCohftProvider<C>,
 {
     // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
     // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
@@ -4548,8 +4827,8 @@ where
     insertions
         .iter()
         .map(|insertion| {
-            let descendant_power = provider.descendant_power(insertion);
-            let flat_class_vector = provider.insertion_vector(insertion, q_degree)?;
+            let descendant_power = provider.coeff_descendant_power(insertion);
+            let flat_class_vector = provider.coeff_insertion_vector(insertion, q_degree)?;
             let max_order =
                 descendant_power.min(descendant_s.coefficients().len().saturating_sub(1));
             let mut terms = Vec::new();
@@ -4581,27 +4860,33 @@ where
         .collect()
 }
 
-fn apply_s_coefficient_to_vector(
-    descendant_s: &SeriesSMatrix,
+fn apply_s_coefficient_to_vector<C>(
+    descendant_s: &SeriesSMatrix<C>,
     s_order: usize,
-    class_vector: &[QSeries],
+    class_vector: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>>
+where
+    C: Coeff,
+{
     let matrix = descendant_s
         .coefficient(s_order)
         .expect("S coefficient order was bounded before access");
     apply_matrix_to_vector(matrix, class_vector, q_degree)
 }
 
-fn apply_matrix_to_vector(
-    matrix: &SeriesMatrix,
-    vector: &[QSeries],
+fn apply_matrix_to_vector<C>(
+    matrix: &SeriesMatrix<C>,
+    vector: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>>
+where
+    C: Coeff,
+{
     debug_assert_eq!(matrix.cols(), vector.len());
     (0..matrix.rows())
         .map(|row| {
-            let mut total = QSeries::zero(q_degree);
+            let mut total = QSeries::<C>::zero(q_degree);
             for (col, entry) in vector.iter().enumerate() {
                 total = total.add(&matrix.entry(row, col).mul(entry));
             }
@@ -4905,13 +5190,13 @@ fn accumulate_graph_factors<C>(
     *total = total.add(&coefficient.mul(&vertex_product));
 }
 
-fn leg_options_by_marking_color(
-    insertion_terms: &[Vec<AncestorLegTerm>],
-    inverse_r: &[SeriesMatrix],
+fn leg_options_by_marking_color<C: Coeff>(
+    insertion_terms: &[Vec<AncestorLegTerm<C>>],
+    inverse_r: &[SeriesMatrix<C>],
     q_degree: usize,
     max_power: usize,
     colors: usize,
-) -> Vec<Vec<Vec<LegFactorOption>>> {
+) -> Vec<Vec<Vec<LegFactorOption<C>>>> {
     insertion_terms
         .iter()
         .map(|terms| {
@@ -4922,13 +5207,13 @@ fn leg_options_by_marking_color(
         .collect()
 }
 
-fn leg_options_for_color(
+fn leg_options_for_color<C: Coeff>(
     color: usize,
-    insertion_terms: &[AncestorLegTerm],
-    inverse_r: &[SeriesMatrix],
+    insertion_terms: &[AncestorLegTerm<C>],
+    inverse_r: &[SeriesMatrix<C>],
     q_degree: usize,
     max_power: usize,
-) -> Vec<LegFactorOption> {
+) -> Vec<LegFactorOption<C>> {
     let mut by_power = vec![QSeries::zero(q_degree); max_power + 1];
     for term in insertion_terms {
         for (order, matrix) in inverse_r.iter().enumerate() {
@@ -6177,6 +6462,27 @@ mod tests {
         );
 
         assert_eq!(total.coeff(0).unwrap(), &<FactoredRatFun as Coeff>::one());
+    }
+
+    #[test]
+    fn coefficient_generic_evaluator_matches_ratfun_provider_path() {
+        let provider = ProjectiveSpaceProvider::new(2, false);
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+        ];
+        let direct = compute_semisimple_graph_value(&provider, 0, 1, &insertions, None).unwrap();
+        let generic = compute_semisimple_graph_value_with_coeff::<RatFun, _>(
+            &provider,
+            0,
+            1,
+            &insertions,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(generic, direct);
     }
 
     #[test]
