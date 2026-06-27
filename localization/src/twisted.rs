@@ -4813,6 +4813,28 @@ pub fn compute_negative_split_twisted_resolvent_packed(
     )
 }
 
+pub fn compute_negative_split_twisted_resolvent_packed_factored(
+    target_n: usize,
+    degrees: Vec<usize>,
+    req: &ResolventRequest,
+) -> Result<ResolventResult<FactoredRatFun>, GwError> {
+    if req.degree == 0 {
+        return Err(GwError::UnsupportedInvariant(
+            "degree-zero local invariants are not implemented in the negative split-bundle path"
+                .to_string(),
+        ));
+    }
+
+    let provider = FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(target_n, degrees)?;
+    crate::givental::compute_packed_resolvent_with_coeff_provider(
+        req,
+        provider,
+        "twisted-negative-split-fiber-equivariant-factored-packed-resolvent",
+        "computed by packed fiber-equivariant twisted S/R external-leg graph kernel with factored symbolic coefficients; base weights are early-specialized and fiber weights are symbolic mu_i",
+        Ok::<FactoredRatFun, GwError>,
+    )
+}
+
 fn twisted_dimension_mismatch(
     provider: &TwistedProjectiveSpaceProvider,
     genus: usize,
@@ -6734,6 +6756,29 @@ mod tests {
                 "fiber weight mu_0={weight}"
             );
         }
+    }
+
+    #[test]
+    fn fiber_equivariant_resolvent_uses_factored_packed_path() {
+        let req = ResolventRequest {
+            target_n: 1,
+            genus: 1,
+            degree: 1,
+            markings: 1,
+            virtual_dimension: 1,
+        };
+        let result =
+            compute_negative_split_twisted_resolvent_packed_factored(1, vec![1, 1], &req).unwrap();
+
+        assert_eq!(
+            result.engine,
+            "twisted-negative-split-fiber-equivariant-factored-packed-resolvent"
+        );
+        assert_eq!(result.candidate_terms, 2);
+        assert_eq!(result.nonzero_terms, 2);
+        assert_eq!(result.value.term_count(), 2);
+        assert!(result.value.coefficient_text_contains("mu_0"));
+        assert!(result.value.coefficient_text_contains("mu_1"));
     }
 
     #[test]

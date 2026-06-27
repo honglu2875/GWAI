@@ -6,7 +6,8 @@ use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
 use gw_pn::twisted::{
     compute_negative_split_twisted, compute_negative_split_twisted_factored,
-    compute_negative_split_twisted_resolvent_packed, NegativeSplitBundleTwist,
+    compute_negative_split_twisted_resolvent_packed,
+    compute_negative_split_twisted_resolvent_packed_factored, NegativeSplitBundleTwist,
     TwistedInvariantRequest,
 };
 use gw_pn::{
@@ -354,6 +355,95 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
             )
         })
     };
+    if equivariant {
+        if let Some(degrees) = twist.as_ref() {
+            let packed =
+                compute_negative_split_twisted_resolvent_packed_factored(n, degrees.clone(), &req);
+            let (result, used_packed) = match packed {
+                Ok(result) => (result, true),
+                Err(GwError::UnsupportedInvariant(message)) => {
+                    let mut result = compute_invariant_wise()?;
+                    result.notes.insert(
+                        0,
+                        format!(
+                            "factored packed resolvent unavailable: {message}; fell back to invariant-wise resolver"
+                        ),
+                    );
+                    println!("Resolvent generating function");
+                    println!("target: P^{n}");
+                    println!("twist: {}", twist_bundle_label(degrees));
+                    println!("genus: {genus}");
+                    println!("degree: {degree}");
+                    println!("markings: {markings}");
+                    println!("virtual_dimension: {virtual_dimension}");
+                    print!(
+                        "{}",
+                        resolvent_definition_text(n, genus, degree, markings, twist.as_deref())
+                    );
+                    println!("engine: {}", result.engine);
+                    println!(
+                        "terms: {} candidate, {} nonzero",
+                        result.candidate_terms, result.nonzero_terms
+                    );
+                    println!("F = {}", result.value);
+                    if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+                        eprintln!(
+                            "warnings written to {}; inspect this file if needed",
+                            path.display()
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+
+            let validation = if validate && used_packed {
+                let invariant_wise = compute_invariant_wise()?;
+                let packed_ratfun = result.value.to_ratfun_polynomial();
+                if packed_ratfun != invariant_wise.value {
+                    return Err(GwError::ValidationFailure(format!(
+                        "packed resolvent output does not match invariant-wise resolver: packed `{packed_ratfun}`, invariant-wise `{}`",
+                        invariant_wise.value
+                    )));
+                }
+                Some(format!(
+                    "matched invariant-wise resolver ({} candidate, {} nonzero)",
+                    invariant_wise.candidate_terms, invariant_wise.nonzero_terms
+                ))
+            } else {
+                None
+            };
+
+            println!("Resolvent generating function");
+            println!("target: P^{n}");
+            println!("twist: {}", twist_bundle_label(degrees));
+            println!("genus: {genus}");
+            println!("degree: {degree}");
+            println!("markings: {markings}");
+            println!("virtual_dimension: {virtual_dimension}");
+            print!(
+                "{}",
+                resolvent_definition_text(n, genus, degree, markings, twist.as_deref())
+            );
+            println!("engine: {}", result.engine);
+            println!(
+                "terms: {} candidate, {} nonzero",
+                result.candidate_terms, result.nonzero_terms
+            );
+            if let Some(validation) = validation {
+                println!("validation: {validation}");
+            }
+            println!("F = {}", result.value);
+
+            if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+                eprintln!(
+                    "warnings written to {}; inspect this file if needed",
+                    path.display()
+                );
+            }
+            return Ok(());
+        }
+    }
     let packed = match twist.as_ref() {
         Some(degrees) => {
             compute_negative_split_twisted_resolvent_packed(n, degrees.clone(), &req, equivariant)

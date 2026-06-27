@@ -373,10 +373,18 @@ precontracts the stable-graph sum once for fixed `(g,d,m)` and attaches all
 resolvent coefficients to that shared kernel. Add `--validate` to also run the
 older invariant-wise resolver and compare the two outputs.
 
+For `--twist ... --equivariant`, the packed resolver uses the factored
+coefficient engine so rational dependence on the fiber parameters `mu_i` is not
+prematurely expanded. This is the preferred symbolic path for twisted
+fiber-equivariant generating functions. Validation still works by expanding the
+factored result only for the comparison step.
+
 ```bash
 cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
 
 cargo run --quiet -- resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1 --validate
+
+cargo run --quiet -- resolvent --n 1 --twist -1,-1 --g 1 --d 1 --markings 1 --equivariant
 ```
 
 ## `degree-series`

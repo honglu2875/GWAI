@@ -2762,6 +2762,184 @@ where
     })
 }
 
+pub fn compute_packed_resolvent_with_coeff_provider<C, P, N>(
+    req: &ResolventRequest,
+    provider: P,
+    engine: &'static str,
+    note: impl Into<String>,
+    mut normalize: N,
+) -> Result<ResolventResult<C>, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C, Insertion = Insertion>,
+    N: FnMut(C) -> Result<C, GwError>,
+{
+    if req.virtual_dimension < 0 {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms: 0,
+            nonzero_terms: 0,
+            engine: "packed-resolvent-empty-dimension",
+            notes: vec![format!(
+                "virtual dimension {} is negative, so the packed resolvent generating function is zero",
+                req.virtual_dimension
+            )],
+        });
+    }
+
+    if req.markings == 0 {
+        let mut value = ResolventPolynomial::zero();
+        let mut nonzero_terms = 0usize;
+        let candidate_terms = usize::from(req.virtual_dimension == 0);
+        if req.virtual_dimension == 0 {
+            let coefficient = compute_semisimple_graph_value_with_coeff::<C, _>(
+                &provider,
+                req.genus,
+                req.degree,
+                &[],
+                None,
+            )?;
+            let normalized = normalize(coefficient)?;
+            if !normalized.is_structurally_zero() {
+                value.add_index_coefficient(&ResolventIndex::empty(), normalized);
+                nonzero_terms = 1;
+            }
+        }
+        return Ok(ResolventResult {
+            value,
+            candidate_terms,
+            nonzero_terms,
+            engine,
+            notes: vec![note.into()],
+        });
+    }
+    if !is_stable_cohft_range(req.genus, req.markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "packed resolvent graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let graph_dimension = 3 * req.genus + req.markings - 3;
+    let needed_r_order = graph_dimension + 1;
+    let needed_s_order = req.virtual_dimension as usize;
+    let graph_kernel = provider.coeff_graph_kernel(req.degree, needed_r_order, graph_dimension)?;
+    let descendant_s = provider.coeff_descendant_s_matrix(req.degree, needed_s_order)?;
+    let mut tasks = Vec::<MasterContractionTask<C>>::new();
+    let mut task_indices = Vec::<ResolventIndex>::new();
+    let candidate_terms = enumerate_resolvent_indices(req, |index| {
+        let insertions = index.to_insertions(req.target_n);
+        if let (Some(total_degree), Some(virtual_dimension)) = (
+            provider.coeff_insertion_degree(&insertions),
+            provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
+        ) {
+            if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
+                return Ok(());
+            }
+        }
+
+        let mut leg_options = Vec::with_capacity(req.markings);
+        for insertion in &insertions {
+            let insertion_terms = ancestor_insertion_terms_from_provider(
+                &provider,
+                std::slice::from_ref(insertion),
+                &descendant_s,
+                &graph_kernel.calibration.psi_inverse,
+                req.degree,
+                graph_dimension,
+            )?;
+            let mut options = leg_options_by_marking_color(
+                &insertion_terms,
+                &graph_kernel.inverse_r,
+                req.degree,
+                graph_dimension,
+                provider.coeff_colors(),
+            );
+            leg_options.push(options.pop().unwrap_or_else(|| {
+                vec![Vec::<LegFactorOption<C>>::new(); provider.coeff_colors()]
+            }));
+        }
+
+        tasks.push(MasterContractionTask {
+            ordinal: tasks.len(),
+            degree: req.degree,
+            insertions,
+            markings: req.markings,
+            leg_options,
+        });
+        task_indices.push(index);
+        Ok(())
+    })?;
+
+    if tasks.is_empty() {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms,
+            nonzero_terms: 0,
+            engine,
+            notes: vec![note.into()],
+        });
+    }
+
+    let template = RestrictedExternalLegKernel::from_tasks(
+        req.markings,
+        provider.coeff_colors(),
+        graph_dimension,
+        req.degree,
+        &tasks,
+    );
+    let graphs = prepared_stable_graphs(req.genus, req.markings, provider.coeff_colors());
+    let mut profile = GraphEvalProfile::new();
+    profile.stable_graphs = graphs.len();
+    profile.edge_options = graph_kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let graph_started = Instant::now();
+    let restricted_kernel = evaluate_restricted_external_graphs_parallel(
+        graphs.as_ref(),
+        &template,
+        &graph_kernel,
+        req.degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(graph_started.elapsed());
+    profile.finish();
+
+    let mut value = ResolventPolynomial::zero();
+    let mut nonzero_terms = 0usize;
+    for task in &tasks {
+        let index = task_indices.get(task.ordinal).ok_or_else(|| {
+            GwError::AlgebraFailure(format!(
+                "packed resolvent task ordinal {} is out of range",
+                task.ordinal
+            ))
+        })?;
+        let coefficient = contract_restricted_external_leg_kernel_coeff_generic(
+            &restricted_kernel,
+            &task.leg_options,
+            task.degree,
+        );
+        let normalized = normalize(coefficient)?;
+        if normalized.is_structurally_zero() {
+            continue;
+        }
+        value.add_index_coefficient(index, normalized);
+        nonzero_terms += 1;
+    }
+
+    Ok(ResolventResult {
+        value,
+        candidate_terms,
+        nonzero_terms,
+        engine,
+        notes: vec![note.into()],
+    })
+}
+
 pub fn compute_projective_resolvent_packed(
     req: &ResolventRequest,
     equivariant: bool,
@@ -3284,12 +3462,12 @@ where
 }
 
 #[derive(Debug)]
-struct MasterContractionTask {
+struct MasterContractionTask<C = RatFun> {
     ordinal: usize,
     degree: usize,
     insertions: Vec<Insertion>,
     markings: usize,
-    leg_options: Vec<Vec<Vec<LegFactorOption>>>,
+    leg_options: Vec<Vec<Vec<LegFactorOption<C>>>>,
 }
 
 #[derive(Debug)]
@@ -4265,7 +4443,7 @@ impl<C: Coeff> RestrictedExternalLegKernel<C> {
         colors: usize,
         max_power: usize,
         q_degree: usize,
-        tasks: &[MasterContractionTask],
+        tasks: &[MasterContractionTask<C>],
     ) -> Self {
         let mut powers_by_marking_color = vec![vec![BTreeSet::<usize>::new(); colors]; markings];
         for task in tasks {

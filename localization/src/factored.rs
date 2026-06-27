@@ -145,6 +145,17 @@ impl FactoredRatFun {
         Some(total)
     }
 
+    pub fn as_structural_rational(&self) -> Option<Rational> {
+        let mut total = Rational::zero();
+        for (factors, numerator) in &self.terms {
+            if !factors.is_empty() {
+                return None;
+            }
+            total += numerator.constant_term()?;
+        }
+        Some(total)
+    }
+
     fn can_expand_for_scalar_display(&self) -> bool {
         self.terms.len() <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
             && self.expanded_denominator_term_count_upper_bound()
@@ -431,7 +442,7 @@ impl fmt::Display for FactoredRatFun {
         if self.terms.is_empty() {
             return write!(f, "0");
         }
-        if let Some(value) = self.as_rational() {
+        if let Some(value) = self.as_structural_rational() {
             return write!(f, "{value}");
         }
         let mut first = true;
@@ -519,7 +530,7 @@ mod tests {
 
         assert!(expr.is_zero());
         assert_eq!(expr.to_ratfun(), RatFun::zero());
-        assert_eq!((&mu / &mu).to_string(), "1");
+        assert_eq!((&mu / &mu).as_rational(), Some(Rational::one()));
     }
 
     #[test]
