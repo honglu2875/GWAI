@@ -324,7 +324,7 @@ impl fmt::Display for Monomial {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SparsePoly {
     terms: BTreeMap<Monomial, Rational>,
 }
@@ -364,6 +364,10 @@ impl SparsePoly {
         self.terms.len() == 1 && self.terms.get(&Monomial::one()) == Some(&Rational::one())
     }
 
+    pub fn term_count(&self) -> usize {
+        self.terms.len()
+    }
+
     pub fn constant_term(&self) -> Option<Rational> {
         if self.terms.is_empty() {
             Some(Rational::zero())
@@ -399,6 +403,17 @@ impl SparsePoly {
         out
     }
 
+    pub fn evaluate_variables(
+        &self,
+        values: &BTreeMap<String, Rational>,
+    ) -> Result<Rational, GwError> {
+        let mut total = Rational::zero();
+        for (monomial, coeff) in &self.terms {
+            total += coeff.clone() * monomial.evaluate_variables(values)?;
+        }
+        Ok(total)
+    }
+
     fn substitute_lambda_line(
         &self,
         weights: &[Rational],
@@ -431,14 +446,6 @@ impl SparsePoly {
                 )));
             };
             total += coeff.clone() * monomial_value;
-        }
-        Ok(total)
-    }
-
-    fn evaluate_variables(&self, values: &BTreeMap<String, Rational>) -> Result<Rational, GwError> {
-        let mut total = Rational::zero();
-        for (monomial, coeff) in &self.terms {
-            total += coeff.clone() * monomial.evaluate_variables(values)?;
         }
         Ok(total)
     }

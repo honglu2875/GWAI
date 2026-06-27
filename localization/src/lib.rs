@@ -14,9 +14,14 @@
 //! gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex
 //! gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex
 //! ```
+//!
+//! The `factored` module is the staged replacement coefficient engine for
+//! symbolic equivariant work: it keeps denominator factors unexpanded and can be
+//! validated against the existing expanded `RatFun` engine.
 
 pub mod algebra;
 pub mod error;
+pub mod factored;
 pub mod formula;
 pub mod frobenius;
 pub mod geometry;
