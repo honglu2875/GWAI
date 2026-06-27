@@ -199,6 +199,9 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
 
     let mut req = TwistedInvariantRequest::new(n, twist, genus, degree, insertions)?;
     req.equivariant = has_flag(args, "--equivariant");
+    if req.equivariant {
+        print_fiber_parameters(&req.twist);
+    }
     if has_flag(args, "--factored") {
         if !req.equivariant {
             return Err(GwError::ParseError(
@@ -207,29 +210,22 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
         }
         let value = compute_negative_split_twisted_factored(&req)?;
         println!("{value}");
-        if genus == 0
-            && req.insertions.len() == 3
-            && req
-                .insertions
-                .iter()
-                .all(|insertion| insertion.descendant_power == 0)
-        {
-            println!(
-                "note: computed by the fiber-equivariant twisted genus-zero Frobenius quantum product using the factored rational coefficient engine"
-            );
-        } else {
-            println!(
-                "note: computed by fiber-equivariant twisted S/R graph expansion using the factored rational coefficient engine"
-            );
-        }
         return Ok(());
     }
     let result = compute_negative_split_twisted(&req)?;
     println!("{}", result.value);
-    for note in result.notes {
-        println!("note: {note}");
-    }
     Ok(())
+}
+
+fn print_fiber_parameters(twist: &NegativeSplitBundleTwist) {
+    let parameters = twist
+        .degrees()
+        .iter()
+        .enumerate()
+        .map(|(idx, degree)| format!("mu_{idx}=fiber weight of O(-{degree})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("parameters: {parameters}");
 }
 
 fn run_formula(args: &[String]) -> Result<(), GwError> {

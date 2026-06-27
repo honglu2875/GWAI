@@ -254,6 +254,26 @@ impl Monomial {
         )
     }
 
+    fn split_quotient_monomials(&self, rhs: &Self) -> (Self, Self) {
+        let mut exps = BTreeMap::<String, i32>::new();
+        for (name, exp) in &self.0 {
+            *exps.entry(name.clone()).or_default() += *exp;
+        }
+        for (name, exp) in &rhs.0 {
+            *exps.entry(name.clone()).or_default() -= *exp;
+        }
+        let mut numerator = Vec::new();
+        let mut denominator = Vec::new();
+        for (name, exp) in exps {
+            if exp > 0 {
+                numerator.push((name, exp));
+            } else if exp < 0 {
+                denominator.push((name, -exp));
+            }
+        }
+        (Self(numerator), Self(denominator))
+    }
+
     fn lambda_line_weighted_degree(&self, weights: &[Rational]) -> Option<(i32, Rational)> {
         let mut degree = 0i32;
         let mut coefficient = Rational::one();
@@ -274,6 +294,31 @@ impl Monomial {
             }
         }
         Some((degree, coefficient))
+    }
+
+    fn split_lambda_line_weighted_degree(
+        &self,
+        weights: &[Rational],
+    ) -> Option<(i32, Rational, Monomial)> {
+        let mut degree = 0i32;
+        let mut coefficient = Rational::one();
+        let mut residual = Vec::new();
+        for (name, exp) in &self.0 {
+            if let Some(idx) = lambda_index(name) {
+                if idx >= weights.len() {
+                    return None;
+                }
+                degree += *exp;
+                if *exp >= 0 {
+                    coefficient = coefficient * weights[idx].pow_usize(*exp as usize);
+                } else {
+                    coefficient = coefficient / weights[idx].pow_usize((-*exp) as usize);
+                }
+            } else {
+                residual.push((name.clone(), *exp));
+            }
+        }
+        Some((degree, coefficient, Monomial(residual)))
     }
 
     fn evaluate_lambda_weights(&self, weights: &[Rational]) -> Option<Rational> {
@@ -395,6 +440,23 @@ impl SparsePoly {
         }
     }
 
+    fn from_monomial_coeff(monomial: Monomial, coeff: Rational) -> Self {
+        let mut out = Self::zero();
+        out.add_term(monomial, coeff);
+        out
+    }
+
+    fn single_term(&self) -> Option<(Monomial, Rational)> {
+        if self.terms.len() == 1 {
+            self.terms
+                .iter()
+                .next()
+                .map(|(monomial, coeff)| (monomial.clone(), coeff.clone()))
+        } else {
+            None
+        }
+    }
+
     fn add_term(&mut self, monomial: Monomial, coeff: Rational) {
         if coeff.is_zero() {
             return;
@@ -445,6 +507,35 @@ impl SparsePoly {
             };
             let term = coeff.clone() * monomial_coeff;
             let next = out.get(&degree).cloned().unwrap_or_else(Rational::zero) + term;
+            if next.is_zero() {
+                out.remove(&degree);
+            } else {
+                out.insert(degree, next);
+            }
+        }
+        Ok(out)
+    }
+
+    fn substitute_lambda_line_preserving_variables(
+        &self,
+        weights: &[Rational],
+    ) -> Result<BTreeMap<i32, RatFun>, GwError> {
+        let mut out = BTreeMap::<i32, RatFun>::new();
+        for (monomial, coeff) in &self.terms {
+            let Some((degree, monomial_coeff, residual)) =
+                monomial.split_lambda_line_weighted_degree(weights)
+            else {
+                return Err(GwError::AlgebraFailure(format!(
+                    "lambda-line limit found lambda_i index out of range in `{monomial}`"
+                )));
+            };
+            let mut residual_poly = SparsePoly::zero();
+            residual_poly.add_term(residual, coeff.clone() * monomial_coeff);
+            let term = RatFun {
+                num: residual_poly,
+                den: SparsePoly::one(),
+            };
+            let next = out.get(&degree).cloned().unwrap_or_else(RatFun::zero) + term;
             if next.is_zero() {
                 out.remove(&degree);
             } else {
@@ -683,6 +774,15 @@ impl RatFun {
         if let (Some(n), Some(d)) = (self.num.constant_term(), self.den.constant_term()) {
             return RatFun::from_rational(n / d);
         }
+        if let (Some((num_monomial, num_coeff)), Some((den_monomial, den_coeff))) =
+            (self.num.single_term(), self.den.single_term())
+        {
+            let (num_residual, den_residual) = num_monomial.split_quotient_monomials(&den_monomial);
+            return RatFun {
+                num: SparsePoly::from_monomial_coeff(num_residual, num_coeff / den_coeff),
+                den: SparsePoly::from_monomial_coeff(den_residual, Rational::one()),
+            };
+        }
         self
     }
 
@@ -693,6 +793,40 @@ impl RatFun {
     ) -> Result<Rational, GwError> {
         self.lambda_line_laurent_series(target_n, weights, 0)?
             .finite_limit()
+    }
+
+    pub fn lambda_line_limit_preserving_variables(
+        &self,
+        target_n: usize,
+        weights: &[Rational],
+    ) -> Result<RatFun, GwError> {
+        if weights.len() != target_n + 1 {
+            return Err(GwError::AlgebraFailure(format!(
+                "expected {} lambda-line weights, got {}",
+                target_n + 1,
+                weights.len()
+            )));
+        }
+        let num = self
+            .num
+            .substitute_lambda_line_preserving_variables(weights)?;
+        let den = self
+            .den
+            .substitute_lambda_line_preserving_variables(weights)?;
+        let coeffs = ratio_laurent_series_coeff(&num, &den, 0)?;
+        if coeffs
+            .iter()
+            .any(|(order, coeff)| *order < 0 && !coeff.is_zero())
+        {
+            return Err(GwError::NonFiniteLimit(
+                "negative Laurent terms remain after base lambda-line summation".to_string(),
+            ));
+        }
+        Ok(coeffs
+            .get(&0)
+            .cloned()
+            .unwrap_or_else(RatFun::zero)
+            .normalize_light())
     }
 
     pub fn lambda_line_laurent_series(
@@ -794,6 +928,12 @@ fn leading_term(poly: &BTreeMap<i32, Rational>) -> Option<(i32, Rational)> {
         .map(|(degree, coeff)| (*degree, coeff.clone()))
 }
 
+fn leading_term_coeff<C: Coeff>(poly: &BTreeMap<i32, C>) -> Option<(i32, C)> {
+    poly.iter()
+        .find(|(_, coeff)| !coeff.is_zero())
+        .map(|(degree, coeff)| (*degree, coeff.clone()))
+}
+
 fn ratio_laurent_series(
     num: &BTreeMap<i32, Rational>,
     den: &BTreeMap<i32, Rational>,
@@ -853,6 +993,66 @@ fn ratio_laurent_series(
     }
 
     Ok(LaurentSeries { coeffs })
+}
+
+fn ratio_laurent_series_coeff<C: Coeff>(
+    num: &BTreeMap<i32, C>,
+    den: &BTreeMap<i32, C>,
+    max_order: i32,
+) -> Result<BTreeMap<i32, C>, GwError> {
+    let Some((num_order, _)) = leading_term_coeff(num) else {
+        return Ok(BTreeMap::new());
+    };
+    let Some((den_order, den_lead)) = leading_term_coeff(den) else {
+        return Err(GwError::AlgebraFailure(
+            "zero denominator after lambda-line substitution".to_string(),
+        ));
+    };
+    let min_order = num_order - den_order;
+    if min_order > max_order {
+        return Ok(BTreeMap::new());
+    }
+    let inner_max = (max_order - min_order) as usize;
+
+    let mut den_unit = vec![C::zero(); inner_max + 1];
+    den_unit[0] = C::one();
+    for (order, coeff) in den {
+        let shifted = *order - den_order;
+        if shifted > 0 && shifted as usize <= inner_max {
+            den_unit[shifted as usize] = coeff.div(&den_lead);
+        }
+    }
+
+    let mut inv = vec![C::zero(); inner_max + 1];
+    inv[0] = C::one();
+    for degree in 1..=inner_max {
+        let mut sum = C::zero();
+        for k in 1..=degree {
+            sum = sum.add(&den_unit[k].mul(&inv[degree - k]));
+        }
+        inv[degree] = sum.neg();
+    }
+
+    let mut num_shift = vec![C::zero(); inner_max + 1];
+    for (order, coeff) in num {
+        let shifted = *order - num_order;
+        if shifted >= 0 && shifted as usize <= inner_max {
+            num_shift[shifted as usize] = coeff.clone();
+        }
+    }
+
+    let mut coeffs = BTreeMap::new();
+    for degree in 0..=inner_max {
+        let mut coeff = C::zero();
+        for k in 0..=degree {
+            coeff = coeff.add(&num_shift[k].mul(&inv[degree - k]));
+        }
+        coeff = coeff.div(&den_lead);
+        if !coeff.is_zero() {
+            coeffs.insert(min_order + degree as i32, coeff);
+        }
+    }
+    Ok(coeffs)
 }
 
 fn lambda_index(name: &str) -> Option<usize> {
@@ -1067,6 +1267,25 @@ mod tests {
             .lambda_line_laurent_series(0, &[Rational::from(2)], 0)
             .unwrap();
         assert_eq!(pole.coefficient(-1), Rational::new(1, 2));
+    }
+
+    #[test]
+    fn lambda_line_limit_can_preserve_fiber_variables() {
+        let mu = RatFun::variable("mu_0");
+        let expr = &(&lambda(0) * &mu) / &lambda(0);
+        let limit = expr
+            .lambda_line_limit_preserving_variables(0, &[Rational::from(3)])
+            .unwrap();
+
+        assert_eq!(limit, mu);
+    }
+
+    #[test]
+    fn light_normalization_cancels_single_monomial_quotients() {
+        let mu = RatFun::variable("mu_0");
+        let expr = &mu.pow_usize(10) / &mu.pow_usize(9);
+
+        assert_eq!(expr, mu);
     }
 
     #[test]

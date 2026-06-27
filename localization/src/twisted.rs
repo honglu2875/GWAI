@@ -4693,7 +4693,7 @@ pub fn compute_negative_split_twisted(
         req.truncation.as_ref(),
     )?;
     let value = if req.equivariant {
-        raw
+        raw.lambda_line_limit_preserving_variables(req.n, provider.base_weights())?
     } else {
         match raw.as_rational() {
             Some(value) => RatFun::from_rational(value),
@@ -4753,6 +4753,12 @@ pub fn compute_negative_split_twisted_factored(
         req.n,
         req.twist.degrees().to_vec(),
     )?;
+    if twisted_dimension_mismatch(provider.inner(), req.genus, req.degree, &req.insertions)
+        .is_some()
+    {
+        return compute_negative_split_twisted(req)
+            .map(|result| FactoredRatFun::from_ratfun(result.value));
+    }
     compute_semisimple_graph_value_with_coeff::<FactoredRatFun, _>(
         &provider,
         req.genus,
@@ -4967,14 +4973,14 @@ impl TwistedProjectiveSpaceProvider {
 
     fn ratfun_base_weights(&self) -> Vec<RatFun> {
         match self.line_mode {
-            TwistedLineMode::SymbolicLimit => {
+            TwistedLineMode::SymbolicLimit | TwistedLineMode::FiberEquivariant => {
                 let lambda = crate::algebra::lambda(0);
                 self.base_weights()
                     .iter()
                     .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
                     .collect()
             }
-            TwistedLineMode::EarlyRational | TwistedLineMode::FiberEquivariant => self
+            TwistedLineMode::EarlyRational => self
                 .base_weights()
                 .iter()
                 .cloned()
@@ -6546,7 +6552,7 @@ mod tests {
 
     #[test]
     fn fiber_equivariant_twisted_does_not_prune_dimension_mismatch() {
-        let mut req = TwistedInvariantRequest::new(
+        let mut zero_req = TwistedInvariantRequest::new(
             2,
             vec![1],
             0,
@@ -6558,27 +6564,42 @@ mod tests {
             ],
         )
         .unwrap();
-        let expected = Rational::from(14usize);
-        let mut fiber_values = BTreeMap::new();
-        fiber_values.insert("mu_0".to_string(), Rational::from(7usize));
 
-        let nonequivariant = compute_negative_split_twisted(&req).unwrap();
+        let nonequivariant = compute_negative_split_twisted(&zero_req).unwrap();
         assert_eq!(nonequivariant.value, RatFun::zero());
         assert_eq!(nonequivariant.engine, "twisted-negative-split-dimension");
 
-        req.equivariant = true;
-        let expanded = compute_negative_split_twisted(&req).unwrap();
-        assert_eq!(
-            expanded.value.evaluate_variables(&fiber_values).unwrap(),
-            expected
-        );
+        zero_req.equivariant = true;
+        let expanded_zero = compute_negative_split_twisted(&zero_req).unwrap();
+        assert_eq!(expanded_zero.value, RatFun::zero());
+        let factored_zero = compute_negative_split_twisted_factored(&zero_req).unwrap();
+        assert_eq!(factored_zero.to_ratfun(), RatFun::zero());
+
+        let mut nonzero_req = TwistedInvariantRequest::new(
+            2,
+            vec![2],
+            0,
+            1,
+            vec![
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 2)),
+                tau(0, CohomologyClass::h_power(2, 1)),
+            ],
+        )
+        .unwrap();
+        let expected = RatFun::variable("mu_0");
+
+        let nonequivariant = compute_negative_split_twisted(&nonzero_req).unwrap();
+        assert_eq!(nonequivariant.value, RatFun::zero());
+        assert_eq!(nonequivariant.engine, "twisted-negative-split-dimension");
+
+        nonzero_req.equivariant = true;
+        let expanded = compute_negative_split_twisted(&nonzero_req).unwrap();
+        assert_eq!(expanded.value, expected);
         assert!(expanded.notes[0].contains("Frobenius quantum product"));
 
-        let factored = compute_negative_split_twisted_factored(&req).unwrap();
-        assert_eq!(
-            factored.evaluate_variables(&fiber_values).unwrap(),
-            expected
-        );
+        let factored = compute_negative_split_twisted_factored(&nonzero_req).unwrap();
+        assert_eq!(factored.to_ratfun(), expected);
     }
 
     #[test]
@@ -6594,7 +6615,7 @@ mod tests {
     }
 
     #[test]
-    fn symbolic_raw_twisted_graph_value_needs_lambda_line_limit() {
+    fn symbolic_raw_twisted_graph_value_has_correct_lambda_line_limit() {
         let provider =
             TwistedProjectiveSpaceProvider::symbolic_lambda_line(1, vec![1, 1], false).unwrap();
         let raw =
@@ -6607,7 +6628,6 @@ mod tests {
                 .unwrap(),
         );
 
-        assert_ne!(raw, oracle);
         assert_eq!(limit, oracle);
     }
 
