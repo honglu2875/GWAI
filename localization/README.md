@@ -176,13 +176,12 @@ Notes:
 - `--equivariant` on a twisted command uses early-specialized base weights and
   keeps one symbolic fiber parameter `mu_i` for each summand `O(-a_i)`.  The
   default output uses the expanded `RatFun` engine.
-- Add `--factored` with `--equivariant` to use the factored rational
-  coefficient engine for the same fiber-equivariant target.  This keeps
-  denominator factors unexpanded during symbolic coefficient arithmetic.  The
-  descendant S-calibration, Birkhoff/QRR R-calibration, and graph-kernel
-  construction are built natively in the factored engine.  Genus-zero
-  three-point primary requests use the equivalent Frobenius quantum product
-  directly instead of expanding the stable graph formula.
+- `--factored` is accepted only together with `--equivariant`.  It uses a
+  factored rational coefficient engine for the same fiber-equivariant target,
+  keeping denominator factors unexpanded during symbolic coefficient
+  arithmetic.  It is not strictly better than expanded output: factored output
+  can be much smaller for symbolic denominators, while expanded `RatFun` output
+  can simplify better in small cases and remains useful for validation.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -442,11 +441,11 @@ computation shortcuts.
 
 ## TODO
 
-- Continue improving the factored rational-function engine for full symbolic
-  equivariant negative split-bundle graph contractions.  The public twisted CLI
-  has an explicit `--equivariant --factored` mode with native factored S/R
-  calibration and graph kernels.  Remaining work: avoid dense canonical-leg
-  product blow-up in larger stable symbolic graph contractions.
+- Continue improving the optional factored rational-function engine for full
+  symbolic equivariant negative split-bundle graph contractions.  It is exposed
+  only as `--equivariant --factored`; non-equivariant computations use the
+  ordinary rational engine.  Remaining work: avoid dense canonical-leg product
+  blow-up in larger stable symbolic graph contractions.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.

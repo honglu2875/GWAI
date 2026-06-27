@@ -1274,7 +1274,11 @@ Commands:\n\
 \n\
 Supported compute seed cases:\n\
   P^0 point-theory psi integrals, genus-zero degree-zero constants,\n\
-  and genus-zero three-point primary small quantum products."
+  and genus-zero three-point primary small quantum products.\n\
+\n\
+Twisted flags:\n\
+  --factored is only valid with --equivariant; it preserves symbolic\n\
+  denominator factors and is not a general replacement for expanded output."
     );
 }
 
