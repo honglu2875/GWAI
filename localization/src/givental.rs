@@ -3558,21 +3558,24 @@ fn rational_vertex_tft_factor(
     genus_factor.mul(&kernel.relative_sqrt_delta[color].pow_usize(valence))
 }
 
-struct ExternalGraphChunkResult {
-    total: ExternalLegKernel,
+struct ExternalGraphChunkResult<C = RatFun> {
+    total: ExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_external_graphs_parallel(
+fn evaluate_external_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &Arc<GiventalGraphKernel>,
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> ExternalLegKernel {
+) -> ExternalLegKernel<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3614,7 +3617,7 @@ fn evaluate_external_graphs_parallel(
         })
     };
 
-    let mut total = ExternalLegKernel::zero(markings, colors, graph_dimension, q_degree);
+    let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     let mut shared_vertex_cache = kernel.vertex_cache.lock().unwrap();
     for result in results {
         profile.absorb_graph_counts(&result.profile);
@@ -3626,18 +3629,21 @@ fn evaluate_external_graphs_parallel(
     total
 }
 
-fn evaluate_external_graph_chunk(
+fn evaluate_external_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &GiventalGraphKernel,
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> ExternalGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> ExternalGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
-    let mut total = ExternalLegKernel::zero(markings, colors, graph_dimension, q_degree);
+    let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     for prepared in graphs {
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
@@ -3645,7 +3651,7 @@ fn evaluate_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_states = Vec::with_capacity(markings);
-            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3658,7 +3664,7 @@ fn evaluate_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring_factor),
+                QSeries::<C>::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3675,20 +3681,23 @@ fn evaluate_external_graph_chunk(
     }
 }
 
-struct RestrictedExternalGraphChunkResult {
-    total: RestrictedExternalLegKernel,
+struct RestrictedExternalGraphChunkResult<C = RatFun> {
+    total: RestrictedExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_restricted_external_graphs_parallel(
+fn evaluate_restricted_external_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
-    template: &RestrictedExternalLegKernel,
-    kernel: &Arc<GiventalGraphKernel>,
+    template: &RestrictedExternalLegKernel<C>,
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> RestrictedExternalLegKernel {
+) -> RestrictedExternalLegKernel<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3740,14 +3749,17 @@ fn evaluate_restricted_external_graphs_parallel(
     total
 }
 
-fn evaluate_restricted_external_graph_chunk(
+fn evaluate_restricted_external_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
-    template: &RestrictedExternalLegKernel,
-    kernel: &GiventalGraphKernel,
+    template: &RestrictedExternalLegKernel<C>,
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> RestrictedExternalGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> RestrictedExternalGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
     let mut total = template.zero_like();
@@ -3758,7 +3770,7 @@ fn evaluate_restricted_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_state_indices = Vec::with_capacity(template.markings);
-            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_restricted_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3771,7 +3783,7 @@ fn evaluate_restricted_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring_factor),
+                QSeries::<C>::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3804,19 +3816,19 @@ struct ExternalLegState {
 }
 
 #[derive(Debug, Clone)]
-struct ExternalLegKernel {
+struct ExternalLegKernel<C = RatFun> {
     markings: usize,
     colors: usize,
     max_power: usize,
     q_degree: usize,
     state_count: usize,
-    entries: Vec<QSeries>,
+    entries: Vec<QSeries<C>>,
 }
 
-impl ExternalLegKernel {
+impl<C: Coeff> ExternalLegKernel<C> {
     fn zero(markings: usize, colors: usize, max_power: usize, q_degree: usize) -> Self {
         let state_count = colors * (max_power + 1);
-        let entries = vec![QSeries::zero(q_degree); state_count.pow(markings as u32)];
+        let entries = vec![QSeries::<C>::zero(q_degree); state_count.pow(markings as u32)];
         Self {
             markings,
             colors,
@@ -3851,7 +3863,7 @@ impl ExternalLegKernel {
         index
     }
 
-    fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries) {
+    fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries<C>) {
         if value.is_zero() {
             return;
         }
@@ -3879,7 +3891,7 @@ struct RestrictedLegState {
 }
 
 #[derive(Debug, Clone)]
-struct RestrictedExternalLegKernel {
+struct RestrictedExternalLegKernel<C = RatFun> {
     markings: usize,
     colors: usize,
     max_power: usize,
@@ -3888,10 +3900,10 @@ struct RestrictedExternalLegKernel {
     state_index_by_marking_color_power: Vec<Vec<Vec<Option<usize>>>>,
     state_counts: Vec<usize>,
     strides: Vec<usize>,
-    entries: Vec<QSeries>,
+    entries: Vec<QSeries<C>>,
 }
 
-impl RestrictedExternalLegKernel {
+impl<C: Coeff> RestrictedExternalLegKernel<C> {
     fn from_tasks(
         markings: usize,
         colors: usize,
@@ -3938,7 +3950,7 @@ impl RestrictedExternalLegKernel {
             strides[marking] = entries_len;
             entries_len = entries_len.saturating_mul(state_counts[marking]);
         }
-        let entries = vec![QSeries::zero(q_degree); entries_len];
+        let entries = vec![QSeries::<C>::zero(q_degree); entries_len];
 
         Self {
             markings,
@@ -3955,7 +3967,7 @@ impl RestrictedExternalLegKernel {
 
     fn zero_like(&self) -> Self {
         let mut out = self.clone();
-        out.entries = vec![QSeries::zero(self.q_degree); self.entries.len()];
+        out.entries = vec![QSeries::<C>::zero(self.q_degree); self.entries.len()];
         out
     }
 
@@ -3968,7 +3980,7 @@ impl RestrictedExternalLegKernel {
             .sum()
     }
 
-    fn add_term(&mut self, state_indices: &[usize], value: &QSeries) {
+    fn add_term(&mut self, state_indices: &[usize], value: &QSeries<C>) {
         if value.is_zero() || self.entries.is_empty() {
             return;
         }
@@ -3995,29 +4007,37 @@ fn contract_external_leg_kernel_coeff(
     leg_options: &[Vec<Vec<LegFactorOption>>],
     degree: usize,
 ) -> RatFun {
+    contract_external_leg_kernel_coeff_generic(kernel, leg_options, degree)
+}
+
+fn contract_external_leg_kernel_coeff_generic<C: Coeff>(
+    kernel: &ExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    degree: usize,
+) -> C {
     debug_assert_eq!(kernel.markings, leg_options.len());
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     let mut state_indices = vec![0usize; kernel.markings];
-    contract_external_leg_kernel_coeff_rec(
+    contract_external_leg_kernel_coeff_generic_rec(
         kernel,
         leg_options,
         degree,
         0,
-        QSeries::one(kernel.q_degree),
+        QSeries::<C>::one(kernel.q_degree),
         &mut state_indices,
         &mut total,
     );
     total
 }
 
-fn contract_external_leg_kernel_coeff_rec(
-    kernel: &ExternalLegKernel,
-    leg_options: &[Vec<Vec<LegFactorOption>>],
+fn contract_external_leg_kernel_coeff_generic_rec<C: Coeff>(
+    kernel: &ExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
     degree: usize,
     marking: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     state_indices: &mut [usize],
-    total: &mut RatFun,
+    total: &mut C,
 ) {
     if coefficient.is_zero() {
         return;
@@ -4027,7 +4047,11 @@ fn contract_external_leg_kernel_coeff_rec(
         if kernel.entries[index].is_zero() {
             return;
         }
-        *total = &*total + &qseries_mul_coeff(&coefficient, &kernel.entries[index], degree);
+        *total = total.add(&qseries_mul_coeff_generic(
+            &coefficient,
+            &kernel.entries[index],
+            degree,
+        ));
         return;
     }
 
@@ -4041,7 +4065,7 @@ fn contract_external_leg_kernel_coeff_rec(
                 continue;
             }
             state_indices[marking] = kernel.state_index(color, option.power);
-            contract_external_leg_kernel_coeff_rec(
+            contract_external_leg_kernel_coeff_generic_rec(
                 kernel,
                 leg_options,
                 degree,
@@ -4059,32 +4083,40 @@ fn contract_restricted_external_leg_kernel_coeff(
     leg_options: &[Vec<Vec<LegFactorOption>>],
     degree: usize,
 ) -> RatFun {
+    contract_restricted_external_leg_kernel_coeff_generic(kernel, leg_options, degree)
+}
+
+fn contract_restricted_external_leg_kernel_coeff_generic<C: Coeff>(
+    kernel: &RestrictedExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    degree: usize,
+) -> C {
     debug_assert_eq!(kernel.markings, leg_options.len());
     if kernel.entries.is_empty() {
-        return RatFun::zero();
+        return C::zero();
     }
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     let mut state_indices = vec![0usize; kernel.markings];
-    contract_restricted_external_leg_kernel_coeff_rec(
+    contract_restricted_external_leg_kernel_coeff_generic_rec(
         kernel,
         leg_options,
         degree,
         0,
-        QSeries::one(kernel.q_degree),
+        QSeries::<C>::one(kernel.q_degree),
         &mut state_indices,
         &mut total,
     );
     total
 }
 
-fn contract_restricted_external_leg_kernel_coeff_rec(
-    kernel: &RestrictedExternalLegKernel,
-    leg_options: &[Vec<Vec<LegFactorOption>>],
+fn contract_restricted_external_leg_kernel_coeff_generic_rec<C: Coeff>(
+    kernel: &RestrictedExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
     degree: usize,
     marking: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     state_indices: &mut [usize],
-    total: &mut RatFun,
+    total: &mut C,
 ) {
     if coefficient.is_zero() {
         return;
@@ -4094,7 +4126,11 @@ fn contract_restricted_external_leg_kernel_coeff_rec(
         if kernel.entries[index].is_zero() {
             return;
         }
-        *total = &*total + &qseries_mul_coeff(&coefficient, &kernel.entries[index], degree);
+        *total = total.add(&qseries_mul_coeff_generic(
+            &coefficient,
+            &kernel.entries[index],
+            degree,
+        ));
         return;
     }
 
@@ -4113,7 +4149,7 @@ fn contract_restricted_external_leg_kernel_coeff_rec(
                 continue;
             }
             state_indices[marking] = state_index;
-            contract_restricted_external_leg_kernel_coeff_rec(
+            contract_restricted_external_leg_kernel_coeff_generic_rec(
                 kernel,
                 leg_options,
                 degree,
@@ -4126,9 +4162,9 @@ fn contract_restricted_external_leg_kernel_coeff_rec(
     }
 }
 
-fn qseries_mul_coeff(left: &QSeries, right: &QSeries, degree: usize) -> RatFun {
+fn qseries_mul_coeff_generic<C: Coeff>(left: &QSeries<C>, right: &QSeries<C>, degree: usize) -> C {
     let max_left = left.max_degree().min(degree);
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     for left_degree in 0..=max_left {
         let right_degree = degree - left_degree;
         if right_degree > right.max_degree() {
@@ -4146,31 +4182,33 @@ fn qseries_mul_coeff(left: &QSeries, right: &QSeries, degree: usize) -> RatFun {
         if right_coeff.is_zero() {
             continue;
         }
-        total = &total + &(left_coeff * right_coeff);
+        total = total.add(&left_coeff.mul(right_coeff));
     }
     total
 }
 
-fn accumulate_external_leg_graph_factors(
+fn accumulate_external_leg_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
     external_states: &mut Vec<ExternalLegState>,
-    total: &mut ExternalLegKernel,
+    total: &mut ExternalLegKernel<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     if profile.enabled {
         profile.recursion_calls += 1;
     }
@@ -4291,7 +4329,7 @@ fn accumulate_external_leg_graph_factors(
         return;
     }
 
-    let mut vertex_product = QSeries::one(q_degree);
+    let mut vertex_product = QSeries::<C>::one(q_degree);
     for (vertex, powers) in base_powers.iter().enumerate() {
         let vertex_sum = vertex_contribution_with_translations(
             graph.vertices[vertex].genus,
@@ -4315,27 +4353,29 @@ fn accumulate_external_leg_graph_factors(
     total.add_term(external_states, &coefficient.mul(&vertex_product));
 }
 
-fn accumulate_restricted_external_leg_graph_factors(
+fn accumulate_restricted_external_leg_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
     external_state_indices: &mut Vec<usize>,
     states_by_marking_color: &[Vec<Vec<RestrictedLegState>>],
-    total: &mut RestrictedExternalLegKernel,
+    total: &mut RestrictedExternalLegKernel<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     if profile.enabled {
         profile.recursion_calls += 1;
     }
@@ -4463,7 +4503,7 @@ fn accumulate_restricted_external_leg_graph_factors(
         return;
     }
 
-    let mut vertex_product = QSeries::one(q_degree);
+    let mut vertex_product = QSeries::<C>::one(q_degree);
     for (vertex, powers) in base_powers.iter().enumerate() {
         let vertex_sum = vertex_contribution_with_translations(
             graph.vertices[vertex].genus,
@@ -5007,9 +5047,8 @@ where
     let mut total = QSeries::<C>::zero(q_degree);
     if translation_excess == 0 {
         let vertex_factor = vertex_tft_factor(genus, base_powers.len(), color, calibration);
-        total = total.add(&vertex_factor.scale(&C::from_rational(
-            oracle.psi_integral(genus, base_powers),
-        )));
+        total = total
+            .add(&vertex_factor.scale(&C::from_rational(oracle.psi_integral(genus, base_powers))));
     }
 
     for partition in translation_excess_partitions(translation_excess as usize) {
@@ -5048,9 +5087,7 @@ where
 
         let vertex_factor = vertex_tft_factor(genus, powers.len(), color, calibration);
         let psi = C::from_rational(oracle.psi_integral(genus, &powers));
-        let term = coefficient
-            .mul(&vertex_factor)
-            .scale(&psi.div(&symmetry));
+        let term = coefficient.mul(&vertex_factor).scale(&psi.div(&symmetry));
         total = total.add(&term);
     }
     vertex_cache.insert(key, total.clone());
@@ -5176,8 +5213,7 @@ fn prepared_stable_graphs(
     let graphs = stable_graphs(genus, markings)
         .into_iter()
         .map(|graph| {
-            let automorphism_factor =
-                Rational::one() / Rational::from(graph.automorphism_order());
+            let automorphism_factor = Rational::one() / Rational::from(graph.automorphism_order());
             let colorings = vertex_coloring_orbits(&graph, colors)
                 .iter()
                 .map(|orbit| PreparedColoringOrbit {
@@ -6085,10 +6121,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn scalar_graph_contraction_accepts_factored_coefficients() {
-        let q_degree = 0;
-        let graph_dimension = 0;
+    fn factored_identity_kernel(
+        q_degree: usize,
+        graph_dimension: usize,
+    ) -> (
+        Arc<GiventalGraphKernel<FactoredRatFun>>,
+        QSeries<FactoredRatFun>,
+    ) {
         let size = 1;
         let matrix = SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
         let scalar = QSeries::<FactoredRatFun>::one(q_degree);
@@ -6108,9 +6147,18 @@ mod tests {
             relative_sqrt_delta: vec![scalar.clone()],
             relative_sqrt_delta_inverse: vec![scalar.clone()],
         };
-        let kernel = Arc::new(
-            GiventalGraphKernel::from_calibration(calibration, graph_dimension).unwrap(),
-        );
+        (
+            Arc::new(GiventalGraphKernel::from_calibration(calibration, graph_dimension).unwrap()),
+            scalar,
+        )
+    }
+
+    #[test]
+    fn scalar_graph_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
         let graphs = prepared_stable_graphs(0, 3, size);
         let unit_leg = LegFactorOption {
             power: 0,
@@ -6128,9 +6176,88 @@ mod tests {
             &mut profile,
         );
 
+        assert_eq!(total.coeff(0).unwrap(), &<FactoredRatFun as Coeff>::one());
+    }
+
+    #[test]
+    fn external_leg_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let markings = 3;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
+        let graphs = prepared_stable_graphs(0, markings, size);
+        let mut profile = GraphEvalProfile::new();
+        let external_kernel = evaluate_external_graphs_parallel(
+            graphs.as_ref(),
+            markings,
+            size,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; markings];
+
         assert_eq!(
-            total.coeff(0).unwrap(),
-            &<FactoredRatFun as Coeff>::one()
+            contract_external_leg_kernel_coeff_generic(&external_kernel, &leg_options, 0),
+            <FactoredRatFun as Coeff>::one()
+        );
+    }
+
+    #[test]
+    fn restricted_external_leg_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let markings = 3;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
+        let graphs = prepared_stable_graphs(0, markings, size);
+
+        let ratfun_unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: QSeries::one(q_degree),
+        };
+        let template_task = MasterContractionTask {
+            ordinal: 0,
+            degree: 0,
+            insertions: Vec::new(),
+            markings,
+            leg_options: vec![vec![vec![ratfun_unit_leg]]; markings],
+        };
+        let template = RestrictedExternalLegKernel::<FactoredRatFun>::from_tasks(
+            markings,
+            size,
+            graph_dimension,
+            q_degree,
+            &[template_task],
+        );
+        let mut profile = GraphEvalProfile::new();
+        let restricted_kernel = evaluate_restricted_external_graphs_parallel(
+            graphs.as_ref(),
+            &template,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; markings];
+
+        assert_eq!(
+            contract_restricted_external_leg_kernel_coeff_generic(
+                &restricted_kernel,
+                &leg_options,
+                0
+            ),
+            <FactoredRatFun as Coeff>::one()
         );
     }
 }

@@ -491,7 +491,8 @@ mod tests {
         assert_eq!(calibration.r_matrix.size(), size);
         assert_eq!(calibration.r_matrix.q_degree(), q_degree);
 
-        let kernel = crate::givental::GiventalGraphKernel::from_calibration(calibration, 1).unwrap();
+        let kernel =
+            crate::givental::GiventalGraphKernel::from_calibration(calibration, 1).unwrap();
         assert_eq!(kernel.inverse_r().len(), z_order + 1);
         assert_eq!(kernel.translation().len(), size);
     }
