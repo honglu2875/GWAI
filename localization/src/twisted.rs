@@ -19,7 +19,7 @@
 //! local-`P^2` genus-2 row; genus-4 local curve computations are the next
 //! observed performance frontier.
 
-use crate::algebra::{RatFun, Rational};
+use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
 use crate::factored::FactoredRatFun;
 use crate::givental::{
@@ -425,12 +425,14 @@ fn h_affine_power_mod_relation(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct HRatFunLaurentSeries {
+struct HCoeffLaurentSeries<C = RatFun> {
     max_h_power: usize,
-    coeffs: Vec<BTreeMap<i32, RatFun>>,
+    coeffs: Vec<BTreeMap<i32, C>>,
 }
 
-impl HRatFunLaurentSeries {
+type HRatFunLaurentSeries = HCoeffLaurentSeries<RatFun>;
+
+impl<C: Coeff> HCoeffLaurentSeries<C> {
     fn zero(max_h_power: usize) -> Self {
         Self {
             max_h_power,
@@ -440,16 +442,16 @@ impl HRatFunLaurentSeries {
 
     fn one(max_h_power: usize) -> Self {
         let mut out = Self::zero(max_h_power);
-        out.coeffs[0].insert(0, RatFun::one());
+        out.coeffs[0].insert(0, C::one());
         out
     }
 
-    fn coefficient(&self, h_power: usize, z_power: i32) -> RatFun {
+    fn coefficient(&self, h_power: usize, z_power: i32) -> C {
         self.coeffs
             .get(h_power)
             .and_then(|terms| terms.get(&z_power))
             .cloned()
-            .unwrap_or_else(RatFun::zero)
+            .unwrap_or_else(C::zero)
     }
 
     fn max_h_power(&self) -> usize {
@@ -471,14 +473,14 @@ impl HRatFunLaurentSeries {
         out
     }
 
-    fn scale(&self, scalar: RatFun) -> Self {
+    fn scale(&self, scalar: C) -> Self {
         if scalar.is_zero() {
             return Self::zero(self.max_h_power);
         }
         let mut out = Self::zero(self.max_h_power);
         for h_power in 0..=self.max_h_power {
             for (z_power, coeff) in &self.coeffs[h_power] {
-                out.add_term(h_power, *z_power, coeff.clone() * scalar.clone());
+                out.add_term(h_power, *z_power, coeff.mul(&scalar));
             }
         }
         out
@@ -494,16 +496,16 @@ impl HRatFunLaurentSeries {
         out
     }
 
-    fn multiply_mod_relation(&self, rhs: &Self, h_power_relation: &[RatFun]) -> Self {
+    fn multiply_mod_relation(&self, rhs: &Self, h_power_relation: &[C]) -> Self {
         assert_eq!(self.max_h_power, rhs.max_h_power);
         assert_eq!(h_power_relation.len(), self.max_h_power + 1);
-        let basis_powers = h_basis_powers_mod_relation_ratfun(self.max_h_power, h_power_relation);
+        let basis_powers = h_basis_powers_mod_relation_coeff(self.max_h_power, h_power_relation);
         let mut out = Self::zero(self.max_h_power);
         for left_h in 0..=self.max_h_power {
             for (left_z, left_coeff) in &self.coeffs[left_h] {
                 for right_h in 0..=self.max_h_power {
                     for (right_z, right_coeff) in &rhs.coeffs[right_h] {
-                        let scalar = left_coeff.clone() * right_coeff.clone();
+                        let scalar = left_coeff.mul(right_coeff);
                         if scalar.is_zero() {
                             continue;
                         }
@@ -513,11 +515,7 @@ impl HRatFunLaurentSeries {
                             if reduced_coeff.is_zero() {
                                 continue;
                             }
-                            out.add_term(
-                                reduced_h,
-                                left_z + right_z,
-                                scalar.clone() * reduced_coeff.clone(),
-                            );
+                            out.add_term(reduced_h, left_z + right_z, scalar.mul(reduced_coeff));
                         }
                     }
                 }
@@ -528,31 +526,31 @@ impl HRatFunLaurentSeries {
 
     fn multiply_by_affine_mod_relation(
         &self,
-        h_coeff: RatFun,
-        constant: RatFun,
-        z_coeff: RatFun,
-        h_power_relation: &[RatFun],
+        h_coeff: C,
+        constant: C,
+        z_coeff: C,
+        h_power_relation: &[C],
     ) -> Self {
         assert_eq!(h_power_relation.len(), self.max_h_power + 1);
         let mut out = Self::zero(self.max_h_power);
         for h_power in 0..=self.max_h_power {
             for (z_power, coeff) in &self.coeffs[h_power] {
                 if !constant.is_zero() {
-                    out.add_term(h_power, *z_power, coeff.clone() * constant.clone());
+                    out.add_term(h_power, *z_power, coeff.mul(&constant));
                 }
                 if !z_coeff.is_zero() {
-                    out.add_term(h_power, z_power + 1, coeff.clone() * z_coeff.clone());
+                    out.add_term(h_power, z_power + 1, coeff.mul(&z_coeff));
                 }
                 if !h_coeff.is_zero() {
                     if h_power < self.max_h_power {
-                        out.add_term(h_power + 1, *z_power, coeff.clone() * h_coeff.clone());
+                        out.add_term(h_power + 1, *z_power, coeff.mul(&h_coeff));
                     } else {
                         for (reduced_h, reduced_coeff) in h_power_relation.iter().enumerate() {
                             if !reduced_coeff.is_zero() {
                                 out.add_term(
                                     reduced_h,
                                     *z_power,
-                                    coeff.clone() * h_coeff.clone() * reduced_coeff.clone(),
+                                    coeff.mul(&h_coeff).mul(reduced_coeff),
                                 );
                             }
                         }
@@ -575,12 +573,16 @@ impl HRatFunLaurentSeries {
         out
     }
 
-    fn add_term(&mut self, h_power: usize, z_power: i32, coeff: RatFun) {
+    fn add_term(&mut self, h_power: usize, z_power: i32, coeff: C) {
         if coeff.is_zero() || h_power > self.max_h_power {
             return;
         }
         let terms = &mut self.coeffs[h_power];
-        let next = terms.get(&z_power).cloned().unwrap_or_else(RatFun::zero) + coeff;
+        let next = terms
+            .get(&z_power)
+            .cloned()
+            .unwrap_or_else(C::zero)
+            .add(&coeff);
         if next.is_zero() {
             terms.remove(&z_power);
         } else {
@@ -589,22 +591,22 @@ impl HRatFunLaurentSeries {
     }
 }
 
-fn h_basis_powers_mod_relation_ratfun(
+fn h_basis_powers_mod_relation_coeff<C: Coeff>(
     max_h_power: usize,
-    h_power_relation: &[RatFun],
-) -> Vec<Vec<RatFun>> {
-    let mut powers = vec![vec![RatFun::zero(); max_h_power + 1]; 2 * max_h_power + 1];
-    powers[0][0] = RatFun::one();
+    h_power_relation: &[C],
+) -> Vec<Vec<C>> {
+    let mut powers = vec![vec![C::zero(); max_h_power + 1]; 2 * max_h_power + 1];
+    powers[0][0] = C::one();
     for power in 1..=2 * max_h_power {
         for h_power in 0..max_h_power {
             powers[power][h_power + 1] =
-                powers[power][h_power + 1].clone() + powers[power - 1][h_power].clone();
+                powers[power][h_power + 1].add(&powers[power - 1][h_power]);
         }
         let top_coeff = powers[power - 1][max_h_power].clone();
         if !top_coeff.is_zero() {
             for (reduced_h, relation_coeff) in h_power_relation.iter().enumerate() {
                 powers[power][reduced_h] =
-                    powers[power][reduced_h].clone() + top_coeff.clone() * relation_coeff.clone();
+                    powers[power][reduced_h].add(&top_coeff.mul(relation_coeff));
             }
         }
     }
@@ -6154,6 +6156,21 @@ mod tests {
                 .coeff(0)
                 .unwrap()
                 .clone()
+        );
+    }
+
+    #[test]
+    fn generic_h_laurent_series_preserves_factored_coefficients() {
+        let mu = FactoredRatFun::variable("mu_0");
+        let mut series = HCoeffLaurentSeries::<FactoredRatFun>::one(1);
+        series.add_term(1, -1, mu.clone());
+        let relation = vec![FactoredRatFun::one(), FactoredRatFun::zero()];
+        let product = series.multiply_mod_relation(&series, &relation);
+
+        assert_eq!(product.coefficient(0, 0).to_ratfun(), RatFun::one());
+        assert_eq!(
+            product.coefficient(1, -1).to_ratfun(),
+            &RatFun::from(2usize) * &RatFun::variable("mu_0")
         );
     }
 
