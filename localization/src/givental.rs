@@ -1494,22 +1494,22 @@ pub fn product_of_point_theories(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AncestorLegTerm {
+struct AncestorLegTerm<C = RatFun> {
     base_power: usize,
-    vector: Vec<QSeries>,
+    vector: Vec<QSeries<C>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LegFactorOption {
+struct LegFactorOption<C = RatFun> {
     power: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EdgeFactorOption {
+struct EdgeFactorOption<C = RatFun> {
     left_power: usize,
     right_power: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1634,22 +1634,22 @@ struct GraphKernelCacheKey {
 }
 
 #[derive(Debug)]
-pub struct GiventalGraphKernel {
-    calibration: SemisimpleCalibration,
-    inverse_r: Vec<SeriesMatrix>,
-    translation: Vec<Vec<QSeries>>,
-    edge_options: Vec<Vec<Vec<EdgeFactorOption>>>,
-    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries>>,
+pub struct GiventalGraphKernel<C = RatFun> {
+    calibration: SemisimpleCalibration<C>,
+    inverse_r: Vec<SeriesMatrix<C>>,
+    translation: Vec<Vec<QSeries<C>>>,
+    edge_options: Vec<Vec<Vec<EdgeFactorOption<C>>>>,
+    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries<C>>>,
 }
 
-impl GiventalGraphKernel {
+impl<C: Coeff> GiventalGraphKernel<C> {
     /// Builds the Feynman-rule kernel from a semisimple calibration.
     ///
     /// This performs the universal part of quantization:
     /// `R -> R^{-1}`, `R^{-1}1 -> T`, and `R^{-1},eta^{-1} ->` edge
     /// propagators.  It does not inspect target geometry.
     pub fn from_calibration(
-        calibration: SemisimpleCalibration,
+        calibration: SemisimpleCalibration<C>,
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
         let q_degree = calibration.r_matrix.q_degree();
@@ -1665,9 +1665,9 @@ impl GiventalGraphKernel {
     /// Twisted-theory experiments use this to test alternate QRR/Birkhoff
     /// calibrations without reusing the default projective-space construction.
     pub fn from_parts(
-        calibration: SemisimpleCalibration,
-        inverse_r: Vec<SeriesMatrix>,
-        translation: Vec<Vec<QSeries>>,
+        calibration: SemisimpleCalibration<C>,
+        inverse_r: Vec<SeriesMatrix<C>>,
+        translation: Vec<Vec<QSeries<C>>>,
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
         let q_degree = calibration.r_matrix.q_degree();
@@ -1687,15 +1687,15 @@ impl GiventalGraphKernel {
         })
     }
 
-    pub fn calibration(&self) -> &SemisimpleCalibration {
+    pub fn calibration(&self) -> &SemisimpleCalibration<C> {
         &self.calibration
     }
 
-    pub fn inverse_r(&self) -> &[SeriesMatrix] {
+    pub fn inverse_r(&self) -> &[SeriesMatrix<C>] {
         &self.inverse_r
     }
 
-    pub fn translation(&self) -> &[Vec<QSeries>] {
+    pub fn translation(&self) -> &[Vec<QSeries<C>>] {
         &self.translation
     }
 }
@@ -4563,7 +4563,7 @@ fn apply_matrix_to_vector(
         .collect()
 }
 
-fn inverse_r_coefficients(coefficients: &[SeriesMatrix]) -> Vec<SeriesMatrix> {
+fn inverse_r_coefficients<C: Coeff>(coefficients: &[SeriesMatrix<C>]) -> Vec<SeriesMatrix<C>> {
     // Formal inverse of R(z) with R_0 = 1.  The recurrence is the coefficient
     // extraction of R(z) R(z)^{-1} = 1.
     let size = coefficients[0].rows();
@@ -4580,11 +4580,14 @@ fn inverse_r_coefficients(coefficients: &[SeriesMatrix]) -> Vec<SeriesMatrix> {
     inverse
 }
 
-fn translation_coefficients(
-    inverse_r: &[SeriesMatrix],
-    unit: &[QSeries],
+fn translation_coefficients<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    unit: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<Vec<QSeries>> {
+) -> Vec<Vec<QSeries<C>>>
+where
+    C: Coeff,
+{
     // Givental's translation is T(psi)=psi(1-R^{-1})1.  Since R^{-1}_0=1, the
     // first nonzero coefficient appears at psi^2.
     let size = unit.len();
@@ -4602,12 +4605,15 @@ fn translation_coefficients(
     out
 }
 
-fn edge_propagator_coefficients(
-    inverse_r: &[SeriesMatrix],
-    metric: &SeriesMatrix,
+fn edge_propagator_coefficients<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    metric: &SeriesMatrix<C>,
     max_power: usize,
     q_degree: usize,
-) -> Result<Vec<Vec<Vec<Vec<QSeries>>>>, GwError> {
+) -> Result<Vec<Vec<Vec<Vec<QSeries<C>>>>>, GwError>
+where
+    C: Coeff,
+{
     // The edge term is the regular part of
     //   (eta^{-1} - R^{-1}(psi_1) eta^{-1} R^{-1}(-psi_2)^T)
     //       / (psi_1 + psi_2).
@@ -4650,15 +4656,18 @@ fn edge_propagator_coefficients(
     Ok(out)
 }
 
-fn edge_numerator_coefficient(
-    inverse_r: &[SeriesMatrix],
-    metric_inverse: &[QSeries],
+fn edge_numerator_coefficient<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    metric_inverse: &[QSeries<C>],
     left_color: usize,
     right_color: usize,
     left_power: usize,
     right_power: usize,
     q_degree: usize,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     if left_power >= inverse_r.len() || right_power >= inverse_r.len() {
         return QSeries::zero(q_degree);
     }
@@ -4896,9 +4905,9 @@ fn leg_options_for_color(
         .collect()
 }
 
-fn edge_options_by_color(
-    edge_coefficients: &[Vec<Vec<Vec<QSeries>>>],
-) -> Vec<Vec<Vec<EdgeFactorOption>>> {
+fn edge_options_by_color<C: Coeff>(
+    edge_coefficients: &[Vec<Vec<Vec<QSeries<C>>>>],
+) -> Vec<Vec<Vec<EdgeFactorOption<C>>>> {
     let colors = edge_coefficients.len();
     (0..colors)
         .map(|left_color| {
@@ -4911,11 +4920,14 @@ fn edge_options_by_color(
         .collect()
 }
 
-fn edge_options_for_colors(
+fn edge_options_for_colors<C>(
     left_color: usize,
     right_color: usize,
-    edge_coefficients: &[Vec<Vec<Vec<QSeries>>>],
-) -> Vec<EdgeFactorOption> {
+    edge_coefficients: &[Vec<Vec<Vec<QSeries<C>>>>],
+) -> Vec<EdgeFactorOption<C>>
+where
+    C: Coeff,
+{
     let max_power = edge_coefficients[left_color][right_color]
         .len()
         .saturating_sub(1);
