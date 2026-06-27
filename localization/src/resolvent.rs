@@ -183,6 +183,22 @@ impl<C: ResolventCoefficient> ResolventPolynomial<C> {
     }
 }
 
+impl ResolventPolynomial<FactoredRatFun> {
+    pub fn evaluate_variables(
+        &self,
+        values: &BTreeMap<String, Rational>,
+    ) -> Result<ResolventPolynomial, GwError> {
+        let mut out = ResolventPolynomial::zero();
+        for (monomial, coefficient) in &self.terms {
+            out.add_term(
+                monomial.clone(),
+                RatFun::from_rational(coefficient.evaluate_variables(values)?),
+            );
+        }
+        Ok(out)
+    }
+}
+
 impl<C: ResolventCoefficient> fmt::Display for ResolventPolynomial<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.terms.is_empty() {

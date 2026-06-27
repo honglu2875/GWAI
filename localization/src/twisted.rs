@@ -6779,6 +6779,43 @@ mod tests {
         assert_eq!(result.value.term_count(), 2);
         assert!(result.value.coefficient_text_contains("mu_0"));
         assert!(result.value.coefficient_text_contains("mu_1"));
+
+        for (mu0, mu1) in [(3usize, 5usize), (5, 7)] {
+            let mut values = BTreeMap::new();
+            values.insert("mu_0".to_string(), Rational::from(mu0));
+            values.insert("mu_1".to_string(), Rational::from(mu1));
+            let specialized = result.value.evaluate_variables(&values).unwrap();
+
+            let rational_provider =
+                TwistedProjectiveSpaceProvider::rational_lambda_line_with_weights(
+                    1,
+                    vec![1, 1],
+                    twisted_default_base_weights(1),
+                    vec![Rational::from(mu0), Rational::from(mu1)],
+                )
+                .unwrap();
+            let rational = crate::givental::compute_packed_resolvent_with_provider(
+                &req,
+                rational_provider,
+                "test-rational-fiber-resolvent",
+                "test",
+                Ok::<RatFun, GwError>,
+            )
+            .unwrap();
+            assert_eq!(
+                specialized, rational.value,
+                "specialization mu_0={mu0}, mu_1={mu1}"
+            );
+        }
+
+        let mut values = BTreeMap::new();
+        values.insert("mu_0".to_string(), Rational::from(3usize));
+        values.insert("mu_1".to_string(), Rational::from(5usize));
+        let left = result.value.evaluate_variables(&values).unwrap();
+        values.insert("mu_0".to_string(), Rational::from(5usize));
+        values.insert("mu_1".to_string(), Rational::from(3usize));
+        let right = result.value.evaluate_variables(&values).unwrap();
+        assert_eq!(left, right, "O(-1)+O(-1) symmetry swaps fiber weights");
     }
 
     #[test]
