@@ -3047,20 +3047,23 @@ fn contract_restricted_task_chunk(
     out
 }
 
-struct ScalarGraphChunkResult {
-    total: QSeries,
+struct ScalarGraphChunkResult<C = RatFun> {
+    total: QSeries<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_scalar_graphs_parallel(
+fn evaluate_scalar_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &Arc<GiventalGraphKernel>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3100,7 +3103,7 @@ fn evaluate_scalar_graphs_parallel(
         })
     };
 
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     let mut shared_vertex_cache = kernel.vertex_cache.lock().unwrap();
     for result in results {
         profile.absorb_graph_counts(&result.profile);
@@ -3112,25 +3115,28 @@ fn evaluate_scalar_graphs_parallel(
     total
 }
 
-fn evaluate_scalar_graph_chunk(
+fn evaluate_scalar_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &GiventalGraphKernel,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> ScalarGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> ScalarGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     for prepared in graphs {
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
         for coloring in prepared.colorings.iter() {
-            let mut graph_total = QSeries::zero(q_degree);
+            let mut graph_total = QSeries::<C>::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
-            let coloring_factor = RatFun::from_rational(coloring.factor.clone());
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3144,7 +3150,7 @@ fn evaluate_scalar_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree),
+                QSeries::<C>::one(q_degree),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -4683,26 +4689,28 @@ where
     total
 }
 
-fn accumulate_graph_factors(
+fn accumulate_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
-    total: &mut QSeries,
+    total: &mut QSeries<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     // Recursively chooses one leg/edge factor option for every half-edge in a
     // fixed colored stable graph.  At the leaves, the collected psi powers are
     // integrated over each vertex Mbar_{g(v),val(v)} with translation
@@ -4952,17 +4960,20 @@ where
     out
 }
 
-fn vertex_contribution_with_translations(
+fn vertex_contribution_with_translations<C>(
     genus: usize,
     color: usize,
     base_powers: &[usize],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     profile: &mut GraphEvalProfile,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     // A vertex is the diagonal TFT factor times a point-theory psi integral.
     // If the chosen half-edge powers do not fill the vertex dimension, the
     // missing degree is supplied by any number of translation insertions
@@ -4988,15 +4999,15 @@ fn vertex_contribution_with_translations(
     let base_power_sum = base_powers.iter().sum::<usize>() as isize;
     let translation_excess = base_dimension - base_power_sum;
     if translation_excess < 0 {
-        let zero = QSeries::zero(q_degree);
+        let zero = QSeries::<C>::zero(q_degree);
         vertex_cache.insert(key, zero.clone());
         return zero;
     }
 
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     if translation_excess == 0 {
         let vertex_factor = vertex_tft_factor(genus, base_powers.len(), color, calibration);
-        total = total.add(&vertex_factor.scale(&RatFun::from_rational(
+        total = total.add(&vertex_factor.scale(&C::from_rational(
             oracle.psi_integral(genus, base_powers),
         )));
     }
@@ -5013,8 +5024,8 @@ fn vertex_contribution_with_translations(
         let mut powers = Vec::with_capacity(base_powers.len() + translation_count);
         powers.extend_from_slice(base_powers);
 
-        let mut coefficient = QSeries::one(q_degree);
-        let mut symmetry = RatFun::one();
+        let mut coefficient = QSeries::<C>::one(q_degree);
+        let mut symmetry = C::one();
         for (excess, multiplicity) in partition {
             let power = excess + 1;
             if power >= translation[color].len() {
@@ -5028,28 +5039,33 @@ fn vertex_contribution_with_translations(
             }
             powers.extend(std::iter::repeat(power).take(multiplicity));
 
-            let multiplicity_factor = RatFun::from(factorial(multiplicity));
-            symmetry = &symmetry * &multiplicity_factor;
+            let multiplicity_factor = C::from_usize(factorial(multiplicity));
+            symmetry = symmetry.mul(&multiplicity_factor);
         }
         if coefficient.is_zero() {
             continue;
         }
 
         let vertex_factor = vertex_tft_factor(genus, powers.len(), color, calibration);
-        let psi = RatFun::from_rational(oracle.psi_integral(genus, &powers));
-        let term = coefficient.mul(&vertex_factor).scale(&(&psi / &symmetry));
+        let psi = C::from_rational(oracle.psi_integral(genus, &powers));
+        let term = coefficient
+            .mul(&vertex_factor)
+            .scale(&psi.div(&symmetry));
         total = total.add(&term);
     }
     vertex_cache.insert(key, total.clone());
     total
 }
 
-fn vertex_tft_factor(
+fn vertex_tft_factor<C>(
     genus: usize,
     valence: usize,
     color: usize,
-    calibration: &ProjectiveSpaceJCalibration,
-) -> QSeries {
+    calibration: &SemisimpleCalibration<C>,
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     // In an unnormalized/relative-normalized canonical frame the TFT vertex is
     // diagonal.  The powers below are the usual product-of-point-theories
     // factors rewritten in the frame stored by `SemisimpleCalibration`.
@@ -5240,6 +5256,7 @@ fn permute_coloring(coloring: &[usize], permutation: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factored::FactoredRatFun;
     use crate::geometry::CohomologyClass;
     use crate::{tau, ComputeMode, InvariantRequest};
 
@@ -6066,5 +6083,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scalar_graph_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let matrix = SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
+        let scalar = QSeries::<FactoredRatFun>::one(q_degree);
+        let calibration = SemisimpleCalibration::<FactoredRatFun> {
+            r_matrix: SeriesRMatrix::<FactoredRatFun>::identity(
+                size,
+                q_degree,
+                0,
+                CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+            ),
+            metric: matrix.clone(),
+            psi: matrix.clone(),
+            psi_inverse: matrix.clone(),
+            connection: matrix,
+            delta: vec![scalar.clone()],
+            inverse_delta: vec![scalar.clone()],
+            relative_sqrt_delta: vec![scalar.clone()],
+            relative_sqrt_delta_inverse: vec![scalar.clone()],
+        };
+        let kernel = Arc::new(
+            GiventalGraphKernel::from_calibration(calibration, graph_dimension).unwrap(),
+        );
+        let graphs = prepared_stable_graphs(0, 3, size);
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; 3];
+        let mut profile = GraphEvalProfile::new();
+
+        let total = evaluate_scalar_graphs_parallel(
+            graphs.as_ref(),
+            &leg_options,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+
+        assert_eq!(
+            total.coeff(0).unwrap(),
+            &<FactoredRatFun as Coeff>::one()
+        );
     }
 }
