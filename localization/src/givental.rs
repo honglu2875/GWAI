@@ -404,16 +404,16 @@ impl<C: Coeff> SeriesSMatrix<C> {
 /// for twisted theories, equivariant theories, r-spin, or other semisimple
 /// CohFTs a provider can supply a different calibration with the same shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemisimpleCalibration {
-    pub r_matrix: SeriesRMatrix,
-    pub metric: SeriesMatrix,
-    pub psi: SeriesMatrix,
-    pub psi_inverse: SeriesMatrix,
-    pub connection: SeriesMatrix,
-    pub delta: Vec<QSeries>,
-    pub inverse_delta: Vec<QSeries>,
-    pub relative_sqrt_delta: Vec<QSeries>,
-    pub relative_sqrt_delta_inverse: Vec<QSeries>,
+pub struct SemisimpleCalibration<C = RatFun> {
+    pub r_matrix: SeriesRMatrix<C>,
+    pub metric: SeriesMatrix<C>,
+    pub psi: SeriesMatrix<C>,
+    pub psi_inverse: SeriesMatrix<C>,
+    pub connection: SeriesMatrix<C>,
+    pub delta: Vec<QSeries<C>>,
+    pub inverse_delta: Vec<QSeries<C>>,
+    pub relative_sqrt_delta: Vec<QSeries<C>>,
+    pub relative_sqrt_delta_inverse: Vec<QSeries<C>>,
 }
 
 pub type ProjectiveSpaceJCalibration = SemisimpleCalibration;
