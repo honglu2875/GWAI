@@ -1996,30 +1996,30 @@ fn h_laurent_columns_to_laurent_matrix(
         .collect()
 }
 
-type RatFunMatrix = Vec<Vec<RatFun>>;
-type LaurentRatFunMatrix = BTreeMap<i32, RatFunMatrix>;
-type QDegreeLaurentFactor = Vec<LaurentRatFunMatrix>;
+type CoeffMatrix<C> = Vec<Vec<C>>;
+type LaurentCoeffMatrix<C> = BTreeMap<i32, CoeffMatrix<C>>;
+type QDegreeLaurentFactor<C> = Vec<LaurentCoeffMatrix<C>>;
 
-fn birkhoff_factor_by_q_degree(
+fn birkhoff_factor_by_q_degree<C: Coeff>(
     size: usize,
     q_degree: usize,
-    matrix: &BTreeMap<i32, SeriesMatrix>,
-) -> Result<(QDegreeLaurentFactor, QDegreeLaurentFactor), GwError> {
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+) -> Result<(QDegreeLaurentFactor<C>, QDegreeLaurentFactor<C>), GwError> {
     // Recursive Birkhoff split in Novikov degree.  At each q^d, all lower-degree
     // products are known; the remaining Laurent matrix is uniquely split into
     // nonnegative and negative z-powers.
     validate_identity_at_q_zero(size, matrix)?;
     let mut positive = vec![BTreeMap::new(); q_degree + 1];
     let mut negative = vec![BTreeMap::new(); q_degree + 1];
-    positive[0].insert(0, identity_ratfun_matrix(size));
-    negative[0].insert(0, identity_ratfun_matrix(size));
+    positive[0].insert(0, identity_coeff_matrix(size));
+    negative[0].insert(0, identity_coeff_matrix(size));
 
     for degree in 1..=q_degree {
         let mut raw = q_degree_slice(matrix, degree, size);
         let known = multiply_laurent_matrix_q_slices(&negative, &positive, degree, size);
         subtract_laurent_matrix(&mut raw, &known);
         for (z_power, coeff) in raw {
-            if matrix_is_zero(&coeff) {
+            if coeff_matrix_is_zero(&coeff) {
                 continue;
             }
             if z_power >= 0 {
@@ -2033,16 +2033,16 @@ fn birkhoff_factor_by_q_degree(
     Ok((positive, negative))
 }
 
-fn validate_identity_at_q_zero(
+fn validate_identity_at_q_zero<C: Coeff>(
     size: usize,
-    matrix: &BTreeMap<i32, SeriesMatrix>,
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
 ) -> Result<(), GwError> {
     for (z_power, coefficient) in matrix {
         let q0 = matrix_q_coefficient(coefficient, 0);
         let expected = if *z_power == 0 {
-            identity_ratfun_matrix(size)
+            identity_coeff_matrix(size)
         } else {
-            zero_ratfun_matrix(size)
+            zero_coeff_matrix(size)
         };
         if q0 != expected {
             return Err(GwError::ConventionMismatch(format!(
@@ -2053,47 +2053,47 @@ fn validate_identity_at_q_zero(
     Ok(())
 }
 
-fn q_degree_slice(
-    matrix: &BTreeMap<i32, SeriesMatrix>,
+fn q_degree_slice<C: Coeff>(
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
     degree: usize,
     size: usize,
-) -> LaurentRatFunMatrix {
+) -> LaurentCoeffMatrix<C> {
     let mut out = BTreeMap::new();
     for (z_power, coefficient) in matrix {
         let q_coeff = matrix_q_coefficient(coefficient, degree);
-        if !matrix_is_zero(&q_coeff) {
+        if !coeff_matrix_is_zero(&q_coeff) {
             out.insert(*z_power, q_coeff);
         }
     }
     if out.is_empty() {
-        out.insert(0, zero_ratfun_matrix(size));
+        out.insert(0, zero_coeff_matrix(size));
     }
     out
 }
 
-fn matrix_q_coefficient(matrix: &SeriesMatrix, degree: usize) -> RatFunMatrix {
+fn matrix_q_coefficient<C: Coeff>(matrix: &SeriesMatrix<C>, degree: usize) -> CoeffMatrix<C> {
     matrix
         .entries()
         .iter()
         .map(|row| {
             row.iter()
-                .map(|entry| entry.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
+                .map(|entry| entry.coeff(degree).cloned().unwrap_or_else(C::zero))
                 .collect()
         })
         .collect()
 }
 
-fn multiply_laurent_matrix_q_slices(
-    left: &[LaurentRatFunMatrix],
-    right: &[LaurentRatFunMatrix],
+fn multiply_laurent_matrix_q_slices<C: Coeff>(
+    left: &[LaurentCoeffMatrix<C>],
+    right: &[LaurentCoeffMatrix<C>],
     degree: usize,
     size: usize,
-) -> LaurentRatFunMatrix {
+) -> LaurentCoeffMatrix<C> {
     let mut out = BTreeMap::new();
     for split in 1..degree {
         for (left_z, left_matrix) in &left[split] {
             for (right_z, right_matrix) in &right[degree - split] {
-                let product = multiply_ratfun_matrix(left_matrix, right_matrix, size);
+                let product = multiply_coeff_matrix(left_matrix, right_matrix, size);
                 add_matrix_to_laurent(&mut out, left_z + right_z, product);
             }
         }
@@ -2101,42 +2101,49 @@ fn multiply_laurent_matrix_q_slices(
     out
 }
 
-fn subtract_laurent_matrix(target: &mut LaurentRatFunMatrix, rhs: &LaurentRatFunMatrix) {
+fn subtract_laurent_matrix<C: Coeff>(
+    target: &mut LaurentCoeffMatrix<C>,
+    rhs: &LaurentCoeffMatrix<C>,
+) {
     for (z_power, matrix) in rhs {
-        add_matrix_to_laurent(target, *z_power, neg_ratfun_matrix(matrix));
+        add_matrix_to_laurent(target, *z_power, neg_coeff_matrix(matrix));
     }
 }
 
-fn add_matrix_to_laurent(target: &mut LaurentRatFunMatrix, z_power: i32, matrix: RatFunMatrix) {
-    if matrix_is_zero(&matrix) {
+fn add_matrix_to_laurent<C: Coeff>(
+    target: &mut LaurentCoeffMatrix<C>,
+    z_power: i32,
+    matrix: CoeffMatrix<C>,
+) {
+    if coeff_matrix_is_zero(&matrix) {
         return;
     }
     let size = matrix.len();
     let entry = target
         .entry(z_power)
-        .or_insert_with(|| zero_ratfun_matrix(size));
+        .or_insert_with(|| zero_coeff_matrix(size));
     for row in 0..size {
         for col in 0..size {
-            entry[row][col] = entry[row][col].clone() + matrix[row][col].clone();
+            entry[row][col] = entry[row][col].add(&matrix[row][col]);
         }
     }
-    if matrix_is_zero(entry) {
+    if coeff_matrix_is_zero(entry) {
         target.remove(&z_power);
     }
 }
 
-fn negative_factor_to_s_coefficients(
+fn negative_factor_to_s_coefficients<C: Coeff>(
     size: usize,
     q_degree: usize,
     z_order: usize,
-    negative: &[LaurentRatFunMatrix],
-) -> Vec<SeriesMatrix> {
+    negative: &[LaurentCoeffMatrix<C>],
+) -> Vec<SeriesMatrix<C>> {
     let mut coefficients = Vec::with_capacity(z_order + 1);
     for order in 0..=z_order {
-        let mut entries = vec![vec![vec![RatFun::zero(); q_degree + 1]; size]; size];
+        let mut entries = vec![vec![vec![C::zero(); q_degree + 1]; size]; size];
         if order == 0 {
             for idx in 0..size {
-                entries[idx][idx][0] = RatFun::one();
+                entries[idx][idx][0] = C::one();
             }
         } else {
             let z_power = -(order as i32);
@@ -2160,13 +2167,17 @@ fn negative_factor_to_s_coefficients(
     coefficients
 }
 
-fn multiply_ratfun_matrix(left: &RatFunMatrix, right: &RatFunMatrix, size: usize) -> RatFunMatrix {
-    let mut out = zero_ratfun_matrix(size);
+fn multiply_coeff_matrix<C: Coeff>(
+    left: &CoeffMatrix<C>,
+    right: &CoeffMatrix<C>,
+    size: usize,
+) -> CoeffMatrix<C> {
+    let mut out = zero_coeff_matrix(size);
     for row in 0..size {
         for col in 0..size {
-            let mut total = RatFun::zero();
+            let mut total = C::zero();
             for mid in 0..size {
-                total = total + left[row][mid].clone() * right[mid][col].clone();
+                total = total.add(&left[row][mid].mul(&right[mid][col]));
             }
             out[row][col] = total;
         }
@@ -2174,27 +2185,27 @@ fn multiply_ratfun_matrix(left: &RatFunMatrix, right: &RatFunMatrix, size: usize
     out
 }
 
-fn identity_ratfun_matrix(size: usize) -> RatFunMatrix {
-    let mut out = zero_ratfun_matrix(size);
+fn identity_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
+    let mut out = zero_coeff_matrix(size);
     for idx in 0..size {
-        out[idx][idx] = RatFun::one();
+        out[idx][idx] = C::one();
     }
     out
 }
 
-fn zero_ratfun_matrix(size: usize) -> RatFunMatrix {
-    vec![vec![RatFun::zero(); size]; size]
+fn zero_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
+    vec![vec![C::zero(); size]; size]
 }
 
-fn neg_ratfun_matrix(matrix: &RatFunMatrix) -> RatFunMatrix {
+fn neg_coeff_matrix<C: Coeff>(matrix: &CoeffMatrix<C>) -> CoeffMatrix<C> {
     matrix
         .iter()
-        .map(|row| row.iter().cloned().map(|entry| -entry).collect())
+        .map(|row| row.iter().map(Coeff::neg).collect())
         .collect()
 }
 
-fn matrix_is_zero(matrix: &RatFunMatrix) -> bool {
-    matrix.iter().all(|row| row.iter().all(RatFun::is_zero))
+fn coeff_matrix_is_zero<C: Coeff>(matrix: &CoeffMatrix<C>) -> bool {
+    matrix.iter().all(|row| row.iter().all(Coeff::is_zero))
 }
 
 fn inverse_h_plus_mz_power(max_h_power: usize, m: usize, power: usize) -> HLaurentSeries {
@@ -5842,9 +5853,9 @@ mod tests {
         for (z_power, matrix) in &fundamental {
             let q0 = matrix_q_coefficient(matrix, 0);
             let expected = if *z_power == 0 {
-                identity_ratfun_matrix(3)
+                identity_coeff_matrix(3)
             } else {
-                zero_ratfun_matrix(3)
+                zero_coeff_matrix(3)
             };
             assert_eq!(q0, expected);
         }
@@ -6171,6 +6182,34 @@ mod tests {
         assert_eq!(
             product.coefficient(1, -1).to_ratfun(),
             &RatFun::from(2usize) * &RatFun::variable("mu_0")
+        );
+    }
+
+    #[test]
+    fn generic_birkhoff_split_preserves_factored_coefficients() {
+        let mu = FactoredRatFun::variable("mu_0");
+        let mut fundamental = BTreeMap::new();
+        fundamental.insert(
+            0,
+            SeriesMatrix::from_entries(vec![vec![QSeries::from_coeffs(vec![
+                FactoredRatFun::one(),
+                FactoredRatFun::zero(),
+            ])]]),
+        );
+        fundamental.insert(
+            -1,
+            SeriesMatrix::from_entries(vec![vec![QSeries::from_coeffs(vec![
+                FactoredRatFun::zero(),
+                mu.clone(),
+            ])]]),
+        );
+
+        let (_, negative) = birkhoff_factor_by_q_degree(1, 1, &fundamental).unwrap();
+        let coefficients = negative_factor_to_s_coefficients(1, 1, 1, &negative);
+
+        assert_eq!(
+            coefficients[1].entry(0, 0).coeff(1).unwrap().to_ratfun(),
+            RatFun::variable("mu_0")
         );
     }
 
