@@ -12,8 +12,11 @@ cargo run --quiet -- <subcommand> <flags>
 After installing/building the binary separately, replace `cargo run --quiet --`
 with `gw-pn`.
 
-The CLI rejects unknown flags and suggests close matches when possible. For
-example, `--max-descendants` reports `maybe you meant --max-descendant`.
+The CLI is parsed with `clap`: it rejects unknown flags and suggests close
+matches when possible (for example, `--max-descendants` reports
+`tip: a similar argument exists: '--max-descendant'`). Run `gw-pn --help` or
+`gw-pn <subcommand> --help` for the full flag list. Long flags also accept the
+spelled-out aliases (`--genus` for `--g`, `--degree` for `--d`, and so on).
 
 ## Quick Checks
 
