@@ -18,6 +18,15 @@ num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
 
+[lints.clippy]
+# This crate is heavy on exact symbolic algebra: loop indices routinely carry
+# mathematical meaning (degrees, color/marking indices), and some graph-kernel
+# builders inherently take many parameters. These pedantic style lints fight the
+# domain, so they are allowed crate-wide while CI denies every other warning.
+needless_range_loop = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

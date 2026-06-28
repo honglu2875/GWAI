@@ -101,7 +101,7 @@ impl StableGraph {
         let mut best = None::<String>;
         for permutation in permutations(vertex_count) {
             let label = self.label_with_permutation(&permutation);
-            if best.as_ref().map_or(true, |current| label < *current) {
+            if best.as_ref().is_none_or(|current| label < *current) {
                 best = Some(label);
             }
         }

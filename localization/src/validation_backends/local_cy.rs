@@ -140,7 +140,7 @@ fn invert_unit_series(series: &[Rational], max_degree: usize) -> Vec<Rational> {
 
 fn divisors(value: usize) -> Vec<usize> {
     (1..=value)
-        .filter(|candidate| value % candidate == 0)
+        .filter(|candidate| value.is_multiple_of(*candidate))
         .collect()
 }
 

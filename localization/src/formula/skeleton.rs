@@ -1753,7 +1753,7 @@ fn vertex_expanded_terms(genus: usize, color: &str, base_powers: &[usize]) -> Ve
             let mut symmetry = 1usize;
             for (translation_excess, multiplicity) in partition {
                 let translation_power = translation_excess + 1;
-                powers.extend(std::iter::repeat(translation_power).take(multiplicity));
+                powers.extend(std::iter::repeat_n(translation_power, multiplicity));
                 factors.push(powered_factor(
                     &format!("T_{{{color}}}^{translation_power}"),
                     multiplicity,
@@ -1804,7 +1804,7 @@ fn vertex_expanded_factor_terms_tex(
             let mut symmetry = 1usize;
             for (translation_excess, multiplicity) in partition {
                 let translation_power = translation_excess + 1;
-                powers.extend(std::iter::repeat(translation_power).take(multiplicity));
+                powers.extend(std::iter::repeat_n(translation_power, multiplicity));
                 factors.push(powered_factor_tex(
                     &format!("(T_{{{translation_power}}})_{{{color}}}"),
                     multiplicity,

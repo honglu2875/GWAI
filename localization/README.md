@@ -173,12 +173,17 @@ Notes:
 
 - The current public twisted path computes non-equivariant negative split
   twists through an early rational lambda-line specialization.
-- `--equivariant` on a twisted command uses early-specialized base weights and
-  keeps one symbolic fiber parameter `mu_i` for each summand `O(-a_i)`.  The
-  hypergeometric calibration and twisted pairing are covered by specialization
-  tests.  Full high-genus graph contraction with these symbolic fiber
-  parameters is still a performance frontier because the current `RatFun`
-  representation expands numerator and denominator polynomials.
+- `--equivariant` on a twisted command keeps one symbolic fiber parameter
+  `mu_i` for each summand `O(-a_i)`.  The CLI uses the factored rational
+  coefficient engine by default in this mode because expanded symbolic output
+  can be much slower even in small examples.  `--factored` is still accepted
+  with `--equivariant` as an explicit spelling of the default behavior, and is
+  rejected without `--equivariant`.
+- In this fiber-equivariant mode the base `P^n` weights are still taken to the
+  non-equivariant limit.  With ordinary non-equivariant insertions, the result
+  often collapses to a finite polynomial in the `mu_i`; the factored engine is
+  primarily a faster and safer evaluation strategy for these symbolic fiber
+  weights, not a separate enumerative theory.
 - Degree-zero local twisted invariants are not implemented in this path.
 
 For formula/calibration inspection with fiber parameters:
@@ -188,6 +193,82 @@ cargo run --quiet -- formula --n 2 --twist -3 --g 2 --markings 1 \
   --basis raw \
   --equivariant
 ```
+
+For symbolic fiber-equivariant invariant output:
+
+```bash
+cargo run --quiet -- twisted --n 2 --twist -1 --g 0 --d 1 \
+  --insert 'tau1(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+Two quick equivariant obstruction-polynomial checks over `P^2`:
+
+```bash
+cargo run --quiet -- twisted --n 2 --twist -3 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant
+
+cargo run --quiet -- twisted --n 2 --twist -2,-2 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+These print `mu_0^2` and `mu_0*mu_1`, respectively.  Their `mu_i=0` constant
+terms match the corresponding non-equivariant local dimension check, while the
+top fiber-weight coefficients match the ordinary untwisted degree-one line
+count in `P^2`.
+
+The same top-term check works in higher projective dimension:
+
+```bash
+cargo run --quiet -- twisted --n 3 --twist -4 --g 0 --d 1 \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H)' \
+  --equivariant
+
+cargo run --quiet -- twisted --n 3 --twist -2,-2 --g 0 --d 1 \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H^3)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+These print `mu_0^3` and `mu_0*mu_1`.  For a local-dimension constant-term
+check, this command prints a factored expression that evaluates to `-40` for
+generic `mu_0` and specializes to the same value as the non-equivariant twisted
+path:
+
+```bash
+cargo run --quiet -- twisted --n 3 --twist -4 --g 0 --d 1 \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(H)' \
+  --insert 'tau0(H)' \
+  --equivariant
+```
+
+Genus-one and degree-two symbolic fiber-equivariant contractions are currently
+useful stress tests rather than default quick checks.  For example, the
+comparison values are already available from the familiar paths:
+
+```bash
+cargo run --quiet -- compute --n 2 --g 1 --d 1 --insert 'tau3(H)' --mode givental
+cargo run --quiet -- compute --n 2 --g 0 --d 2 \
+  --insert 'tau4(H^2)' \
+  --insert 'tau0(H^2)' \
+  --insert 'tau0(1)' \
+  --mode givental
+```
+
+They return `1/8` and `1/2`.  The corresponding fiber-equivariant top terms
+should have those coefficients after the appropriate obstruction-weight power,
+but the full symbolic contractions are still part of the performance frontier.
 
 ## `formula`
 
@@ -292,10 +373,18 @@ precontracts the stable-graph sum once for fixed `(g,d,m)` and attaches all
 resolvent coefficients to that shared kernel. Add `--validate` to also run the
 older invariant-wise resolver and compare the two outputs.
 
+For `--twist ... --equivariant`, the packed resolver uses the factored
+coefficient engine so rational dependence on the fiber parameters `mu_i` is not
+prematurely expanded. This is the preferred symbolic path for twisted
+fiber-equivariant generating functions. Validation still works by expanding the
+factored result only for the comparison step.
+
 ```bash
 cargo run --quiet -- resolvent --n 2 --g 0 --d 1 --markings 3
 
 cargo run --quiet -- resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1 --validate
+
+cargo run --quiet -- resolvent --n 1 --twist -1,-1 --g 1 --d 1 --markings 1 --equivariant
 ```
 
 ## `degree-series`
@@ -428,11 +517,11 @@ computation shortcuts.
 
 ## TODO
 
-- Add a factored rational-function engine for full symbolic equivariant
-  negative split-bundle graph contractions.  A standalone factored coefficient
-  type now exists and keeps denominator factors unexpanded; the next step is
-  threading it through the symbolic twisted graph kernel instead of converting
-  back to expanded `RatFun`.
+- Continue improving the factored rational-function engine for full symbolic
+  equivariant negative split-bundle graph contractions.  It is the default for
+  `twisted --equivariant`; non-equivariant computations use the ordinary
+  rational engine.  Remaining work: avoid dense canonical-leg product blow-up
+  in larger stable symbolic graph contractions.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.

@@ -5,8 +5,10 @@ use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
 use gw_pn::twisted::{
-    compute_negative_split_twisted, compute_negative_split_twisted_resolvent_packed,
-    NegativeSplitBundleTwist, TwistedInvariantRequest,
+    compute_negative_split_twisted, compute_negative_split_twisted_factored,
+    compute_negative_split_twisted_resolvent_packed,
+    compute_negative_split_twisted_resolvent_packed_factored, NegativeSplitBundleTwist,
+    TwistedInvariantRequest,
 };
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
@@ -181,6 +183,7 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
             CliFlag::value("--degree"),
             CliFlag::value("--insert"),
             CliFlag::switch("--equivariant"),
+            CliFlag::switch("--factored"),
         ],
     )?;
     let n = required_usize(args, "--n")?;
@@ -197,12 +200,31 @@ fn run_twisted(args: &[String]) -> Result<(), GwError> {
 
     let mut req = TwistedInvariantRequest::new(n, twist, genus, degree, insertions)?;
     req.equivariant = has_flag(args, "--equivariant");
+    if has_flag(args, "--factored") && !req.equivariant {
+        return Err(GwError::ParseError(
+            "--factored for twisted computations currently requires --equivariant".to_string(),
+        ));
+    }
+    if req.equivariant {
+        print_fiber_parameters(&req.twist);
+        let value = compute_negative_split_twisted_factored(&req)?;
+        println!("{value}");
+        return Ok(());
+    }
     let result = compute_negative_split_twisted(&req)?;
     println!("{}", result.value);
-    for note in result.notes {
-        println!("note: {note}");
-    }
     Ok(())
+}
+
+fn print_fiber_parameters(twist: &NegativeSplitBundleTwist) {
+    let parameters = twist
+        .degrees()
+        .iter()
+        .enumerate()
+        .map(|(idx, degree)| format!("mu_{idx}=fiber weight of O(-{degree})"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("parameters: {parameters}");
 }
 
 fn run_formula(args: &[String]) -> Result<(), GwError> {
@@ -333,6 +355,95 @@ fn run_resolvent(args: &[String]) -> Result<(), GwError> {
             )
         })
     };
+    if equivariant {
+        if let Some(degrees) = twist.as_ref() {
+            let packed =
+                compute_negative_split_twisted_resolvent_packed_factored(n, degrees.clone(), &req);
+            let (result, used_packed) = match packed {
+                Ok(result) => (result, true),
+                Err(GwError::UnsupportedInvariant(message)) => {
+                    let mut result = compute_invariant_wise()?;
+                    result.notes.insert(
+                        0,
+                        format!(
+                            "factored packed resolvent unavailable: {message}; fell back to invariant-wise resolver"
+                        ),
+                    );
+                    println!("Resolvent generating function");
+                    println!("target: P^{n}");
+                    println!("twist: {}", twist_bundle_label(degrees));
+                    println!("genus: {genus}");
+                    println!("degree: {degree}");
+                    println!("markings: {markings}");
+                    println!("virtual_dimension: {virtual_dimension}");
+                    print!(
+                        "{}",
+                        resolvent_definition_text(n, genus, degree, markings, twist.as_deref())
+                    );
+                    println!("engine: {}", result.engine);
+                    println!(
+                        "terms: {} candidate, {} nonzero",
+                        result.candidate_terms, result.nonzero_terms
+                    );
+                    println!("F = {}", result.value);
+                    if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+                        eprintln!(
+                            "warnings written to {}; inspect this file if needed",
+                            path.display()
+                        );
+                    }
+                    return Ok(());
+                }
+                Err(err) => return Err(err),
+            };
+
+            let validation = if validate && used_packed {
+                let invariant_wise = compute_invariant_wise()?;
+                let packed_ratfun = result.value.to_ratfun_polynomial();
+                if packed_ratfun != invariant_wise.value {
+                    return Err(GwError::ValidationFailure(format!(
+                        "packed resolvent output does not match invariant-wise resolver: packed `{packed_ratfun}`, invariant-wise `{}`",
+                        invariant_wise.value
+                    )));
+                }
+                Some(format!(
+                    "matched invariant-wise resolver ({} candidate, {} nonzero)",
+                    invariant_wise.candidate_terms, invariant_wise.nonzero_terms
+                ))
+            } else {
+                None
+            };
+
+            println!("Resolvent generating function");
+            println!("target: P^{n}");
+            println!("twist: {}", twist_bundle_label(degrees));
+            println!("genus: {genus}");
+            println!("degree: {degree}");
+            println!("markings: {markings}");
+            println!("virtual_dimension: {virtual_dimension}");
+            print!(
+                "{}",
+                resolvent_definition_text(n, genus, degree, markings, twist.as_deref())
+            );
+            println!("engine: {}", result.engine);
+            println!(
+                "terms: {} candidate, {} nonzero",
+                result.candidate_terms, result.nonzero_terms
+            );
+            if let Some(validation) = validation {
+                println!("validation: {validation}");
+            }
+            println!("F = {}", result.value);
+
+            if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+                eprintln!(
+                    "warnings written to {}; inspect this file if needed",
+                    path.display()
+                );
+            }
+            return Ok(());
+        }
+    }
     let packed = match twist.as_ref() {
         Some(degrees) => {
             compute_negative_split_twisted_resolvent_packed(n, degrees.clone(), &req, equivariant)
@@ -1235,6 +1346,7 @@ Commands:\n\
   gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
+  gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
@@ -1250,7 +1362,11 @@ Commands:\n\
 \n\
 Supported compute seed cases:\n\
   P^0 point-theory psi integrals, genus-zero degree-zero constants,\n\
-  and genus-zero three-point primary small quantum products."
+  and genus-zero three-point primary small quantum products.\n\
+\n\
+Twisted flags:\n\
+  twisted --equivariant uses the factored symbolic engine by default.\n\
+  --factored is accepted only with --equivariant as an explicit spelling."
     );
 }
 

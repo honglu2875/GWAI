@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+const SCALAR_DISPLAY_EXPANSION_TERM_LIMIT: usize = 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoredRatFun {
     terms: BTreeMap<Vec<SparsePoly>, SparsePoly>,
@@ -74,10 +76,29 @@ impl FactoredRatFun {
     }
 
     pub fn is_zero(&self) -> bool {
+        if self.terms.is_empty() {
+            return true;
+        }
+        if self.terms.len() == 1 {
+            return self.terms.values().next().is_some_and(SparsePoly::is_zero);
+        }
+        self.to_ratfun().is_zero()
+    }
+
+    pub fn is_structurally_zero(&self) -> bool {
         self.terms.is_empty()
+            || (self.terms.len() == 1
+                && self.terms.values().next().is_some_and(SparsePoly::is_zero))
     }
 
     pub fn is_one(&self) -> bool {
+        if self.is_structurally_one() {
+            return true;
+        }
+        self.to_ratfun().is_one()
+    }
+
+    pub fn is_structurally_one(&self) -> bool {
         self.terms.len() == 1
             && self
                 .terms
@@ -114,11 +135,31 @@ impl FactoredRatFun {
         let mut total = Rational::zero();
         for (factors, numerator) in &self.terms {
             if !factors.is_empty() {
+                return self
+                    .can_expand_for_scalar_display()
+                    .then(|| self.to_ratfun().as_rational())
+                    .flatten();
+            }
+            total += numerator.constant_term()?;
+        }
+        Some(total)
+    }
+
+    pub fn as_structural_rational(&self) -> Option<Rational> {
+        let mut total = Rational::zero();
+        for (factors, numerator) in &self.terms {
+            if !factors.is_empty() {
                 return None;
             }
             total += numerator.constant_term()?;
         }
         Some(total)
+    }
+
+    fn can_expand_for_scalar_display(&self) -> bool {
+        self.terms.len() <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
+            && self.expanded_denominator_term_count_upper_bound()
+                <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
@@ -219,6 +260,18 @@ impl Coeff for FactoredRatFun {
         self.is_zero()
     }
 
+    fn is_structurally_zero(&self) -> bool {
+        self.is_structurally_zero()
+    }
+
+    fn is_one(&self) -> bool {
+        self.is_one()
+    }
+
+    fn is_structurally_one(&self) -> bool {
+        self.is_structurally_one()
+    }
+
     fn neg(&self) -> Self {
         -self.clone()
     }
@@ -237,6 +290,14 @@ impl Coeff for FactoredRatFun {
 
     fn div(&self, rhs: &Self) -> Self {
         self / rhs
+    }
+
+    fn complexity_terms(&self) -> usize {
+        self.term_count()
+    }
+
+    fn complexity_denominator_factors(&self) -> usize {
+        self.total_denominator_factor_count()
     }
 }
 
@@ -264,7 +325,7 @@ impl From<RatFun> for FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Add<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Add<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn add(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -276,7 +337,7 @@ impl<'a, 'b> Add<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Sub<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Sub<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn sub(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -284,11 +345,11 @@ impl<'a, 'b> Sub<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Mul<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Mul<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn mul(self, rhs: &'b FactoredRatFun) -> Self::Output {
-        if self.is_zero() || rhs.is_zero() {
+        if self.is_structurally_zero() || rhs.is_structurally_zero() {
             return FactoredRatFun::zero();
         }
         let mut out = FactoredRatFun::zero();
@@ -303,7 +364,7 @@ impl<'a, 'b> Mul<&'b FactoredRatFun> for &'a FactoredRatFun {
     }
 }
 
-impl<'a, 'b> Div<&'b FactoredRatFun> for &'a FactoredRatFun {
+impl<'b> Div<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn div(self, rhs: &'b FactoredRatFun) -> Self::Output {
@@ -381,6 +442,9 @@ impl fmt::Display for FactoredRatFun {
         if self.terms.is_empty() {
             return write!(f, "0");
         }
+        if let Some(value) = self.as_structural_rational() {
+            return write!(f, "{value}");
+        }
         let mut first = true;
         for (factors, numerator) in &self.terms {
             if !first {
@@ -395,7 +459,11 @@ impl fmt::Display for FactoredRatFun {
                     if idx > 0 {
                         write!(f, " * ")?;
                     }
-                    write!(f, "{factor}")?;
+                    if factor.term_count() > 1 {
+                        write!(f, "({factor})")?;
+                    } else {
+                        write!(f, "{factor}")?;
+                    }
                 }
                 write!(f, ")")?;
             }
@@ -456,11 +524,62 @@ mod tests {
     }
 
     #[test]
+    fn cross_denominator_cancellation_is_zero() {
+        let mu = FactoredRatFun::variable("mu_0");
+        let expr = &(&mu / &mu) - &FactoredRatFun::one();
+
+        assert!(expr.is_zero());
+        assert_eq!(expr.to_ratfun(), RatFun::zero());
+        assert_eq!((&mu / &mu).as_rational(), Some(Rational::one()));
+    }
+
+    #[test]
+    fn quotient_with_matching_factor_is_one() {
+        let factor = mu_shift(1);
+        let quotient = FactoredRatFun::from_sparse_fraction(factor.clone(), factor);
+
+        assert!(quotient.is_one());
+    }
+
+    #[test]
     fn qseries_can_use_factored_coefficients() {
         let factor = mu_shift(-3);
         let coeff = FactoredRatFun::from_sparse_fraction(SparsePoly::one(), factor);
         let series = crate::series::QSeries::constant(coeff.clone(), 2)
             .mul(&crate::series::QSeries::constant(coeff, 2));
         assert_eq!(series.coeff(0).unwrap().max_denominator_factor_count(), 2);
+    }
+
+    #[test]
+    fn semisimple_calibration_can_use_factored_coefficients() {
+        let q_degree = 1;
+        let z_order = 1;
+        let size = 1;
+        let matrix = crate::series::SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
+        let scalar = crate::series::QSeries::<FactoredRatFun>::one(q_degree);
+        let calibration = crate::givental::SemisimpleCalibration {
+            r_matrix: crate::givental::SeriesRMatrix::identity(
+                size,
+                q_degree,
+                z_order,
+                crate::givental::CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+            ),
+            metric: matrix.clone(),
+            psi: matrix.clone(),
+            psi_inverse: matrix.clone(),
+            connection: matrix,
+            delta: vec![scalar.clone()],
+            inverse_delta: vec![scalar.clone()],
+            relative_sqrt_delta: vec![scalar.clone()],
+            relative_sqrt_delta_inverse: vec![scalar],
+        };
+
+        assert_eq!(calibration.r_matrix.size(), size);
+        assert_eq!(calibration.r_matrix.q_degree(), q_degree);
+
+        let kernel =
+            crate::givental::GiventalGraphKernel::from_calibration(calibration, 1).unwrap();
+        assert_eq!(kernel.inverse_r().len(), z_order + 1);
+        assert_eq!(kernel.translation().len(), size);
     }
 }

@@ -15,8 +15,9 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use crate::algebra::{RatFun, Rational};
+use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
+use crate::factored::FactoredRatFun;
 use crate::geometry::CohomologyClass;
 use crate::{tau, Insertion, InvariantResult};
 
@@ -30,8 +31,8 @@ pub struct ResolventRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolventResult {
-    pub value: ResolventPolynomial,
+pub struct ResolventResult<C = RatFun> {
+    pub value: ResolventPolynomial<C>,
     pub candidate_terms: usize,
     pub nonzero_terms: usize,
     pub engine: &'static str,
@@ -39,8 +40,8 @@ pub struct ResolventResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResolventPolynomial {
-    terms: BTreeMap<ResolventMonomial, RatFun>,
+pub struct ResolventPolynomial<C = RatFun> {
+    terms: BTreeMap<ResolventMonomial, C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +98,32 @@ impl ResolventIndex {
     }
 }
 
-impl ResolventPolynomial {
+pub trait ResolventCoefficient: Coeff + fmt::Display {
+    fn as_resolvent_rational(&self) -> Option<Rational>;
+    fn to_resolvent_ratfun(&self) -> RatFun;
+}
+
+impl ResolventCoefficient for RatFun {
+    fn as_resolvent_rational(&self) -> Option<Rational> {
+        self.as_rational()
+    }
+
+    fn to_resolvent_ratfun(&self) -> RatFun {
+        self.clone()
+    }
+}
+
+impl ResolventCoefficient for FactoredRatFun {
+    fn as_resolvent_rational(&self) -> Option<Rational> {
+        self.as_structural_rational()
+    }
+
+    fn to_resolvent_ratfun(&self) -> RatFun {
+        self.to_ratfun()
+    }
+}
+
+impl<C: Coeff> ResolventPolynomial<C> {
     pub fn zero() -> Self {
         Self {
             terms: BTreeMap::new(),
@@ -108,16 +134,20 @@ impl ResolventPolynomial {
         self.terms.is_empty()
     }
 
-    fn add_term(&mut self, monomial: ResolventMonomial, coefficient: RatFun) {
-        if coefficient.is_zero() {
+    pub fn term_count(&self) -> usize {
+        self.terms.len()
+    }
+
+    fn add_term(&mut self, monomial: ResolventMonomial, coefficient: C) {
+        if coefficient.is_structurally_zero() {
             return;
         }
         let next = self
             .terms
             .remove(&monomial)
-            .map(|current| &current + &coefficient)
+            .map(|current| current.add(&coefficient))
             .unwrap_or(coefficient);
-        if !next.is_zero() {
+        if !next.is_structurally_zero() {
             self.terms.insert(monomial, next);
         }
     }
@@ -126,18 +156,50 @@ impl ResolventPolynomial {
         &mut self,
         h_powers: &[usize],
         descendant_powers: &[usize],
-        coefficient: RatFun,
+        coefficient: C,
     ) {
         let (monomial, scalar) = resolvent_monomial(h_powers, descendant_powers);
-        self.add_term(monomial, &coefficient * &scalar);
+        self.add_term(monomial, coefficient.mul(&C::from_rational(scalar)));
     }
 
-    pub fn add_index_coefficient(&mut self, index: &ResolventIndex, coefficient: RatFun) {
+    pub fn add_index_coefficient(&mut self, index: &ResolventIndex, coefficient: C) {
         self.add_coefficient(&index.h_powers, &index.descendant_powers, coefficient);
     }
 }
 
-impl fmt::Display for ResolventPolynomial {
+impl<C: ResolventCoefficient> ResolventPolynomial<C> {
+    pub fn to_ratfun_polynomial(&self) -> ResolventPolynomial {
+        let mut out = ResolventPolynomial::zero();
+        for (monomial, coefficient) in &self.terms {
+            out.add_term(monomial.clone(), coefficient.to_resolvent_ratfun());
+        }
+        out
+    }
+
+    pub fn coefficient_text_contains(&self, needle: &str) -> bool {
+        self.terms
+            .values()
+            .any(|coefficient| coefficient.to_string().contains(needle))
+    }
+}
+
+impl ResolventPolynomial<FactoredRatFun> {
+    pub fn evaluate_variables(
+        &self,
+        values: &BTreeMap<String, Rational>,
+    ) -> Result<ResolventPolynomial, GwError> {
+        let mut out = ResolventPolynomial::zero();
+        for (monomial, coefficient) in &self.terms {
+            out.add_term(
+                monomial.clone(),
+                RatFun::from_rational(coefficient.evaluate_variables(values)?),
+            );
+        }
+        Ok(out)
+    }
+}
+
+impl<C: ResolventCoefficient> fmt::Display for ResolventPolynomial<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.terms.is_empty() {
             return write!(f, "0");
@@ -342,7 +404,7 @@ where
     }
 
     let (monomial, scalar) = resolvent_monomial(h_powers, descendant_powers);
-    let coefficient = &result.value * &scalar;
+    let coefficient = &result.value * &RatFun::from_rational(scalar);
     state.value.add_term(monomial, coefficient);
     state.nonzero_terms += 1;
     Ok(())
@@ -357,11 +419,11 @@ fn push_note_once(notes: &mut Vec<String>, note: String) {
 fn resolvent_monomial(
     h_powers: &[usize],
     descendant_powers: &[usize],
-) -> (ResolventMonomial, RatFun) {
-    let mut scalar = RatFun::one();
+) -> (ResolventMonomial, Rational) {
+    let mut scalar = Rational::one();
     for &h_power in h_powers {
         if h_power > 1 {
-            scalar = &scalar / &RatFun::from(factorial_rational(h_power));
+            scalar = scalar / factorial_rational(h_power);
         }
     }
     (
@@ -373,12 +435,12 @@ fn resolvent_monomial(
     )
 }
 
-fn format_signed_resolvent_term(
-    coefficient: &RatFun,
+fn format_signed_resolvent_term<C: ResolventCoefficient>(
+    coefficient: &C,
     monomial: &ResolventMonomial,
 ) -> (bool, String) {
     let monomial_text = format_resolvent_monomial(monomial);
-    if let Some(rational) = coefficient.as_rational() {
+    if let Some(rational) = coefficient.as_resolvent_rational() {
         let negative = rational.is_negative();
         let abs = rational.abs();
         if monomial_text == "1" {
@@ -394,7 +456,7 @@ fn format_signed_resolvent_term(
     if monomial_text == "1" {
         return (false, coefficient.to_string());
     }
-    if coefficient.is_one() {
+    if coefficient.is_structurally_one() {
         return (false, monomial_text);
     }
     (false, format!("({coefficient})*{monomial_text}"))

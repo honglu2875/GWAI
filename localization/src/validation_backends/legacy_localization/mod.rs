@@ -127,7 +127,7 @@ impl LocGraph {
         let mut best = None::<String>;
         for permutation in permutations(self.vertices.len()) {
             let label = self.label_with_permutation(&permutation);
-            if best.as_ref().map_or(true, |current| label < *current) {
+            if best.as_ref().is_none_or(|current| label < *current) {
                 best = Some(label);
             }
         }
@@ -454,7 +454,7 @@ fn stable_primary_vertex_factor(
     let mut total = RatFun::zero();
     for powers in weak_compositions(target_degree, flags.len()) {
         let mut powers_with_markings = powers.clone();
-        powers_with_markings.extend(std::iter::repeat(0).take(markings));
+        powers_with_markings.extend(std::iter::repeat_n(0, markings));
         let integral = psi.psi_integral(0, &powers_with_markings);
         if integral.is_zero() {
             continue;
@@ -503,7 +503,7 @@ fn edge_factor(target: &EquivariantProjectiveSpace, graph: &LocGraph, edge: &Loc
     let lj = lambda(j);
     let diff = &li - &lj;
 
-    let sign = if degree % 2 == 0 { 1 } else { -1 };
+    let sign = if degree.is_multiple_of(2) { 1 } else { -1 };
     let mut factor = RatFun::from_rational(Rational::new(
         sign * (factorial(degree) * factorial(degree)) as i128,
         degree.pow((2 * degree) as u32) as i128,

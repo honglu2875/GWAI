@@ -1,0 +1,222 @@
+//! Generic coefficient-matrix and Birkhoff q-degree factorization helpers
+//! used by the twisted calibration path.
+
+use crate::algebra::Coeff;
+use crate::error::GwError;
+use crate::series::{QSeries, SeriesMatrix};
+use std::collections::BTreeMap;
+
+pub(crate) type CoeffMatrix<C> = Vec<Vec<C>>;
+pub(crate) type LaurentCoeffMatrix<C> = BTreeMap<i32, CoeffMatrix<C>>;
+pub(crate) type QDegreeLaurentFactor<C> = Vec<LaurentCoeffMatrix<C>>;
+
+pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
+    size: usize,
+    q_degree: usize,
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+) -> Result<(QDegreeLaurentFactor<C>, QDegreeLaurentFactor<C>), GwError> {
+    // Recursive Birkhoff split in Novikov degree.  At each q^d, all lower-degree
+    // products are known; the remaining Laurent matrix is uniquely split into
+    // nonnegative and negative z-powers.
+    validate_identity_at_q_zero(size, matrix)?;
+    let mut positive = vec![BTreeMap::new(); q_degree + 1];
+    let mut negative = vec![BTreeMap::new(); q_degree + 1];
+    positive[0].insert(0, identity_coeff_matrix(size));
+    negative[0].insert(0, identity_coeff_matrix(size));
+
+    for degree in 1..=q_degree {
+        let mut raw = q_degree_slice(matrix, degree, size);
+        let known = multiply_laurent_matrix_q_slices(&negative, &positive, degree, size);
+        subtract_laurent_matrix(&mut raw, &known);
+        for (z_power, coeff) in raw {
+            if coeff_matrix_is_zero(&coeff) {
+                continue;
+            }
+            if z_power >= 0 {
+                positive[degree].insert(z_power, coeff);
+            } else {
+                negative[degree].insert(z_power, coeff);
+            }
+        }
+    }
+
+    Ok((positive, negative))
+}
+
+pub(crate) fn validate_identity_at_q_zero<C: Coeff>(
+    size: usize,
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+) -> Result<(), GwError> {
+    for (z_power, coefficient) in matrix {
+        let q0 = matrix_q_coefficient(coefficient, 0);
+        let expected = if *z_power == 0 {
+            identity_coeff_matrix(size)
+        } else {
+            zero_coeff_matrix(size)
+        };
+        if q0 != expected {
+            return Err(GwError::ConventionMismatch(format!(
+                "Birkhoff input must be identity at q=0; z^{z_power} coefficient is nonstandard"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn q_degree_slice<C: Coeff>(
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+    degree: usize,
+    size: usize,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = BTreeMap::new();
+    for (z_power, coefficient) in matrix {
+        let q_coeff = matrix_q_coefficient(coefficient, degree);
+        if !coeff_matrix_is_zero(&q_coeff) {
+            out.insert(*z_power, q_coeff);
+        }
+    }
+    if out.is_empty() {
+        out.insert(0, zero_coeff_matrix(size));
+    }
+    out
+}
+
+pub(crate) fn matrix_q_coefficient<C: Coeff>(
+    matrix: &SeriesMatrix<C>,
+    degree: usize,
+) -> CoeffMatrix<C> {
+    matrix
+        .entries()
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|entry| entry.coeff(degree).cloned().unwrap_or_else(C::zero))
+                .collect()
+        })
+        .collect()
+}
+
+pub(crate) fn multiply_laurent_matrix_q_slices<C: Coeff>(
+    left: &[LaurentCoeffMatrix<C>],
+    right: &[LaurentCoeffMatrix<C>],
+    degree: usize,
+    size: usize,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = BTreeMap::new();
+    for split in 1..degree {
+        for (left_z, left_matrix) in &left[split] {
+            for (right_z, right_matrix) in &right[degree - split] {
+                let product = multiply_coeff_matrix(left_matrix, right_matrix, size);
+                add_matrix_to_laurent(&mut out, left_z + right_z, product);
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn subtract_laurent_matrix<C: Coeff>(
+    target: &mut LaurentCoeffMatrix<C>,
+    rhs: &LaurentCoeffMatrix<C>,
+) {
+    for (z_power, matrix) in rhs {
+        add_matrix_to_laurent(target, *z_power, neg_coeff_matrix(matrix));
+    }
+}
+
+pub(crate) fn add_matrix_to_laurent<C: Coeff>(
+    target: &mut LaurentCoeffMatrix<C>,
+    z_power: i32,
+    matrix: CoeffMatrix<C>,
+) {
+    if coeff_matrix_is_zero(&matrix) {
+        return;
+    }
+    let size = matrix.len();
+    let entry = target
+        .entry(z_power)
+        .or_insert_with(|| zero_coeff_matrix(size));
+    for row in 0..size {
+        for col in 0..size {
+            entry[row][col] = entry[row][col].add(&matrix[row][col]);
+        }
+    }
+    if coeff_matrix_is_zero(entry) {
+        target.remove(&z_power);
+    }
+}
+
+pub(crate) fn negative_factor_to_s_coefficients<C: Coeff>(
+    size: usize,
+    q_degree: usize,
+    z_order: usize,
+    negative: &[LaurentCoeffMatrix<C>],
+) -> Vec<SeriesMatrix<C>> {
+    let mut coefficients = Vec::with_capacity(z_order + 1);
+    for order in 0..=z_order {
+        let mut entries = vec![vec![vec![C::zero(); q_degree + 1]; size]; size];
+        if order == 0 {
+            for idx in 0..size {
+                entries[idx][idx][0] = C::one();
+            }
+        } else {
+            let z_power = -(order as i32);
+            for degree in 1..=q_degree {
+                if let Some(matrix) = negative[degree].get(&z_power) {
+                    for row in 0..size {
+                        for col in 0..size {
+                            entries[row][col][degree] = matrix[row][col].clone();
+                        }
+                    }
+                }
+            }
+        }
+        coefficients.push(SeriesMatrix::from_entries(
+            entries
+                .into_iter()
+                .map(|row| row.into_iter().map(QSeries::from_coeffs).collect())
+                .collect(),
+        ));
+    }
+    coefficients
+}
+
+pub(crate) fn multiply_coeff_matrix<C: Coeff>(
+    left: &CoeffMatrix<C>,
+    right: &CoeffMatrix<C>,
+    size: usize,
+) -> CoeffMatrix<C> {
+    let mut out = zero_coeff_matrix(size);
+    for row in 0..size {
+        for col in 0..size {
+            let mut total = C::zero();
+            for mid in 0..size {
+                total = total.add(&left[row][mid].mul(&right[mid][col]));
+            }
+            out[row][col] = total;
+        }
+    }
+    out
+}
+
+pub(crate) fn identity_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
+    let mut out = zero_coeff_matrix(size);
+    for idx in 0..size {
+        out[idx][idx] = C::one();
+    }
+    out
+}
+
+pub(crate) fn zero_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
+    vec![vec![C::zero(); size]; size]
+}
+
+pub(crate) fn neg_coeff_matrix<C: Coeff>(matrix: &CoeffMatrix<C>) -> CoeffMatrix<C> {
+    matrix
+        .iter()
+        .map(|row| row.iter().map(Coeff::neg).collect())
+        .collect()
+}
+
+pub(crate) fn coeff_matrix_is_zero<C: Coeff>(matrix: &CoeffMatrix<C>) -> bool {
+    matrix.iter().all(|row| row.iter().all(Coeff::is_zero))
+}

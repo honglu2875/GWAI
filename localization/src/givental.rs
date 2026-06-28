@@ -20,7 +20,7 @@
 //! twisted-projective-space code only differ in how they construct the
 //! calibration package.
 
-use crate::algebra::{lambda, RatFun, Rational};
+use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
 use crate::frobenius::FrobeniusData;
 use crate::geometry::elementary_symmetric_weights;
@@ -29,7 +29,9 @@ use crate::resolvent::{
     enumerate_resolvent_indices, ResolventIndex, ResolventPolynomial, ResolventRequest,
     ResolventResult,
 };
-use crate::series::{QSeries, RationalQSeries, SeriesMatrix};
+use crate::series::{
+    integrate_q_derivative_zero_constant_matrix, QSeries, RationalQSeries, SeriesMatrix,
+};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
 use crate::{
@@ -40,6 +42,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod classical_limit;
+use classical_limit::*;
+mod r_solve;
+use r_solve::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaConvention {
@@ -131,21 +138,21 @@ impl RMatrix {
 /// into the target CohFT after the descendant/ancestor calibration has been
 /// applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesRMatrix {
+pub struct SeriesRMatrix<C = RatFun> {
     size: usize,
     q_degree: usize,
     z_order: usize,
-    coefficients: Vec<SeriesMatrix>,
+    coefficients: Vec<SeriesMatrix<C>>,
     calibration: CalibrationId,
     convention: CanonicalFrameConvention,
 }
 
-impl SeriesRMatrix {
+impl<C: Coeff> SeriesRMatrix<C> {
     pub fn from_coefficients(
         size: usize,
         q_degree: usize,
         z_order: usize,
-        coefficients: Vec<SeriesMatrix>,
+        coefficients: Vec<SeriesMatrix<C>>,
         calibration: CalibrationId,
         convention: CanonicalFrameConvention,
     ) -> Result<Self, GwError> {
@@ -217,15 +224,15 @@ impl SeriesRMatrix {
         self.convention
     }
 
-    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix> {
+    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix<C>> {
         self.coefficients.get(order)
     }
 
-    pub fn coefficients(&self) -> &[SeriesMatrix] {
+    pub fn coefficients(&self) -> &[SeriesMatrix<C>] {
         &self.coefficients
     }
 
-    pub fn entry(&self, z_order: usize, row: usize, col: usize) -> Option<&crate::series::QSeries> {
+    pub fn entry(&self, z_order: usize, row: usize, col: usize) -> Option<&QSeries<C>> {
         self.coefficient(z_order)
             .and_then(|matrix| matrix.entries().get(row))
             .and_then(|row_values| row_values.get(col))
@@ -257,7 +264,7 @@ impl SeriesRMatrix {
     /// This is the most useful local sanity check for an `R`-matrix: if it
     /// fails, the edge propagator would not define a CohFT-compatible graph
     /// sum.
-    pub fn check_unitarity(&self, metric: &SeriesMatrix) -> Result<(), GwError> {
+    pub fn check_unitarity(&self, metric: &SeriesMatrix<C>) -> Result<(), GwError> {
         if metric.rows() != self.size || metric.cols() != self.size {
             return Err(GwError::ConventionMismatch(format!(
                 "metric shape {}x{} does not match R-matrix size {}",
@@ -304,20 +311,20 @@ impl SeriesRMatrix {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeriesSMatrix {
+pub struct SeriesSMatrix<C = RatFun> {
     size: usize,
     q_degree: usize,
     z_order: usize,
-    coefficients: Vec<SeriesMatrix>,
+    coefficients: Vec<SeriesMatrix<C>>,
     calibration: CalibrationId,
 }
 
-impl SeriesSMatrix {
+impl<C: Coeff> SeriesSMatrix<C> {
     pub fn from_coefficients(
         size: usize,
         q_degree: usize,
         z_order: usize,
-        coefficients: Vec<SeriesMatrix>,
+        coefficients: Vec<SeriesMatrix<C>>,
         calibration: CalibrationId,
     ) -> Result<Self, GwError> {
         if coefficients.len() != z_order + 1 {
@@ -377,11 +384,11 @@ impl SeriesSMatrix {
         &self.calibration
     }
 
-    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix> {
+    pub fn coefficient(&self, order: usize) -> Option<&SeriesMatrix<C>> {
         self.coefficients.get(order)
     }
 
-    pub fn coefficients(&self) -> &[SeriesMatrix] {
+    pub fn coefficients(&self) -> &[SeriesMatrix<C>] {
         &self.coefficients
     }
 
@@ -404,16 +411,16 @@ impl SeriesSMatrix {
 /// for twisted theories, equivariant theories, r-spin, or other semisimple
 /// CohFTs a provider can supply a different calibration with the same shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemisimpleCalibration {
-    pub r_matrix: SeriesRMatrix,
-    pub metric: SeriesMatrix,
-    pub psi: SeriesMatrix,
-    pub psi_inverse: SeriesMatrix,
-    pub connection: SeriesMatrix,
-    pub delta: Vec<QSeries>,
-    pub inverse_delta: Vec<QSeries>,
-    pub relative_sqrt_delta: Vec<QSeries>,
-    pub relative_sqrt_delta_inverse: Vec<QSeries>,
+pub struct SemisimpleCalibration<C = RatFun> {
+    pub r_matrix: SeriesRMatrix<C>,
+    pub metric: SeriesMatrix<C>,
+    pub psi: SeriesMatrix<C>,
+    pub psi_inverse: SeriesMatrix<C>,
+    pub connection: SeriesMatrix<C>,
+    pub delta: Vec<QSeries<C>>,
+    pub inverse_delta: Vec<QSeries<C>>,
+    pub relative_sqrt_delta: Vec<QSeries<C>>,
+    pub relative_sqrt_delta_inverse: Vec<QSeries<C>>,
 }
 
 pub type ProjectiveSpaceJCalibration = SemisimpleCalibration;
@@ -504,6 +511,16 @@ pub trait SemisimpleCohftProvider {
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError>;
 
+    fn direct_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        Ok(None)
+    }
+
     /// Optional scalar fallback for intentionally small seed cases.
     ///
     /// This is used only after the graph path reports that an unstable range or
@@ -516,6 +533,189 @@ pub trait SemisimpleCohftProvider {
         _truncation: Option<&Truncation>,
     ) -> Result<Option<RatFun>, GwError> {
         Ok(None)
+    }
+}
+
+/// Coefficient-generic provider boundary for semisimple graph reconstruction.
+///
+/// This is the extension point for alternate algebra engines such as
+/// `FactoredRatFun`.  The older [`SemisimpleCohftProvider`] remains the public
+/// `RatFun` API; this trait is deliberately parallel rather than replacing it,
+/// so existing projective and twisted providers do not see method-resolution
+/// churn.
+pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
+    type Insertion;
+
+    fn coeff_colors(&self) -> usize;
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize;
+
+    fn coeff_insertion_degree(&self, _insertions: &[Self::Insertion]) -> Option<usize> {
+        None
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _markings: usize,
+    ) -> Option<isize> {
+        None
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        _genus: usize,
+        _insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        None
+    }
+
+    fn coeff_candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        if self.coeff_insertion_degree(insertions).is_some() {
+            self.coeff_expected_degree_from_dimension(genus, insertions)
+                .filter(|degree| *degree <= degree_max)
+                .into_iter()
+                .collect()
+        } else {
+            (0..=degree_max).collect()
+        }
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<C>, GwError>;
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel<C>>, GwError>;
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries<C>>, GwError>;
+
+    fn coeff_direct_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<C>, GwError> {
+        Ok(None)
+    }
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        _genus: usize,
+        _degree: usize,
+        _insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<C>, GwError> {
+        Ok(None)
+    }
+}
+
+impl<P> CoefficientSemisimpleCohftProvider<RatFun> for P
+where
+    P: SemisimpleCohftProvider,
+{
+    type Insertion = P::Insertion;
+
+    fn coeff_colors(&self) -> usize {
+        SemisimpleCohftProvider::colors(self)
+    }
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        SemisimpleCohftProvider::descendant_power(self, insertion)
+    }
+
+    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        SemisimpleCohftProvider::insertion_degree(self, insertions)
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Option<isize> {
+        SemisimpleCohftProvider::virtual_dimension(self, genus, degree, markings)
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        genus: usize,
+        insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        SemisimpleCohftProvider::expected_degree_from_dimension(self, genus, insertions)
+    }
+
+    fn coeff_candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        SemisimpleCohftProvider::candidate_degrees_from_dimension(
+            self, genus, degree_max, insertions,
+        )
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix, GwError> {
+        SemisimpleCohftProvider::descendant_s_matrix(self, q_degree, z_order)
+    }
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
+        SemisimpleCohftProvider::graph_kernel(self, q_degree, r_order, graph_dimension)
+    }
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries>, GwError> {
+        SemisimpleCohftProvider::insertion_vector(self, insertion, q_degree)
+    }
+
+    fn coeff_direct_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        SemisimpleCohftProvider::direct_value(self, genus, degree, insertions, truncation)
+    }
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        SemisimpleCohftProvider::scalar_fallback_value(self, genus, degree, insertions, truncation)
     }
 }
 
@@ -1197,273 +1397,6 @@ fn h_power_relation_series_at_lambda_weights(
     rhs
 }
 
-fn elementary_symmetric_rational(weights: &[Rational]) -> Vec<Rational> {
-    let mut elementary = vec![Rational::zero(); weights.len() + 1];
-    elementary[0] = Rational::one();
-    for (idx, weight) in weights.iter().enumerate() {
-        for k in (1..=idx + 1).rev() {
-            elementary[k] = elementary[k].clone() + elementary[k - 1].clone() * weight.clone();
-        }
-    }
-    elementary
-}
-
-fn integrate_q_derivative_zero_constant_matrix(
-    matrix: &SeriesMatrix,
-) -> Result<SeriesMatrix, GwError> {
-    Ok(SeriesMatrix::from_entries(
-        matrix
-            .entries()
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(integrate_q_derivative_zero_constant)
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-    ))
-}
-
-fn integrate_q_derivative_zero_constant(series: &QSeries) -> Result<QSeries, GwError> {
-    let max_degree = series.max_degree();
-    if series.coeff(0).is_some_and(|constant| !constant.is_zero()) {
-        return Err(GwError::AlgebraFailure(
-            "cannot integrate q d/dq with nonzero constant term and zero integration constant"
-                .to_string(),
-        ));
-    }
-
-    let mut coeffs = vec![RatFun::zero(); max_degree + 1];
-    for degree in 1..=max_degree {
-        let denominator = RatFun::from(degree);
-        coeffs[degree] = series.coeff(degree).cloned().unwrap_or_else(RatFun::zero) / denominator;
-    }
-    Ok(QSeries::from_coeffs(coeffs))
-}
-
-fn relative_sqrt_delta_series(delta: &QSeries) -> Result<QSeries, GwError> {
-    let delta0 = delta
-        .coeff(0)
-        .ok_or_else(|| GwError::AlgebraFailure("empty Delta series".to_string()))?;
-    if delta0.is_zero() {
-        return Err(GwError::NonSemisimplePoint);
-    }
-    let inv_delta0 = &RatFun::one() / delta0;
-    delta.scale(&inv_delta0).sqrt_with_constant_one()
-}
-
-fn canonical_evaluation_matrix(roots: &[QSeries]) -> SeriesMatrix {
-    SeriesMatrix::from_entries(
-        roots
-            .iter()
-            .map(|root| {
-                (0..roots.len())
-                    .map(|power| root.pow_usize(power))
-                    .collect::<Vec<_>>()
-            })
-            .collect(),
-    )
-}
-
-fn solve_projective_r_coefficients(
-    roots: &[QSeries],
-    connection: &SeriesMatrix,
-    _metric: &SeriesMatrix,
-    classical_diagonal: &[Vec<RatFun>],
-    q_degree: usize,
-    z_order: usize,
-) -> Result<Vec<SeriesMatrix>, GwError> {
-    let size = roots.len();
-    let mut coefficients = Vec::with_capacity(z_order + 1);
-    coefficients.push(SeriesMatrix::identity(size, q_degree));
-
-    for order in 1..=z_order {
-        let previous = &coefficients[order - 1];
-        let recursion_source = previous.q_derivative().add(&connection.mul(previous));
-        let mut entries = vec![vec![QSeries::zero(q_degree); size]; size];
-
-        for row in 0..size {
-            for col in 0..size {
-                if row == col {
-                    continue;
-                }
-                let root_difference = roots[col].sub(&roots[row]);
-                entries[row][col] = recursion_source
-                    .entry(row, col)
-                    .neg()
-                    .div(&root_difference)?;
-            }
-        }
-
-        for branch in 0..size {
-            entries[branch][branch] = solve_r_diagonal_from_flatness(
-                connection,
-                &entries,
-                branch,
-                classical_diagonal[branch][order].clone(),
-                q_degree,
-            );
-        }
-
-        let next = SeriesMatrix::from_entries(entries);
-        coefficients.push(next);
-    }
-
-    Ok(coefficients)
-}
-
-fn solve_r_diagonal_from_flatness(
-    connection: &SeriesMatrix,
-    entries: &[Vec<QSeries>],
-    branch: usize,
-    constant: RatFun,
-    q_degree: usize,
-) -> QSeries {
-    let mut known = QSeries::zero(q_degree);
-    for (source, row) in entries.iter().enumerate() {
-        if source == branch {
-            continue;
-        }
-        known = known.add(&connection.entry(branch, source).mul(&row[branch]));
-    }
-    let target = known.neg();
-    let diagonal_connection = connection.entry(branch, branch);
-    let a0 = diagonal_connection
-        .coeff(0)
-        .cloned()
-        .unwrap_or_else(RatFun::zero);
-
-    let mut coeffs = vec![RatFun::zero(); q_degree + 1];
-    coeffs[0] = constant;
-    for degree in 1..=q_degree {
-        let mut numerator = target.coeff(degree).cloned().unwrap_or_else(RatFun::zero);
-        for connection_degree in 1..=degree {
-            let term = diagonal_connection
-                .coeff(connection_degree)
-                .cloned()
-                .unwrap_or_else(RatFun::zero)
-                * coeffs[degree - connection_degree].clone();
-            numerator = numerator - term;
-        }
-        let denominator = RatFun::from(degree) + a0.clone();
-        coeffs[degree] = numerator / denominator;
-    }
-    QSeries::from_coeffs(coeffs)
-}
-
-fn classical_limit_diagonal_coefficients(n: usize, z_order: usize) -> Vec<Vec<RatFun>> {
-    (0..=n)
-        .map(|branch| classical_limit_diagonal_coefficients_for_branch(n, branch, z_order))
-        .collect()
-}
-
-fn classical_limit_diagonal_coefficients_at_lambda_weights(
-    n: usize,
-    z_order: usize,
-    weights: &[Rational],
-) -> Vec<Vec<RatFun>> {
-    (0..=n)
-        .map(|branch| {
-            classical_limit_diagonal_coefficients_for_branch_at_lambda_weights(
-                n, branch, z_order, weights,
-            )
-        })
-        .collect()
-}
-
-fn classical_limit_diagonal_coefficients_for_branch(
-    n: usize,
-    branch: usize,
-    z_order: usize,
-) -> Vec<RatFun> {
-    let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
-        let order = 2 * r - 1;
-        let coefficient =
-            bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
-        let coefficient = RatFun::from_rational(coefficient);
-        let mut weight_sum = RatFun::zero();
-        for other in 0..=n {
-            if other == branch {
-                continue;
-            }
-            let difference = &lambda(other) - &lambda(branch);
-            let term = &RatFun::one() / &difference.pow_usize(order);
-            weight_sum = &weight_sum + &term;
-        }
-        exponent[order] = &coefficient * &weight_sum;
-    }
-    exp_scalar_z_series(&exponent)
-}
-
-fn classical_limit_diagonal_coefficients_for_branch_at_lambda_weights(
-    n: usize,
-    branch: usize,
-    z_order: usize,
-    weights: &[Rational],
-) -> Vec<RatFun> {
-    let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=((z_order + 1) / 2) {
-        let order = 2 * r - 1;
-        let coefficient =
-            bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
-        let mut weight_sum = Rational::zero();
-        for other in 0..=n {
-            if other == branch {
-                continue;
-            }
-            let difference = weights[other].clone() - weights[branch].clone();
-            weight_sum += Rational::one() / difference.pow_usize(order);
-        }
-        exponent[order] = RatFun::from_rational(coefficient * weight_sum);
-    }
-    exp_scalar_z_series(&exponent)
-}
-
-fn exp_scalar_z_series(exponent: &[RatFun]) -> Vec<RatFun> {
-    let z_order = exponent.len().saturating_sub(1);
-    let mut out = vec![RatFun::zero(); z_order + 1];
-    out[0] = RatFun::one();
-    for degree in 1..=z_order {
-        let mut total = RatFun::zero();
-        for part in 1..=degree {
-            if exponent[part].is_zero() {
-                continue;
-            }
-            let scaled = &exponent[part] * &RatFun::from(part);
-            let term = &scaled * &out[degree - part];
-            total = &total + &term;
-        }
-        out[degree] = &total / &RatFun::from(degree);
-    }
-    out
-}
-
-fn bernoulli_number(n: usize) -> Rational {
-    let mut bernoulli = vec![Rational::zero(); n + 1];
-    bernoulli[0] = Rational::one();
-    for degree in 1..=n {
-        let mut sum = Rational::zero();
-        for idx in 0..degree {
-            sum += Rational::from(binomial(degree + 1, idx)) * bernoulli[idx].clone();
-        }
-        bernoulli[degree] = -sum / Rational::from(degree + 1);
-    }
-    bernoulli[n].clone()
-}
-
-fn binomial(n: usize, k: usize) -> usize {
-    if k > n {
-        return 0;
-    }
-    let k = k.min(n - k);
-    let mut out = 1usize;
-    for step in 1..=k {
-        out = out * (n + 1 - step) / step;
-    }
-    out
-}
-
 pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     match compute_by_givental_graphs(req) {
         Ok(result) => Ok(result),
@@ -1494,22 +1427,22 @@ pub fn product_of_point_theories(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AncestorLegTerm {
+struct AncestorLegTerm<C = RatFun> {
     base_power: usize,
-    vector: Vec<QSeries>,
+    vector: Vec<QSeries<C>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LegFactorOption {
+struct LegFactorOption<C = RatFun> {
     power: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct EdgeFactorOption {
+struct EdgeFactorOption<C = RatFun> {
     left_power: usize,
     right_power: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1634,22 +1567,22 @@ struct GraphKernelCacheKey {
 }
 
 #[derive(Debug)]
-pub struct GiventalGraphKernel {
-    calibration: SemisimpleCalibration,
-    inverse_r: Vec<SeriesMatrix>,
-    translation: Vec<Vec<QSeries>>,
-    edge_options: Vec<Vec<Vec<EdgeFactorOption>>>,
-    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries>>,
+pub struct GiventalGraphKernel<C = RatFun> {
+    calibration: SemisimpleCalibration<C>,
+    inverse_r: Vec<SeriesMatrix<C>>,
+    translation: Vec<Vec<QSeries<C>>>,
+    edge_options: Vec<Vec<Vec<EdgeFactorOption<C>>>>,
+    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries<C>>>,
 }
 
-impl GiventalGraphKernel {
+impl<C: Coeff> GiventalGraphKernel<C> {
     /// Builds the Feynman-rule kernel from a semisimple calibration.
     ///
     /// This performs the universal part of quantization:
     /// `R -> R^{-1}`, `R^{-1}1 -> T`, and `R^{-1},eta^{-1} ->` edge
     /// propagators.  It does not inspect target geometry.
     pub fn from_calibration(
-        calibration: SemisimpleCalibration,
+        calibration: SemisimpleCalibration<C>,
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
         let q_degree = calibration.r_matrix.q_degree();
@@ -1665,9 +1598,9 @@ impl GiventalGraphKernel {
     /// Twisted-theory experiments use this to test alternate QRR/Birkhoff
     /// calibrations without reusing the default projective-space construction.
     pub fn from_parts(
-        calibration: SemisimpleCalibration,
-        inverse_r: Vec<SeriesMatrix>,
-        translation: Vec<Vec<QSeries>>,
+        calibration: SemisimpleCalibration<C>,
+        inverse_r: Vec<SeriesMatrix<C>>,
+        translation: Vec<Vec<QSeries<C>>>,
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
         let q_degree = calibration.r_matrix.q_degree();
@@ -1687,15 +1620,15 @@ impl GiventalGraphKernel {
         })
     }
 
-    pub fn calibration(&self) -> &SemisimpleCalibration {
+    pub fn calibration(&self) -> &SemisimpleCalibration<C> {
         &self.calibration
     }
 
-    pub fn inverse_r(&self) -> &[SeriesMatrix] {
+    pub fn inverse_r(&self) -> &[SeriesMatrix<C>] {
         &self.inverse_r
     }
 
-    pub fn translation(&self) -> &[Vec<QSeries>] {
+    pub fn translation(&self) -> &[Vec<QSeries<C>>] {
         &self.translation
     }
 }
@@ -1844,6 +1777,9 @@ pub fn compute_semisimple_graph_value<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    if let Some(value) = provider.direct_value(genus, degree, insertions, truncation)? {
+        return Ok(value);
+    }
     if !is_stable_cohft_range(genus, insertions.len()) {
         if let Some(value) =
             provider.scalar_fallback_value(genus, degree, insertions, truncation)?
@@ -1853,6 +1789,33 @@ where
     }
     let total = compute_semisimple_graph_series(provider, genus, degree, insertions, truncation)?;
     Ok(total.coeff(degree).cloned().unwrap_or_else(RatFun::zero))
+}
+
+pub fn compute_semisimple_graph_value_with_coeff<C, P>(
+    provider: &P,
+    genus: usize,
+    degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<C, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C>,
+{
+    if let Some(value) = provider.coeff_direct_value(genus, degree, insertions, truncation)? {
+        return Ok(value);
+    }
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        if let Some(value) =
+            provider.coeff_scalar_fallback_value(genus, degree, insertions, truncation)?
+        {
+            return Ok(value);
+        }
+    }
+    let total = compute_semisimple_graph_series_with_coeff(
+        provider, genus, degree, insertions, truncation,
+    )?;
+    Ok(total.coeff(degree).cloned().unwrap_or_else(C::zero))
 }
 
 /// Computes all coefficients `q^0, ..., q^degree_max` for one fixed insertion
@@ -2076,6 +2039,14 @@ where
         .map(Vec::len)
         .sum();
     profile.add_option_elapsed(options_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_options_total={:.3}s leg_options={} edge_options={}",
+            options_started.elapsed().as_secs_f64(),
+            profile.leg_options,
+            profile.edge_options
+        );
+    }
 
     let graphs = prepared_stable_graphs(genus, insertions.len(), provider.colors());
     profile.stable_graphs = graphs.len();
@@ -2110,6 +2081,131 @@ where
         )
     };
     profile.add_graph_elapsed(graphs_started.elapsed());
+    profile.finish();
+    Ok(total)
+}
+
+pub fn compute_semisimple_graph_series_with_coeff<C, P>(
+    provider: &P,
+    genus: usize,
+    q_degree: usize,
+    insertions: &[P::Insertion],
+    truncation: Option<&Truncation>,
+) -> Result<QSeries<C>, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C>,
+{
+    let mut profile = GraphEvalProfile::new();
+    let max_descendant_power = insertions
+        .iter()
+        .map(|insertion| provider.coeff_descendant_power(insertion))
+        .max()
+        .unwrap_or(0);
+
+    if !is_stable_cohft_range(genus, insertions.len()) {
+        return Err(GwError::UnsupportedInvariant(
+            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let graph_dimension = 3 * genus + insertions.len() - 3;
+    let needed_r_order = graph_dimension + 1;
+    let needed_s_order = max_descendant_power;
+    let needed_z_order = needed_r_order.max(needed_s_order);
+    let z_order = truncation
+        .map(|truncation| truncation.z_order)
+        .unwrap_or(needed_z_order);
+    if z_order < needed_z_order {
+        return Err(GwError::TruncationTooLow);
+    }
+
+    let calibration_started = Instant::now();
+    let kernel = provider.coeff_graph_kernel(q_degree, needed_r_order, graph_dimension)?;
+    profile.add_calibration_elapsed(calibration_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_kernel_total={:.3}s",
+            calibration_started.elapsed().as_secs_f64()
+        );
+    }
+
+    let options_started = Instant::now();
+    let leg_options = if insertions.is_empty() {
+        Vec::new()
+    } else {
+        let descendant_started = Instant::now();
+        let descendant_s = provider.coeff_descendant_s_matrix(q_degree, needed_s_order)?;
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_descendant_s={:.3}s",
+                descendant_started.elapsed().as_secs_f64()
+            );
+        }
+        let insertion_started = Instant::now();
+        let insertion_terms = ancestor_insertion_terms_from_provider(
+            provider,
+            insertions,
+            &descendant_s,
+            &kernel.calibration.psi_inverse,
+            q_degree,
+            graph_dimension,
+        )?;
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_ancestor_terms={:.3}s",
+                insertion_started.elapsed().as_secs_f64()
+            );
+        }
+        let leg_started = Instant::now();
+        let leg_options = leg_options_by_marking_color(
+            &insertion_terms,
+            &kernel.inverse_r,
+            q_degree,
+            graph_dimension,
+            provider.coeff_colors(),
+        );
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE coeff_leg_options={:.3}s",
+                leg_started.elapsed().as_secs_f64()
+            );
+        }
+        leg_options
+    };
+    profile.leg_options = leg_options
+        .iter()
+        .flat_map(|by_color| by_color.iter())
+        .map(Vec::len)
+        .sum();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    profile.add_option_elapsed(options_started.elapsed());
+
+    let graphs = prepared_stable_graphs(genus, insertions.len(), provider.coeff_colors());
+    profile.stable_graphs = graphs.len();
+
+    let graphs_started = Instant::now();
+    let total = evaluate_scalar_graphs_parallel(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(graphs_started.elapsed());
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE coeff_graphs_total={:.3}s",
+            graphs_started.elapsed().as_secs_f64()
+        );
+    }
     profile.finish();
     Ok(total)
 }
@@ -2176,7 +2272,7 @@ where
     let mut evaluator = GiventalMasterEvaluator::with_provider(req, provider);
     evaluator.set_shared_kernel_task_counts(shared_kernel_task_counts.clone());
     for (markings, count) in shared_kernel_task_counts.iter().copied().enumerate() {
-        if count >= MASTER_MIN_RESTRICTED_KERNEL_TASKS && count < MASTER_MIN_SHARED_KERNEL_TASKS {
+        if (MASTER_MIN_RESTRICTED_KERNEL_TASKS..MASTER_MIN_SHARED_KERNEL_TASKS).contains(&count) {
             notes.push(format!(
                 "using restricted sparse S/R graph kernel for {count} coefficient(s) with {markings} marking(s); shared kernel threshold is {MASTER_MIN_SHARED_KERNEL_TASKS}"
             ));
@@ -2391,6 +2487,184 @@ where
         })?;
         let normalized = normalize(coefficient.coefficient.value)?;
         if normalized.is_zero() {
+            continue;
+        }
+        value.add_index_coefficient(index, normalized);
+        nonzero_terms += 1;
+    }
+
+    Ok(ResolventResult {
+        value,
+        candidate_terms,
+        nonzero_terms,
+        engine,
+        notes: vec![note.into()],
+    })
+}
+
+pub fn compute_packed_resolvent_with_coeff_provider<C, P, N>(
+    req: &ResolventRequest,
+    provider: P,
+    engine: &'static str,
+    note: impl Into<String>,
+    mut normalize: N,
+) -> Result<ResolventResult<C>, GwError>
+where
+    C: Coeff + Send + Sync,
+    P: CoefficientSemisimpleCohftProvider<C, Insertion = Insertion>,
+    N: FnMut(C) -> Result<C, GwError>,
+{
+    if req.virtual_dimension < 0 {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms: 0,
+            nonzero_terms: 0,
+            engine: "packed-resolvent-empty-dimension",
+            notes: vec![format!(
+                "virtual dimension {} is negative, so the packed resolvent generating function is zero",
+                req.virtual_dimension
+            )],
+        });
+    }
+
+    if req.markings == 0 {
+        let mut value = ResolventPolynomial::zero();
+        let mut nonzero_terms = 0usize;
+        let candidate_terms = usize::from(req.virtual_dimension == 0);
+        if req.virtual_dimension == 0 {
+            let coefficient = compute_semisimple_graph_value_with_coeff::<C, _>(
+                &provider,
+                req.genus,
+                req.degree,
+                &[],
+                None,
+            )?;
+            let normalized = normalize(coefficient)?;
+            if !normalized.is_structurally_zero() {
+                value.add_index_coefficient(&ResolventIndex::empty(), normalized);
+                nonzero_terms = 1;
+            }
+        }
+        return Ok(ResolventResult {
+            value,
+            candidate_terms,
+            nonzero_terms,
+            engine,
+            notes: vec![note.into()],
+        });
+    }
+    if !is_stable_cohft_range(req.genus, req.markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "packed resolvent graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
+    }
+
+    let graph_dimension = 3 * req.genus + req.markings - 3;
+    let needed_r_order = graph_dimension + 1;
+    let needed_s_order = req.virtual_dimension as usize;
+    let graph_kernel = provider.coeff_graph_kernel(req.degree, needed_r_order, graph_dimension)?;
+    let descendant_s = provider.coeff_descendant_s_matrix(req.degree, needed_s_order)?;
+    let mut tasks = Vec::<MasterContractionTask<C>>::new();
+    let mut task_indices = Vec::<ResolventIndex>::new();
+    let candidate_terms = enumerate_resolvent_indices(req, |index| {
+        let insertions = index.to_insertions(req.target_n);
+        if let (Some(total_degree), Some(virtual_dimension)) = (
+            provider.coeff_insertion_degree(&insertions),
+            provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
+        ) {
+            if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
+                return Ok(());
+            }
+        }
+
+        let mut leg_options = Vec::with_capacity(req.markings);
+        for insertion in &insertions {
+            let insertion_terms = ancestor_insertion_terms_from_provider(
+                &provider,
+                std::slice::from_ref(insertion),
+                &descendant_s,
+                &graph_kernel.calibration.psi_inverse,
+                req.degree,
+                graph_dimension,
+            )?;
+            let mut options = leg_options_by_marking_color(
+                &insertion_terms,
+                &graph_kernel.inverse_r,
+                req.degree,
+                graph_dimension,
+                provider.coeff_colors(),
+            );
+            leg_options.push(options.pop().unwrap_or_else(|| {
+                vec![Vec::<LegFactorOption<C>>::new(); provider.coeff_colors()]
+            }));
+        }
+
+        tasks.push(MasterContractionTask {
+            ordinal: tasks.len(),
+            degree: req.degree,
+            insertions,
+            markings: req.markings,
+            leg_options,
+        });
+        task_indices.push(index);
+        Ok(())
+    })?;
+
+    if tasks.is_empty() {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms,
+            nonzero_terms: 0,
+            engine,
+            notes: vec![note.into()],
+        });
+    }
+
+    let template = RestrictedExternalLegKernel::from_tasks(
+        req.markings,
+        provider.coeff_colors(),
+        graph_dimension,
+        req.degree,
+        &tasks,
+    );
+    let graphs = prepared_stable_graphs(req.genus, req.markings, provider.coeff_colors());
+    let mut profile = GraphEvalProfile::new();
+    profile.stable_graphs = graphs.len();
+    profile.edge_options = graph_kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let graph_started = Instant::now();
+    let restricted_kernel = evaluate_restricted_external_graphs_parallel(
+        graphs.as_ref(),
+        &template,
+        &graph_kernel,
+        req.degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(graph_started.elapsed());
+    profile.finish();
+
+    let mut value = ResolventPolynomial::zero();
+    let mut nonzero_terms = 0usize;
+    for task in &tasks {
+        let index = task_indices.get(task.ordinal).ok_or_else(|| {
+            GwError::AlgebraFailure(format!(
+                "packed resolvent task ordinal {} is out of range",
+                task.ordinal
+            ))
+        })?;
+        let coefficient = contract_restricted_external_leg_kernel_coeff_generic(
+            &restricted_kernel,
+            &task.leg_options,
+            task.degree,
+        );
+        let normalized = normalize(coefficient)?;
+        if normalized.is_structurally_zero() {
             continue;
         }
         value.add_index_coefficient(index, normalized);
@@ -2928,12 +3202,12 @@ where
 }
 
 #[derive(Debug)]
-struct MasterContractionTask {
+struct MasterContractionTask<C = RatFun> {
     ordinal: usize,
     degree: usize,
     insertions: Vec<Insertion>,
     markings: usize,
-    leg_options: Vec<Vec<Vec<LegFactorOption>>>,
+    leg_options: Vec<Vec<Vec<LegFactorOption<C>>>>,
 }
 
 #[derive(Debug)]
@@ -3047,20 +3321,23 @@ fn contract_restricted_task_chunk(
     out
 }
 
-struct ScalarGraphChunkResult {
-    total: QSeries,
+struct ScalarGraphChunkResult<C = RatFun> {
+    total: QSeries<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_scalar_graphs_parallel(
+fn evaluate_scalar_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &Arc<GiventalGraphKernel>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3100,7 +3377,7 @@ fn evaluate_scalar_graphs_parallel(
         })
     };
 
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     let mut shared_vertex_cache = kernel.vertex_cache.lock().unwrap();
     for result in results {
         profile.absorb_graph_counts(&result.profile);
@@ -3112,24 +3389,28 @@ fn evaluate_scalar_graphs_parallel(
     total
 }
 
-fn evaluate_scalar_graph_chunk(
+fn evaluate_scalar_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    kernel: &GiventalGraphKernel,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> ScalarGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> ScalarGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     for prepared in graphs {
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
         for coloring in prepared.colorings.iter() {
-            let mut graph_total = QSeries::zero(q_degree);
+            let mut graph_total = QSeries::<C>::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3143,7 +3424,7 @@ fn evaluate_scalar_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree),
+                QSeries::<C>::one(q_degree),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3151,7 +3432,7 @@ fn evaluate_scalar_graph_chunk(
                 &mut profile,
             );
 
-            total = total.add(&graph_total.scale(&coloring.factor));
+            total = total.add(&graph_total.scale(&coloring_factor));
         }
     }
     ScalarGraphChunkResult {
@@ -3308,9 +3589,7 @@ fn evaluate_rational_no_insertion_graph_chunk(
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
         for coloring in prepared.colorings.iter() {
-            let Some(coloring_factor) = coloring.factor.as_rational() else {
-                continue;
-            };
+            let coloring_factor = coloring.factor.clone();
             let mut graph_total = RationalQSeries::zero(q_degree);
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
@@ -3357,7 +3636,7 @@ fn accumulate_rational_no_insertion_graph_factors(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -3389,7 +3668,7 @@ fn accumulate_rational_no_insertion_graph_factors(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -3442,7 +3721,7 @@ fn accumulate_rational_no_insertion_graph_factors(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -3520,7 +3799,7 @@ fn rational_vertex_contribution_with_translations(
             if coefficient.is_zero() {
                 break;
             }
-            powers.extend(std::iter::repeat(power).take(multiplicity));
+            powers.extend(std::iter::repeat_n(power, multiplicity));
 
             symmetry = symmetry * Rational::from(factorial(multiplicity));
         }
@@ -3553,21 +3832,24 @@ fn rational_vertex_tft_factor(
     genus_factor.mul(&kernel.relative_sqrt_delta[color].pow_usize(valence))
 }
 
-struct ExternalGraphChunkResult {
-    total: ExternalLegKernel,
+struct ExternalGraphChunkResult<C = RatFun> {
+    total: ExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_external_graphs_parallel(
+fn evaluate_external_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &Arc<GiventalGraphKernel>,
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> ExternalLegKernel {
+) -> ExternalLegKernel<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3609,7 +3891,7 @@ fn evaluate_external_graphs_parallel(
         })
     };
 
-    let mut total = ExternalLegKernel::zero(markings, colors, graph_dimension, q_degree);
+    let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     let mut shared_vertex_cache = kernel.vertex_cache.lock().unwrap();
     for result in results {
         profile.absorb_graph_counts(&result.profile);
@@ -3621,18 +3903,21 @@ fn evaluate_external_graphs_parallel(
     total
 }
 
-fn evaluate_external_graph_chunk(
+fn evaluate_external_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
     markings: usize,
     colors: usize,
-    kernel: &GiventalGraphKernel,
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> ExternalGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> ExternalGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
-    let mut total = ExternalLegKernel::zero(markings, colors, graph_dimension, q_degree);
+    let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     for prepared in graphs {
         let graph = &prepared.graph;
         profile.colorings += prepared.colorings.len();
@@ -3640,6 +3925,7 @@ fn evaluate_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_states = Vec::with_capacity(markings);
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3652,7 +3938,7 @@ fn evaluate_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring.factor),
+                QSeries::<C>::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3669,20 +3955,23 @@ fn evaluate_external_graph_chunk(
     }
 }
 
-struct RestrictedExternalGraphChunkResult {
-    total: RestrictedExternalLegKernel,
+struct RestrictedExternalGraphChunkResult<C = RatFun> {
+    total: RestrictedExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
 }
 
-fn evaluate_restricted_external_graphs_parallel(
+fn evaluate_restricted_external_graphs_parallel<C>(
     graphs: &[PreparedStableGraph],
-    template: &RestrictedExternalLegKernel,
-    kernel: &Arc<GiventalGraphKernel>,
+    template: &RestrictedExternalLegKernel<C>,
+    kernel: &Arc<GiventalGraphKernel<C>>,
     q_degree: usize,
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
-) -> RestrictedExternalLegKernel {
+) -> RestrictedExternalLegKernel<C>
+where
+    C: Coeff + Send + Sync,
+{
     let worker_count = master_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
@@ -3734,14 +4023,17 @@ fn evaluate_restricted_external_graphs_parallel(
     total
 }
 
-fn evaluate_restricted_external_graph_chunk(
+fn evaluate_restricted_external_graph_chunk<C>(
     graphs: &[PreparedStableGraph],
-    template: &RestrictedExternalLegKernel,
-    kernel: &GiventalGraphKernel,
+    template: &RestrictedExternalLegKernel<C>,
+    kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries>,
-) -> RestrictedExternalGraphChunkResult {
+    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+) -> RestrictedExternalGraphChunkResult<C>
+where
+    C: Coeff,
+{
     let oracle = WittenKontsevich::new();
     let mut profile = GraphEvalProfile::new();
     let mut total = template.zero_like();
@@ -3752,6 +4044,7 @@ fn evaluate_restricted_external_graph_chunk(
             let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
             let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
             let mut external_state_indices = Vec::with_capacity(template.markings);
+            let coloring_factor = C::from_rational(coloring.factor.clone());
             accumulate_restricted_external_leg_graph_factors(
                 graph,
                 &coloring.colors,
@@ -3764,7 +4057,7 @@ fn evaluate_restricted_external_graph_chunk(
                 graph_dimension,
                 0,
                 0,
-                QSeries::one(q_degree).scale(&coloring.factor),
+                QSeries::<C>::one(q_degree).scale(&coloring_factor),
                 &mut base_powers,
                 &mut vertex_power_sums,
                 &prepared.vertex_power_caps,
@@ -3797,19 +4090,19 @@ struct ExternalLegState {
 }
 
 #[derive(Debug, Clone)]
-struct ExternalLegKernel {
+struct ExternalLegKernel<C = RatFun> {
     markings: usize,
     colors: usize,
     max_power: usize,
     q_degree: usize,
     state_count: usize,
-    entries: Vec<QSeries>,
+    entries: Vec<QSeries<C>>,
 }
 
-impl ExternalLegKernel {
+impl<C: Coeff> ExternalLegKernel<C> {
     fn zero(markings: usize, colors: usize, max_power: usize, q_degree: usize) -> Self {
         let state_count = colors * (max_power + 1);
-        let entries = vec![QSeries::zero(q_degree); state_count.pow(markings as u32)];
+        let entries = vec![QSeries::<C>::zero(q_degree); state_count.pow(markings as u32)];
         Self {
             markings,
             colors,
@@ -3844,8 +4137,8 @@ impl ExternalLegKernel {
         index
     }
 
-    fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries) {
-        if value.is_zero() {
+    fn add_term(&mut self, states: &[ExternalLegState], value: &QSeries<C>) {
+        if value.is_structurally_zero() {
             return;
         }
         let index = self.tensor_index(states);
@@ -3858,7 +4151,7 @@ impl ExternalLegKernel {
         debug_assert_eq!(self.max_power, rhs.max_power);
         debug_assert_eq!(self.q_degree, rhs.q_degree);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
-            if !right.is_zero() {
+            if !right.is_structurally_zero() {
                 *left = left.add(right);
             }
         }
@@ -3872,7 +4165,7 @@ struct RestrictedLegState {
 }
 
 #[derive(Debug, Clone)]
-struct RestrictedExternalLegKernel {
+struct RestrictedExternalLegKernel<C = RatFun> {
     markings: usize,
     colors: usize,
     max_power: usize,
@@ -3881,16 +4174,16 @@ struct RestrictedExternalLegKernel {
     state_index_by_marking_color_power: Vec<Vec<Vec<Option<usize>>>>,
     state_counts: Vec<usize>,
     strides: Vec<usize>,
-    entries: Vec<QSeries>,
+    entries: Vec<QSeries<C>>,
 }
 
-impl RestrictedExternalLegKernel {
+impl<C: Coeff> RestrictedExternalLegKernel<C> {
     fn from_tasks(
         markings: usize,
         colors: usize,
         max_power: usize,
         q_degree: usize,
-        tasks: &[MasterContractionTask],
+        tasks: &[MasterContractionTask<C>],
     ) -> Self {
         let mut powers_by_marking_color = vec![vec![BTreeSet::<usize>::new(); colors]; markings];
         for task in tasks {
@@ -3931,7 +4224,7 @@ impl RestrictedExternalLegKernel {
             strides[marking] = entries_len;
             entries_len = entries_len.saturating_mul(state_counts[marking]);
         }
-        let entries = vec![QSeries::zero(q_degree); entries_len];
+        let entries = vec![QSeries::<C>::zero(q_degree); entries_len];
 
         Self {
             markings,
@@ -3948,7 +4241,7 @@ impl RestrictedExternalLegKernel {
 
     fn zero_like(&self) -> Self {
         let mut out = self.clone();
-        out.entries = vec![QSeries::zero(self.q_degree); self.entries.len()];
+        out.entries = vec![QSeries::<C>::zero(self.q_degree); self.entries.len()];
         out
     }
 
@@ -3961,8 +4254,8 @@ impl RestrictedExternalLegKernel {
             .sum()
     }
 
-    fn add_term(&mut self, state_indices: &[usize], value: &QSeries) {
-        if value.is_zero() || self.entries.is_empty() {
+    fn add_term(&mut self, state_indices: &[usize], value: &QSeries<C>) {
+        if value.is_structurally_zero() || self.entries.is_empty() {
             return;
         }
         let index = self.tensor_index_from_state_indices(state_indices);
@@ -3976,7 +4269,7 @@ impl RestrictedExternalLegKernel {
         debug_assert_eq!(self.q_degree, rhs.q_degree);
         debug_assert_eq!(self.state_counts, rhs.state_counts);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
-            if !right.is_zero() {
+            if !right.is_structurally_zero() {
                 *left = left.add(right);
             }
         }
@@ -3988,39 +4281,51 @@ fn contract_external_leg_kernel_coeff(
     leg_options: &[Vec<Vec<LegFactorOption>>],
     degree: usize,
 ) -> RatFun {
+    contract_external_leg_kernel_coeff_generic(kernel, leg_options, degree)
+}
+
+fn contract_external_leg_kernel_coeff_generic<C: Coeff>(
+    kernel: &ExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    degree: usize,
+) -> C {
     debug_assert_eq!(kernel.markings, leg_options.len());
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     let mut state_indices = vec![0usize; kernel.markings];
-    contract_external_leg_kernel_coeff_rec(
+    contract_external_leg_kernel_coeff_generic_rec(
         kernel,
         leg_options,
         degree,
         0,
-        QSeries::one(kernel.q_degree),
+        QSeries::<C>::one(kernel.q_degree),
         &mut state_indices,
         &mut total,
     );
     total
 }
 
-fn contract_external_leg_kernel_coeff_rec(
-    kernel: &ExternalLegKernel,
-    leg_options: &[Vec<Vec<LegFactorOption>>],
+fn contract_external_leg_kernel_coeff_generic_rec<C: Coeff>(
+    kernel: &ExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
     degree: usize,
     marking: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     state_indices: &mut [usize],
-    total: &mut RatFun,
+    total: &mut C,
 ) {
-    if coefficient.is_zero() {
+    if coefficient.is_structurally_zero() {
         return;
     }
     if marking == kernel.markings {
         let index = kernel.tensor_index_from_state_indices(state_indices);
-        if kernel.entries[index].is_zero() {
+        if kernel.entries[index].is_structurally_zero() {
             return;
         }
-        *total = &*total + &qseries_mul_coeff(&coefficient, &kernel.entries[index], degree);
+        *total = total.add(&qseries_mul_coeff_generic(
+            &coefficient,
+            &kernel.entries[index],
+            degree,
+        ));
         return;
     }
 
@@ -4030,11 +4335,11 @@ fn contract_external_leg_kernel_coeff_rec(
                 continue;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             state_indices[marking] = kernel.state_index(color, option.power);
-            contract_external_leg_kernel_coeff_rec(
+            contract_external_leg_kernel_coeff_generic_rec(
                 kernel,
                 leg_options,
                 degree,
@@ -4052,42 +4357,54 @@ fn contract_restricted_external_leg_kernel_coeff(
     leg_options: &[Vec<Vec<LegFactorOption>>],
     degree: usize,
 ) -> RatFun {
+    contract_restricted_external_leg_kernel_coeff_generic(kernel, leg_options, degree)
+}
+
+fn contract_restricted_external_leg_kernel_coeff_generic<C: Coeff>(
+    kernel: &RestrictedExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    degree: usize,
+) -> C {
     debug_assert_eq!(kernel.markings, leg_options.len());
     if kernel.entries.is_empty() {
-        return RatFun::zero();
+        return C::zero();
     }
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     let mut state_indices = vec![0usize; kernel.markings];
-    contract_restricted_external_leg_kernel_coeff_rec(
+    contract_restricted_external_leg_kernel_coeff_generic_rec(
         kernel,
         leg_options,
         degree,
         0,
-        QSeries::one(kernel.q_degree),
+        QSeries::<C>::one(kernel.q_degree),
         &mut state_indices,
         &mut total,
     );
     total
 }
 
-fn contract_restricted_external_leg_kernel_coeff_rec(
-    kernel: &RestrictedExternalLegKernel,
-    leg_options: &[Vec<Vec<LegFactorOption>>],
+fn contract_restricted_external_leg_kernel_coeff_generic_rec<C: Coeff>(
+    kernel: &RestrictedExternalLegKernel<C>,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
     degree: usize,
     marking: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     state_indices: &mut [usize],
-    total: &mut RatFun,
+    total: &mut C,
 ) {
-    if coefficient.is_zero() {
+    if coefficient.is_structurally_zero() {
         return;
     }
     if marking == kernel.markings {
         let index = kernel.tensor_index_from_state_indices(state_indices);
-        if kernel.entries[index].is_zero() {
+        if kernel.entries[index].is_structurally_zero() {
             return;
         }
-        *total = &*total + &qseries_mul_coeff(&coefficient, &kernel.entries[index], degree);
+        *total = total.add(&qseries_mul_coeff_generic(
+            &coefficient,
+            &kernel.entries[index],
+            degree,
+        ));
         return;
     }
 
@@ -4102,11 +4419,11 @@ fn contract_restricted_external_leg_kernel_coeff_rec(
                 continue;
             };
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             state_indices[marking] = state_index;
-            contract_restricted_external_leg_kernel_coeff_rec(
+            contract_restricted_external_leg_kernel_coeff_generic_rec(
                 kernel,
                 leg_options,
                 degree,
@@ -4119,9 +4436,9 @@ fn contract_restricted_external_leg_kernel_coeff_rec(
     }
 }
 
-fn qseries_mul_coeff(left: &QSeries, right: &QSeries, degree: usize) -> RatFun {
+fn qseries_mul_coeff_generic<C: Coeff>(left: &QSeries<C>, right: &QSeries<C>, degree: usize) -> C {
     let max_left = left.max_degree().min(degree);
-    let mut total = RatFun::zero();
+    let mut total = C::zero();
     for left_degree in 0..=max_left {
         let right_degree = degree - left_degree;
         if right_degree > right.max_degree() {
@@ -4130,44 +4447,46 @@ fn qseries_mul_coeff(left: &QSeries, right: &QSeries, degree: usize) -> RatFun {
         let left_coeff = left
             .coeff(left_degree)
             .expect("left q-series degree is bounded");
-        if left_coeff.is_zero() {
+        if left_coeff.is_structurally_zero() {
             continue;
         }
         let right_coeff = right
             .coeff(right_degree)
             .expect("right q-series degree is bounded");
-        if right_coeff.is_zero() {
+        if right_coeff.is_structurally_zero() {
             continue;
         }
-        total = &total + &(left_coeff * right_coeff);
+        total = total.add(&left_coeff.mul(right_coeff));
     }
     total
 }
 
-fn accumulate_external_leg_graph_factors(
+fn accumulate_external_leg_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
     external_states: &mut Vec<ExternalLegState>,
-    total: &mut ExternalLegKernel,
+    total: &mut ExternalLegKernel<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -4241,7 +4560,7 @@ fn accumulate_external_leg_graph_factors(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -4284,7 +4603,7 @@ fn accumulate_external_leg_graph_factors(
         return;
     }
 
-    let mut vertex_product = QSeries::one(q_degree);
+    let mut vertex_product = QSeries::<C>::one(q_degree);
     for (vertex, powers) in base_powers.iter().enumerate() {
         let vertex_sum = vertex_contribution_with_translations(
             graph.vertices[vertex].genus,
@@ -4298,7 +4617,7 @@ fn accumulate_external_leg_graph_factors(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4308,31 +4627,33 @@ fn accumulate_external_leg_graph_factors(
     total.add_term(external_states, &coefficient.mul(&vertex_product));
 }
 
-fn accumulate_restricted_external_leg_graph_factors(
+fn accumulate_restricted_external_leg_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
     external_state_indices: &mut Vec<usize>,
     states_by_marking_color: &[Vec<Vec<RestrictedLegState>>],
-    total: &mut RestrictedExternalLegKernel,
+    total: &mut RestrictedExternalLegKernel<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -4412,7 +4733,7 @@ fn accumulate_restricted_external_leg_graph_factors(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -4456,7 +4777,7 @@ fn accumulate_restricted_external_leg_graph_factors(
         return;
     }
 
-    let mut vertex_product = QSeries::one(q_degree);
+    let mut vertex_product = QSeries::<C>::one(q_degree);
     for (vertex, powers) in base_powers.iter().enumerate() {
         let vertex_sum = vertex_contribution_with_translations(
             graph.vertices[vertex].genus,
@@ -4470,7 +4791,7 @@ fn accumulate_restricted_external_leg_graph_factors(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4484,25 +4805,35 @@ fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
     2 * genus + markings > 2
 }
 
-fn ancestor_insertion_terms_from_provider<P>(
+fn ancestor_insertion_terms_from_provider<C, P>(
     provider: &P,
     insertions: &[P::Insertion],
-    descendant_s: &SeriesSMatrix,
-    psi_inverse: &SeriesMatrix,
+    descendant_s: &SeriesSMatrix<C>,
+    psi_inverse: &SeriesMatrix<C>,
     q_degree: usize,
     max_power: usize,
-) -> Result<Vec<Vec<AncestorLegTerm>>, GwError>
+) -> Result<Vec<Vec<AncestorLegTerm<C>>>, GwError>
 where
-    P: SemisimpleCohftProvider,
+    C: Coeff,
+    P: CoefficientSemisimpleCohftProvider<C>,
 {
     // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
     // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
     // the canonical idempotent basis used by the graph colors.
+    let profile_enabled = std::env::var_os("GW_PROFILE").is_some();
     insertions
         .iter()
-        .map(|insertion| {
-            let descendant_power = provider.descendant_power(insertion);
-            let flat_class_vector = provider.insertion_vector(insertion, q_degree)?;
+        .enumerate()
+        .map(|(idx, insertion)| {
+            let insertion_started = Instant::now();
+            let descendant_power = provider.coeff_descendant_power(insertion);
+            let flat_class_vector = provider.coeff_insertion_vector(insertion, q_degree)?;
+            if profile_enabled {
+                eprintln!(
+                    "GW_PROFILE ancestor_insertion_vector[{idx}]={:.3}s",
+                    insertion_started.elapsed().as_secs_f64()
+                );
+            }
             let max_order =
                 descendant_power.min(descendant_s.coefficients().len().saturating_sub(1));
             let mut terms = Vec::new();
@@ -4511,17 +4842,37 @@ where
                 if base_power > max_power {
                     continue;
                 }
+                let s_started = Instant::now();
                 let flat_vector = apply_s_coefficient_to_vector(
                     descendant_s,
                     s_order,
                     &flat_class_vector,
                     q_degree,
                 );
-                if flat_vector.iter().all(QSeries::is_zero) {
+                if profile_enabled {
+                    let (terms, factors) = qseries_vector_complexity(&flat_vector);
+                    eprintln!(
+                        "GW_PROFILE ancestor_apply_s[{idx},{s_order}]={:.3}s terms={} factors={}",
+                        s_started.elapsed().as_secs_f64(),
+                        terms,
+                        factors
+                    );
+                }
+                if flat_vector.iter().all(QSeries::is_structurally_zero) {
                     continue;
                 }
+                let psi_started = Instant::now();
                 let canonical_vector = apply_matrix_to_vector(psi_inverse, &flat_vector, q_degree);
-                if canonical_vector.iter().all(QSeries::is_zero) {
+                if profile_enabled {
+                    let (terms, factors) = qseries_vector_complexity(&canonical_vector);
+                    eprintln!(
+                        "GW_PROFILE ancestor_apply_psi_inverse[{idx},{s_order}]={:.3}s terms={} factors={}",
+                        psi_started.elapsed().as_secs_f64(),
+                        terms,
+                        factors
+                    );
+                }
+                if canonical_vector.iter().all(QSeries::is_structurally_zero) {
                     continue;
                 }
                 terms.push(AncestorLegTerm {
@@ -4534,27 +4885,33 @@ where
         .collect()
 }
 
-fn apply_s_coefficient_to_vector(
-    descendant_s: &SeriesSMatrix,
+fn apply_s_coefficient_to_vector<C>(
+    descendant_s: &SeriesSMatrix<C>,
     s_order: usize,
-    class_vector: &[QSeries],
+    class_vector: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>>
+where
+    C: Coeff,
+{
     let matrix = descendant_s
         .coefficient(s_order)
         .expect("S coefficient order was bounded before access");
     apply_matrix_to_vector(matrix, class_vector, q_degree)
 }
 
-fn apply_matrix_to_vector(
-    matrix: &SeriesMatrix,
-    vector: &[QSeries],
+fn apply_matrix_to_vector<C>(
+    matrix: &SeriesMatrix<C>,
+    vector: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<QSeries> {
+) -> Vec<QSeries<C>>
+where
+    C: Coeff,
+{
     debug_assert_eq!(matrix.cols(), vector.len());
     (0..matrix.rows())
         .map(|row| {
-            let mut total = QSeries::zero(q_degree);
+            let mut total = QSeries::<C>::zero(q_degree);
             for (col, entry) in vector.iter().enumerate() {
                 total = total.add(&matrix.entry(row, col).mul(entry));
             }
@@ -4563,7 +4920,17 @@ fn apply_matrix_to_vector(
         .collect()
 }
 
-fn inverse_r_coefficients(coefficients: &[SeriesMatrix]) -> Vec<SeriesMatrix> {
+fn qseries_vector_complexity<C: Coeff>(vector: &[QSeries<C>]) -> (usize, usize) {
+    (
+        vector.iter().map(QSeries::complexity_terms).sum(),
+        vector
+            .iter()
+            .map(QSeries::complexity_denominator_factors)
+            .sum(),
+    )
+}
+
+fn inverse_r_coefficients<C: Coeff>(coefficients: &[SeriesMatrix<C>]) -> Vec<SeriesMatrix<C>> {
     // Formal inverse of R(z) with R_0 = 1.  The recurrence is the coefficient
     // extraction of R(z) R(z)^{-1} = 1.
     let size = coefficients[0].rows();
@@ -4580,11 +4947,14 @@ fn inverse_r_coefficients(coefficients: &[SeriesMatrix]) -> Vec<SeriesMatrix> {
     inverse
 }
 
-fn translation_coefficients(
-    inverse_r: &[SeriesMatrix],
-    unit: &[QSeries],
+fn translation_coefficients<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    unit: &[QSeries<C>],
     q_degree: usize,
-) -> Vec<Vec<QSeries>> {
+) -> Vec<Vec<QSeries<C>>>
+where
+    C: Coeff,
+{
     // Givental's translation is T(psi)=psi(1-R^{-1})1.  Since R^{-1}_0=1, the
     // first nonzero coefficient appears at psi^2.
     let size = unit.len();
@@ -4602,12 +4972,15 @@ fn translation_coefficients(
     out
 }
 
-fn edge_propagator_coefficients(
-    inverse_r: &[SeriesMatrix],
-    metric: &SeriesMatrix,
+fn edge_propagator_coefficients<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    metric: &SeriesMatrix<C>,
     max_power: usize,
     q_degree: usize,
-) -> Result<Vec<Vec<Vec<Vec<QSeries>>>>, GwError> {
+) -> Result<Vec<Vec<Vec<Vec<QSeries<C>>>>>, GwError>
+where
+    C: Coeff,
+{
     // The edge term is the regular part of
     //   (eta^{-1} - R^{-1}(psi_1) eta^{-1} R^{-1}(-psi_2)^T)
     //       / (psi_1 + psi_2).
@@ -4650,15 +5023,18 @@ fn edge_propagator_coefficients(
     Ok(out)
 }
 
-fn edge_numerator_coefficient(
-    inverse_r: &[SeriesMatrix],
-    metric_inverse: &[QSeries],
+fn edge_numerator_coefficient<C>(
+    inverse_r: &[SeriesMatrix<C>],
+    metric_inverse: &[QSeries<C>],
     left_color: usize,
     right_color: usize,
     left_power: usize,
     right_power: usize,
     q_degree: usize,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     if left_power >= inverse_r.len() || right_power >= inverse_r.len() {
         return QSeries::zero(q_degree);
     }
@@ -4673,26 +5049,28 @@ fn edge_numerator_coefficient(
     total
 }
 
-fn accumulate_graph_factors(
+fn accumulate_graph_factors<C>(
     graph: &crate::graphs::StableGraph,
     colors: &[usize],
-    leg_options: &[Vec<Vec<LegFactorOption>>],
-    edge_options: &[Vec<Vec<EdgeFactorOption>>],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    edge_options: &[Vec<Vec<EdgeFactorOption<C>>>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
     current_power_sum: usize,
-    coefficient: QSeries,
+    coefficient: QSeries<C>,
     base_powers: &mut [Vec<usize>],
     vertex_power_sums: &mut [usize],
     vertex_power_caps: &[usize],
-    total: &mut QSeries,
+    total: &mut QSeries<C>,
     profile: &mut GraphEvalProfile,
-) {
+) where
+    C: Coeff,
+{
     // Recursively chooses one leg/edge factor option for every half-edge in a
     // fixed colored stable graph.  At the leaves, the collected psi powers are
     // integrated over each vertex Mbar_{g(v),val(v)} with translation
@@ -4700,7 +5078,7 @@ fn accumulate_graph_factors(
     if profile.enabled {
         profile.recursion_calls += 1;
     }
-    if coefficient.is_zero() || current_power_sum > max_power {
+    if coefficient.is_structurally_zero() || current_power_sum > max_power {
         return;
     }
 
@@ -4720,7 +5098,7 @@ fn accumulate_graph_factors(
                 continue;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 continue;
             }
             vertex_power_sums[vertex] = next_vertex_power;
@@ -4780,7 +5158,7 @@ fn accumulate_graph_factors(
                 vertex_power_sums[edge.b] = next_right_power;
             }
             let next_coefficient = coefficient.mul(&option.coefficient);
-            if next_coefficient.is_zero() {
+            if next_coefficient.is_structurally_zero() {
                 if edge.a == edge.b {
                     vertex_power_sums[edge.a] -= option.left_power + option.right_power;
                 } else {
@@ -4837,7 +5215,7 @@ fn accumulate_graph_factors(
             profile,
         );
         vertex_product = vertex_product.mul(&vertex_sum);
-        if vertex_product.is_zero() {
+        if vertex_product.is_structurally_zero() {
             return;
         }
     }
@@ -4847,13 +5225,13 @@ fn accumulate_graph_factors(
     *total = total.add(&coefficient.mul(&vertex_product));
 }
 
-fn leg_options_by_marking_color(
-    insertion_terms: &[Vec<AncestorLegTerm>],
-    inverse_r: &[SeriesMatrix],
+fn leg_options_by_marking_color<C: Coeff>(
+    insertion_terms: &[Vec<AncestorLegTerm<C>>],
+    inverse_r: &[SeriesMatrix<C>],
     q_degree: usize,
     max_power: usize,
     colors: usize,
-) -> Vec<Vec<Vec<LegFactorOption>>> {
+) -> Vec<Vec<Vec<LegFactorOption<C>>>> {
     insertion_terms
         .iter()
         .map(|terms| {
@@ -4864,13 +5242,13 @@ fn leg_options_by_marking_color(
         .collect()
 }
 
-fn leg_options_for_color(
+fn leg_options_for_color<C: Coeff>(
     color: usize,
-    insertion_terms: &[AncestorLegTerm],
-    inverse_r: &[SeriesMatrix],
+    insertion_terms: &[AncestorLegTerm<C>],
+    inverse_r: &[SeriesMatrix<C>],
     q_degree: usize,
     max_power: usize,
-) -> Vec<LegFactorOption> {
+) -> Vec<LegFactorOption<C>> {
     let mut by_power = vec![QSeries::zero(q_degree); max_power + 1];
     for term in insertion_terms {
         for (order, matrix) in inverse_r.iter().enumerate() {
@@ -4882,7 +5260,7 @@ fn leg_options_for_color(
             for (source, source_coeff) in term.vector.iter().enumerate() {
                 coefficient = coefficient.add(&matrix.entry(color, source).mul(source_coeff));
             }
-            if !coefficient.is_zero() {
+            if !coefficient.is_structurally_zero() {
                 by_power[power] = by_power[power].add(&coefficient);
             }
         }
@@ -4891,14 +5269,14 @@ fn leg_options_for_color(
         .into_iter()
         .enumerate()
         .filter_map(|(power, coefficient)| {
-            (!coefficient.is_zero()).then_some(LegFactorOption { power, coefficient })
+            (!coefficient.is_structurally_zero()).then_some(LegFactorOption { power, coefficient })
         })
         .collect()
 }
 
-fn edge_options_by_color(
-    edge_coefficients: &[Vec<Vec<Vec<QSeries>>>],
-) -> Vec<Vec<Vec<EdgeFactorOption>>> {
+fn edge_options_by_color<C: Coeff>(
+    edge_coefficients: &[Vec<Vec<Vec<QSeries<C>>>>],
+) -> Vec<Vec<Vec<EdgeFactorOption<C>>>> {
     let colors = edge_coefficients.len();
     (0..colors)
         .map(|left_color| {
@@ -4911,11 +5289,14 @@ fn edge_options_by_color(
         .collect()
 }
 
-fn edge_options_for_colors(
+fn edge_options_for_colors<C>(
     left_color: usize,
     right_color: usize,
-    edge_coefficients: &[Vec<Vec<Vec<QSeries>>>],
-) -> Vec<EdgeFactorOption> {
+    edge_coefficients: &[Vec<Vec<Vec<QSeries<C>>>>],
+) -> Vec<EdgeFactorOption<C>>
+where
+    C: Coeff,
+{
     let max_power = edge_coefficients[left_color][right_color]
         .len()
         .saturating_sub(1);
@@ -4927,7 +5308,7 @@ fn edge_options_for_colors(
             }
             let coefficient =
                 edge_coefficients[left_color][right_color][left_power][right_power].clone();
-            if !coefficient.is_zero() {
+            if !coefficient.is_structurally_zero() {
                 out.push(EdgeFactorOption {
                     left_power,
                     right_power,
@@ -4939,17 +5320,20 @@ fn edge_options_for_colors(
     out
 }
 
-fn vertex_contribution_with_translations(
+fn vertex_contribution_with_translations<C>(
     genus: usize,
     color: usize,
     base_powers: &[usize],
-    calibration: &ProjectiveSpaceJCalibration,
-    translation: &[Vec<QSeries>],
+    calibration: &SemisimpleCalibration<C>,
+    translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries>,
+    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
     q_degree: usize,
     profile: &mut GraphEvalProfile,
-) -> QSeries {
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     // A vertex is the diagonal TFT factor times a point-theory psi integral.
     // If the chosen half-edge powers do not fill the vertex dimension, the
     // missing degree is supplied by any number of translation insertions
@@ -4975,17 +5359,16 @@ fn vertex_contribution_with_translations(
     let base_power_sum = base_powers.iter().sum::<usize>() as isize;
     let translation_excess = base_dimension - base_power_sum;
     if translation_excess < 0 {
-        let zero = QSeries::zero(q_degree);
+        let zero = QSeries::<C>::zero(q_degree);
         vertex_cache.insert(key, zero.clone());
         return zero;
     }
 
-    let mut total = QSeries::zero(q_degree);
+    let mut total = QSeries::<C>::zero(q_degree);
     if translation_excess == 0 {
         let vertex_factor = vertex_tft_factor(genus, base_powers.len(), color, calibration);
-        total = total.add(&vertex_factor.scale(&RatFun::from_rational(
-            oracle.psi_integral(genus, base_powers),
-        )));
+        total = total
+            .add(&vertex_factor.scale(&C::from_rational(oracle.psi_integral(genus, base_powers))));
     }
 
     for partition in translation_excess_partitions(translation_excess as usize) {
@@ -5000,8 +5383,8 @@ fn vertex_contribution_with_translations(
         let mut powers = Vec::with_capacity(base_powers.len() + translation_count);
         powers.extend_from_slice(base_powers);
 
-        let mut coefficient = QSeries::one(q_degree);
-        let mut symmetry = RatFun::one();
+        let mut coefficient = QSeries::<C>::one(q_degree);
+        let mut symmetry = C::one();
         for (excess, multiplicity) in partition {
             let power = excess + 1;
             if power >= translation[color].len() {
@@ -5010,33 +5393,36 @@ fn vertex_contribution_with_translations(
             }
 
             coefficient = coefficient.mul(&translation[color][power].pow_usize(multiplicity));
-            if coefficient.is_zero() {
+            if coefficient.is_structurally_zero() {
                 break;
             }
-            powers.extend(std::iter::repeat(power).take(multiplicity));
+            powers.extend(std::iter::repeat_n(power, multiplicity));
 
-            let multiplicity_factor = RatFun::from(factorial(multiplicity));
-            symmetry = &symmetry * &multiplicity_factor;
+            let multiplicity_factor = C::from_usize(factorial(multiplicity));
+            symmetry = symmetry.mul(&multiplicity_factor);
         }
-        if coefficient.is_zero() {
+        if coefficient.is_structurally_zero() {
             continue;
         }
 
         let vertex_factor = vertex_tft_factor(genus, powers.len(), color, calibration);
-        let psi = RatFun::from_rational(oracle.psi_integral(genus, &powers));
-        let term = coefficient.mul(&vertex_factor).scale(&(&psi / &symmetry));
+        let psi = C::from_rational(oracle.psi_integral(genus, &powers));
+        let term = coefficient.mul(&vertex_factor).scale(&psi.div(&symmetry));
         total = total.add(&term);
     }
     vertex_cache.insert(key, total.clone());
     total
 }
 
-fn vertex_tft_factor(
+fn vertex_tft_factor<C>(
     genus: usize,
     valence: usize,
     color: usize,
-    calibration: &ProjectiveSpaceJCalibration,
-) -> QSeries {
+    calibration: &SemisimpleCalibration<C>,
+) -> QSeries<C>
+where
+    C: Coeff,
+{
     // In an unnormalized/relative-normalized canonical frame the TFT vertex is
     // diagonal.  The powers below are the usual product-of-point-theories
     // factors rewritten in the frame stored by `SemisimpleCalibration`.
@@ -5118,7 +5504,7 @@ struct ColoringOrbit {
 #[derive(Debug, Clone)]
 struct PreparedColoringOrbit {
     colors: Vec<usize>,
-    factor: RatFun,
+    factor: Rational,
 }
 
 #[derive(Debug, Clone)]
@@ -5147,12 +5533,12 @@ fn prepared_stable_graphs(
     let graphs = stable_graphs(genus, markings)
         .into_iter()
         .map(|graph| {
-            let automorphism_factor = &RatFun::one() / &RatFun::from(graph.automorphism_order());
+            let automorphism_factor = Rational::one() / Rational::from(graph.automorphism_order());
             let colorings = vertex_coloring_orbits(&graph, colors)
                 .iter()
                 .map(|orbit| PreparedColoringOrbit {
                     colors: orbit.colors.clone(),
-                    factor: &automorphism_factor * &RatFun::from(orbit.multiplicity),
+                    factor: automorphism_factor.clone() * Rational::from(orbit.multiplicity),
                 })
                 .collect::<Vec<_>>();
             let vertex_power_caps = graph
@@ -5226,6 +5612,7 @@ fn permute_coloring(coloring: &[usize], permutation: &[usize]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::factored::FactoredRatFun;
     use crate::geometry::CohomologyClass;
     use crate::{tau, ComputeMode, InvariantRequest};
 
@@ -5778,14 +6165,14 @@ mod tests {
             }
 
             let automorphism_factor =
-                &RatFun::one() / &RatFun::from(prepared.graph.automorphism_order());
+                Rational::one() / Rational::from(prepared.graph.automorphism_order());
             for (prepared_coloring, raw_coloring) in
                 prepared.colorings.iter().zip(raw_colorings.iter())
             {
                 assert_eq!(prepared_coloring.colors, raw_coloring.colors);
                 assert_eq!(
                     prepared_coloring.factor,
-                    &automorphism_factor * &RatFun::from(raw_coloring.multiplicity)
+                    automorphism_factor.clone() * Rational::from(raw_coloring.multiplicity)
                 );
             }
         }
@@ -5940,7 +6327,7 @@ mod tests {
             mode: ComputeMode::Givental,
             truncation: None,
         };
-        let cases = vec![
+        let cases = [
             (1, vec![tau(2, CohomologyClass::h_power(1, 1))]),
             (1, vec![tau(3, CohomologyClass::one(1))]),
         ];
@@ -6052,5 +6439,166 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn factored_identity_kernel(
+        q_degree: usize,
+        graph_dimension: usize,
+    ) -> (
+        Arc<GiventalGraphKernel<FactoredRatFun>>,
+        QSeries<FactoredRatFun>,
+    ) {
+        let size = 1;
+        let matrix = SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
+        let scalar = QSeries::<FactoredRatFun>::one(q_degree);
+        let calibration = SemisimpleCalibration::<FactoredRatFun> {
+            r_matrix: SeriesRMatrix::<FactoredRatFun>::identity(
+                size,
+                q_degree,
+                0,
+                CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+            ),
+            metric: matrix.clone(),
+            psi: matrix.clone(),
+            psi_inverse: matrix.clone(),
+            connection: matrix,
+            delta: vec![scalar.clone()],
+            inverse_delta: vec![scalar.clone()],
+            relative_sqrt_delta: vec![scalar.clone()],
+            relative_sqrt_delta_inverse: vec![scalar.clone()],
+        };
+        (
+            Arc::new(GiventalGraphKernel::from_calibration(calibration, graph_dimension).unwrap()),
+            scalar,
+        )
+    }
+
+    #[test]
+    fn scalar_graph_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
+        let graphs = prepared_stable_graphs(0, 3, size);
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; 3];
+        let mut profile = GraphEvalProfile::new();
+
+        let total = evaluate_scalar_graphs_parallel(
+            graphs.as_ref(),
+            &leg_options,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+
+        assert_eq!(total.coeff(0).unwrap(), &<FactoredRatFun as Coeff>::one());
+    }
+
+    #[test]
+    fn coefficient_generic_evaluator_matches_ratfun_provider_path() {
+        let provider = ProjectiveSpaceProvider::new(2, false);
+        let insertions = vec![
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 2)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+        ];
+        let direct = compute_semisimple_graph_value(&provider, 0, 1, &insertions, None).unwrap();
+        let generic = compute_semisimple_graph_value_with_coeff::<RatFun, _>(
+            &provider,
+            0,
+            1,
+            &insertions,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(generic, direct);
+    }
+
+    #[test]
+    fn external_leg_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let markings = 3;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
+        let graphs = prepared_stable_graphs(0, markings, size);
+        let mut profile = GraphEvalProfile::new();
+        let external_kernel = evaluate_external_graphs_parallel(
+            graphs.as_ref(),
+            markings,
+            size,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; markings];
+
+        assert_eq!(
+            contract_external_leg_kernel_coeff_generic(&external_kernel, &leg_options, 0),
+            <FactoredRatFun as Coeff>::one()
+        );
+    }
+
+    #[test]
+    fn restricted_external_leg_contraction_accepts_factored_coefficients() {
+        let q_degree = 0;
+        let graph_dimension = 0;
+        let size = 1;
+        let markings = 3;
+        let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
+        let graphs = prepared_stable_graphs(0, markings, size);
+
+        let ratfun_unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: QSeries::one(q_degree),
+        };
+        let template_task = MasterContractionTask {
+            ordinal: 0,
+            degree: 0,
+            insertions: Vec::new(),
+            markings,
+            leg_options: vec![vec![vec![ratfun_unit_leg]]; markings],
+        };
+        let template = RestrictedExternalLegKernel::<FactoredRatFun>::from_tasks(
+            markings,
+            size,
+            graph_dimension,
+            q_degree,
+            &[template_task],
+        );
+        let mut profile = GraphEvalProfile::new();
+        let restricted_kernel = evaluate_restricted_external_graphs_parallel(
+            graphs.as_ref(),
+            &template,
+            &kernel,
+            q_degree,
+            graph_dimension,
+            &mut profile,
+        );
+        let unit_leg = LegFactorOption {
+            power: 0,
+            coefficient: scalar,
+        };
+        let leg_options = vec![vec![vec![unit_leg]]; markings];
+
+        assert_eq!(
+            contract_restricted_external_leg_kernel_coeff_generic(
+                &restricted_kernel,
+                &leg_options,
+                0
+            ),
+            <FactoredRatFun as Coeff>::one()
+        );
     }
 }
