@@ -136,16 +136,6 @@ fn base_h_power_relation(n: usize, base_weights: &[Rational]) -> Result<Vec<Rati
     base_h_power_relation_coeff(n, base_weights)
 }
 
-fn h_affine_power_mod_relation(
-    max_h_power: usize,
-    h_coeff: Rational,
-    constant: Rational,
-    exponent: usize,
-    h_power_relation: &[Rational],
-) -> Vec<Rational> {
-    h_affine_power_mod_relation_coeff(max_h_power, h_coeff, constant, exponent, h_power_relation)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HCoeffLaurentSeries<C = RatFun> {
     max_h_power: usize,
@@ -455,34 +445,7 @@ pub fn projective_equivariant_i_function_coefficient(
     base_weights: &[Rational],
     min_z_power: i32,
 ) -> Result<HLaurentSeries, GwError> {
-    // Equivariant projective I_d:
-    // product_{m=1}^d product_i (H-lambda_i+mz)^{-1},
-    // reduced in H_T(P^n) along the chosen lambda specialization.
-    if base_weights.len() != n + 1 {
-        return Err(GwError::AlgebraFailure(format!(
-            "expected {} base weights, got {}",
-            n + 1,
-            base_weights.len()
-        )));
-    }
-    let h_power_relation = base_h_power_relation(n, base_weights)?;
-    let mut out = HLaurentSeries::one(n);
-    for m in 1..=degree {
-        for weight in base_weights {
-            let inverse = inverse_affine_z_laurent(
-                n,
-                Rational::one(),
-                -weight.clone(),
-                Rational::from(m),
-                min_z_power,
-                Some(&h_power_relation),
-            )?;
-            out = out
-                .multiply_mod_relation(&inverse, &h_power_relation)
-                .truncated_z_below(min_z_power);
-        }
-    }
-    Ok(out)
+    projective_equivariant_i_function_coefficient_coeff(n, degree, base_weights, min_z_power)
 }
 
 pub fn projective_i_function_coefficient(n: usize, degree: usize) -> HLaurentSeries {
@@ -501,28 +464,7 @@ pub fn negative_split_equivariant_qrr_euler_factor(
     base_weights: &[Rational],
     fiber_weights: &[Rational],
 ) -> Result<HLaurentSeries, GwError> {
-    // Equivariant inverse-Euler/QRR factor for the negative fibers:
-    // product_{bundle a} product_{m=-ad+1}^0 (-aH + fiber_lambda + mz).
-    if fiber_weights.len() != twist.rank() {
-        return Err(GwError::AlgebraFailure(format!(
-            "expected {} fiber weights, got {}",
-            twist.rank(),
-            fiber_weights.len()
-        )));
-    }
-    let h_power_relation = base_h_power_relation(n, base_weights)?;
-    let mut out = HLaurentSeries::one(n);
-    for (bundle_degree, fiber_weight) in twist.degrees().iter().zip(fiber_weights) {
-        for m in (-(bundle_degree.saturating_mul(degree) as isize) + 1)..=0 {
-            out = out.multiply_by_affine_mod_relation(
-                -Rational::from(*bundle_degree),
-                fiber_weight.clone(),
-                Rational::from(m),
-                &h_power_relation,
-            );
-        }
-    }
-    Ok(out)
+    negative_split_equivariant_qrr_euler_factor_coeff(n, twist, degree, base_weights, fiber_weights)
 }
 
 pub fn negative_split_qrr_euler_factor(
@@ -547,15 +489,14 @@ pub fn negative_split_equivariant_i_function_coefficient(
     fiber_weights: &[Rational],
     min_z_power: i32,
 ) -> Result<HLaurentSeries, GwError> {
-    // Twisted I_d = projective I_d times the concave fiber Euler factor.
-    let h_power_relation = base_h_power_relation(n, base_weights)?;
-    let factor =
-        negative_split_equivariant_qrr_euler_factor(n, twist, degree, base_weights, fiber_weights)?;
-    let projective =
-        projective_equivariant_i_function_coefficient(n, degree, base_weights, min_z_power)?;
-    Ok(factor
-        .multiply_mod_relation(&projective, &h_power_relation)
-        .truncated_z_below(min_z_power))
+    negative_split_equivariant_i_function_coefficient_coeff(
+        n,
+        twist,
+        degree,
+        base_weights,
+        fiber_weights,
+        min_z_power,
+    )
 }
 
 fn negative_split_equivariant_i_function_coefficient_coeff<C: Coeff>(
@@ -1090,23 +1031,7 @@ fn mirror_map_coefficients_from_i_function(
     i_coefficients: &[HLaurentSeries],
     q_degree: usize,
 ) -> Vec<Rational> {
-    // In the one-parameter local models here, the mirror coordinate is the
-    // coefficient of H z^{-1} in I/I_0.  The implemented examples have I_0=1
-    // after the chosen normalization.
-    let mut out = vec![Rational::zero(); q_degree + 1];
-    let Some(first) = i_coefficients.first() else {
-        return out;
-    };
-    if first.max_h_power() == 0 {
-        return out;
-    }
-    for (degree, coeff) in out.iter_mut().enumerate().take(q_degree + 1).skip(1) {
-        *coeff = i_coefficients
-            .get(degree)
-            .map(|i_degree| i_degree.coefficient(1, -1))
-            .unwrap_or_else(Rational::zero);
-    }
-    out
+    mirror_map_coefficients_from_i_function_coeff(i_coefficients, q_degree)
 }
 
 fn mirror_map_coefficients_from_i_function_coeff<C: Coeff>(
@@ -1151,15 +1076,14 @@ fn mirror_transformed_j_coefficients_from_i_function_mod_relation(
     q_degree: usize,
     h_power_relation: &[Rational],
 ) -> Vec<HLaurentSeries> {
-    let gauge =
-        full_vector_mirror_gauge_coefficients(n, i_coefficients, q_degree, h_power_relation);
-    let gauged = multiply_h_laurent_q_series_mod_relation(
-        &gauge,
+    mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff(
+        n,
         i_coefficients,
+        _mirror,
+        _inverse_mirror,
         q_degree,
         h_power_relation,
-    );
-    compose_h_laurent_q_series(&gauged, _inverse_mirror, q_degree)
+    )
 }
 
 fn mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff<C: Coeff>(
@@ -1311,28 +1235,6 @@ fn multiply_h_laurent_q_series(
     out
 }
 
-fn multiply_h_laurent_q_series_mod_relation(
-    left: &[HLaurentSeries],
-    right: &[HLaurentSeries],
-    max_degree: usize,
-    h_power_relation: &[Rational],
-) -> Vec<HLaurentSeries> {
-    let max_h_power = left
-        .first()
-        .or_else(|| right.first())
-        .map(HLaurentSeries::max_h_power)
-        .unwrap_or(0);
-    let mut out = vec![HLaurentSeries::zero(max_h_power); max_degree + 1];
-    for left_degree in 0..=max_degree {
-        for right_degree in 0..=max_degree - left_degree {
-            let term =
-                left[left_degree].multiply_mod_relation(&right[right_degree], h_power_relation);
-            out[left_degree + right_degree] = out[left_degree + right_degree].add(&term);
-        }
-    }
-    out
-}
-
 fn multiply_h_laurent_q_series_mod_relation_coeff<C: Coeff>(
     left: &[HCoeffLaurentSeries<C>],
     right: &[HCoeffLaurentSeries<C>],
@@ -1353,44 +1255,6 @@ fn multiply_h_laurent_q_series_mod_relation_coeff<C: Coeff>(
         }
     }
     out
-}
-
-fn full_vector_mirror_gauge_coefficients(
-    n: usize,
-    i_coefficients: &[HLaurentSeries],
-    max_degree: usize,
-    h_power_relation: &[Rational],
-) -> Vec<HLaurentSeries> {
-    let mut exponent = vec![HLaurentSeries::zero(n); max_degree + 1];
-    let mut gauge = vec![HLaurentSeries::zero(n); max_degree + 1];
-    gauge[0] = HLaurentSeries::one(n);
-
-    for degree in 1..=max_degree {
-        let mut known_gauge = HLaurentSeries::zero(n);
-        for split in 1..degree {
-            if exponent[split].coeffs.iter().all(BTreeMap::is_empty) {
-                continue;
-            }
-            let term = exponent[split]
-                .multiply_mod_relation(&gauge[degree - split], h_power_relation)
-                .scale(Rational::from(split));
-            known_gauge = known_gauge.add(&term);
-        }
-        known_gauge = known_gauge.scale(Rational::one() / Rational::from(degree));
-        gauge[degree] = known_gauge;
-
-        let mut gauged_degree = HLaurentSeries::zero(n);
-        for split in 0..=degree {
-            let term = gauge[split]
-                .multiply_mod_relation(&i_coefficients[degree - split], h_power_relation);
-            gauged_degree = gauged_degree.add(&term);
-        }
-        let tau = z_power_part(&gauged_degree, -1);
-        exponent[degree] = tau.shift_z(-1).scale(-Rational::one());
-        gauge[degree] = gauge[degree].add(&exponent[degree]);
-    }
-
-    gauge
 }
 
 fn full_vector_mirror_gauge_coefficients_coeff<C: Coeff>(
@@ -1431,17 +1295,6 @@ fn full_vector_mirror_gauge_coefficients_coeff<C: Coeff>(
     gauge
 }
 
-fn z_power_part(series: &HLaurentSeries, z_power: i32) -> HLaurentSeries {
-    let mut out = HLaurentSeries::zero(series.max_h_power());
-    for h_power in 0..=series.max_h_power() {
-        let coeff = series.coefficient(h_power, z_power);
-        if !coeff.is_zero() {
-            out.add_term(h_power, 0, coeff);
-        }
-    }
-    out
-}
-
 fn z_power_part_coeff<C: Coeff>(
     series: &HCoeffLaurentSeries<C>,
     z_power: i32,
@@ -1461,21 +1314,7 @@ fn compose_h_laurent_q_series(
     input: &[Rational],
     max_degree: usize,
 ) -> Vec<HLaurentSeries> {
-    let max_h_power = series.first().map(HLaurentSeries::max_h_power).unwrap_or(0);
-    let mut out = vec![HLaurentSeries::zero(max_h_power); max_degree + 1];
-    let mut power = vec![Rational::zero(); max_degree + 1];
-    power[0] = Rational::one();
-    for source_degree in 0..=max_degree {
-        for target_degree in 0..=max_degree {
-            if power[target_degree].is_zero() {
-                continue;
-            }
-            let term = series[source_degree].scale(power[target_degree].clone());
-            out[target_degree] = out[target_degree].add(&term);
-        }
-        power = mul_plain_series(&power, input, max_degree);
-    }
-    out
+    compose_h_laurent_q_series_coeff(series, input, max_degree)
 }
 
 fn compose_h_laurent_q_series_coeff<C: Coeff>(
@@ -1546,22 +1385,7 @@ fn quantum_derivative_h_laurent_q_series_mod_relation(
     series: &[HLaurentSeries],
     h_power_relation: &[Rational],
 ) -> Vec<HLaurentSeries> {
-    let max_degree = series.len().saturating_sub(1);
-    let max_h_power = series.first().map(HLaurentSeries::max_h_power).unwrap_or(0);
-    let mut out = vec![HLaurentSeries::zero(max_h_power); max_degree + 1];
-    for degree in 0..=max_degree {
-        out[degree] = out[degree].add(&series[degree].multiply_by_affine_mod_relation(
-            Rational::one(),
-            Rational::zero(),
-            Rational::zero(),
-            h_power_relation,
-        ));
-        if degree > 0 {
-            let derivative_term = series[degree].shift_z(1).scale(Rational::from(degree));
-            out[degree] = out[degree].add(&derivative_term);
-        }
-    }
-    out
+    quantum_derivative_h_laurent_q_series_mod_relation_coeff(series, h_power_relation)
 }
 
 fn h_coeff_laurent_columns_to_laurent_matrix<C: Coeff>(
@@ -1854,62 +1678,6 @@ fn inverse_h_plus_mz_power(max_h_power: usize, m: usize, power: usize) -> HLaure
         out.add_term(h_power, -((power + h_power) as i32), coefficient);
     }
     out
-}
-
-fn inverse_affine_z_laurent(
-    max_h_power: usize,
-    h_coeff: Rational,
-    constant: Rational,
-    z_coeff: Rational,
-    min_z_power: i32,
-    h_power_relation: Option<&[Rational]>,
-) -> Result<HLaurentSeries, GwError> {
-    if z_coeff.is_zero() {
-        return Err(GwError::AlgebraFailure(
-            "cannot expand affine inverse at z=infinity with zero z coefficient".to_string(),
-        ));
-    }
-    if min_z_power >= 0 {
-        return Ok(HLaurentSeries::zero(max_h_power));
-    }
-
-    let mut out = HLaurentSeries::zero(max_h_power);
-    let max_k = (-min_z_power - 1) as usize;
-    for k in 0..=max_k {
-        let sign = if k % 2 == 0 {
-            Rational::one()
-        } else {
-            -Rational::one()
-        };
-        let denominator = z_coeff.pow_usize(k + 1);
-        if let Some(relation) = h_power_relation {
-            let affine_power = h_affine_power_mod_relation(
-                max_h_power,
-                h_coeff.clone(),
-                constant.clone(),
-                k,
-                relation,
-            );
-            for (h_power, coeff) in affine_power.into_iter().enumerate() {
-                out.add_term(
-                    h_power,
-                    -((k + 1) as i32),
-                    sign.clone() * coeff / denominator.clone(),
-                );
-            }
-        } else {
-            for h_power in 0..=max_h_power.min(k) {
-                let binom = binomial_rational(k, h_power);
-                let coeff = sign.clone()
-                    * binom
-                    * constant.clone().pow_usize(k - h_power)
-                    * h_coeff.clone().pow_usize(h_power)
-                    / denominator.clone();
-                out.add_term(h_power, -((k + 1) as i32), coeff);
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn inverse_affine_z_laurent_coeff<C: Coeff>(
