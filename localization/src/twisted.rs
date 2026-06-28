@@ -128,229 +128,9 @@ impl NegativeSplitBundleTwist {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HLaurentSeries {
-    max_h_power: usize,
-    coeffs: Vec<BTreeMap<i32, Rational>>,
-}
-
-impl HLaurentSeries {
-    pub fn zero(max_h_power: usize) -> Self {
-        Self {
-            max_h_power,
-            coeffs: vec![BTreeMap::new(); max_h_power + 1],
-        }
-    }
-
-    pub fn one(max_h_power: usize) -> Self {
-        let mut out = Self::zero(max_h_power);
-        out.coeffs[0].insert(0, Rational::one());
-        out
-    }
-
-    pub fn coefficient(&self, h_power: usize, z_power: i32) -> Rational {
-        self.coeffs
-            .get(h_power)
-            .and_then(|terms| terms.get(&z_power))
-            .cloned()
-            .unwrap_or_else(Rational::zero)
-    }
-
-    pub fn max_h_power(&self) -> usize {
-        self.max_h_power
-    }
-
-    pub fn add(&self, rhs: &Self) -> Self {
-        assert_eq!(self.max_h_power, rhs.max_h_power);
-        let mut out = self.clone();
-        for h_power in 0..=rhs.max_h_power {
-            for (z_power, coeff) in &rhs.coeffs[h_power] {
-                out.add_term(h_power, *z_power, coeff.clone());
-            }
-        }
-        out
-    }
-
-    pub fn scale(&self, scalar: Rational) -> Self {
-        if scalar.is_zero() {
-            return Self::zero(self.max_h_power);
-        }
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..=self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                out.add_term(h_power, *z_power, coeff.clone() * scalar.clone());
-            }
-        }
-        out
-    }
-
-    pub fn multiply_by_h(&self) -> Self {
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                out.add_term(h_power + 1, *z_power, coeff.clone());
-            }
-        }
-        out
-    }
-
-    pub fn shift_z(&self, shift: i32) -> Self {
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..=self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                out.add_term(h_power, z_power + shift, coeff.clone());
-            }
-        }
-        out
-    }
-
-    pub fn multiply_by_linear(&self, h_coeff: Rational, z_coeff: Rational) -> Self {
-        self.multiply_by_affine(h_coeff, Rational::zero(), z_coeff)
-    }
-
-    pub fn multiply_by_affine(
-        &self,
-        h_coeff: Rational,
-        constant: Rational,
-        z_coeff: Rational,
-    ) -> Self {
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..=self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                if !constant.is_zero() {
-                    out.add_term(h_power, *z_power, coeff.clone() * constant.clone());
-                }
-                if !z_coeff.is_zero() {
-                    out.add_term(h_power, z_power + 1, coeff.clone() * z_coeff.clone());
-                }
-                if !h_coeff.is_zero() && h_power < self.max_h_power {
-                    out.add_term(h_power + 1, *z_power, coeff.clone() * h_coeff.clone());
-                }
-            }
-        }
-        out
-    }
-
-    pub fn truncated_z_below(&self, min_z_power: i32) -> Self {
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..=self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                if *z_power >= min_z_power {
-                    out.add_term(h_power, *z_power, coeff.clone());
-                }
-            }
-        }
-        out
-    }
-
-    pub fn multiply(&self, rhs: &Self) -> Self {
-        assert_eq!(self.max_h_power, rhs.max_h_power);
-        let mut out = Self::zero(self.max_h_power);
-        for left_h in 0..=self.max_h_power {
-            for (left_z, left_coeff) in &self.coeffs[left_h] {
-                for right_h in 0..=self.max_h_power - left_h {
-                    for (right_z, right_coeff) in &rhs.coeffs[right_h] {
-                        out.add_term(
-                            left_h + right_h,
-                            left_z + right_z,
-                            left_coeff.clone() * right_coeff.clone(),
-                        );
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    pub fn multiply_mod_relation(&self, rhs: &Self, h_power_relation: &[Rational]) -> Self {
-        assert_eq!(self.max_h_power, rhs.max_h_power);
-        assert_eq!(h_power_relation.len(), self.max_h_power + 1);
-        let basis_powers = h_basis_powers_mod_relation(self.max_h_power, h_power_relation);
-        let mut out = Self::zero(self.max_h_power);
-        for left_h in 0..=self.max_h_power {
-            for (left_z, left_coeff) in &self.coeffs[left_h] {
-                for right_h in 0..=self.max_h_power {
-                    for (right_z, right_coeff) in &rhs.coeffs[right_h] {
-                        let scalar = left_coeff.clone() * right_coeff.clone();
-                        if scalar.is_zero() {
-                            continue;
-                        }
-                        for (reduced_h, reduced_coeff) in
-                            basis_powers[left_h + right_h].iter().enumerate()
-                        {
-                            if reduced_coeff.is_zero() {
-                                continue;
-                            }
-                            out.add_term(
-                                reduced_h,
-                                left_z + right_z,
-                                scalar.clone() * reduced_coeff.clone(),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    pub fn multiply_by_affine_mod_relation(
-        &self,
-        h_coeff: Rational,
-        constant: Rational,
-        z_coeff: Rational,
-        h_power_relation: &[Rational],
-    ) -> Self {
-        assert_eq!(h_power_relation.len(), self.max_h_power + 1);
-        let mut out = Self::zero(self.max_h_power);
-        for h_power in 0..=self.max_h_power {
-            for (z_power, coeff) in &self.coeffs[h_power] {
-                if !constant.is_zero() {
-                    out.add_term(h_power, *z_power, coeff.clone() * constant.clone());
-                }
-                if !z_coeff.is_zero() {
-                    out.add_term(h_power, z_power + 1, coeff.clone() * z_coeff.clone());
-                }
-                if !h_coeff.is_zero() {
-                    if h_power < self.max_h_power {
-                        out.add_term(h_power + 1, *z_power, coeff.clone() * h_coeff.clone());
-                    } else {
-                        for (reduced_h, reduced_coeff) in h_power_relation.iter().enumerate() {
-                            if !reduced_coeff.is_zero() {
-                                out.add_term(
-                                    reduced_h,
-                                    *z_power,
-                                    coeff.clone() * h_coeff.clone() * reduced_coeff.clone(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn add_term(&mut self, h_power: usize, z_power: i32, coeff: Rational) {
-        if coeff.is_zero() || h_power > self.max_h_power {
-            return;
-        }
-        let terms = &mut self.coeffs[h_power];
-        let next = terms.get(&z_power).cloned().unwrap_or_else(Rational::zero) + coeff;
-        if next.is_zero() {
-            terms.remove(&z_power);
-        } else {
-            terms.insert(z_power, next);
-        }
-    }
-}
-
-fn h_basis_powers_mod_relation(
-    max_h_power: usize,
-    h_power_relation: &[Rational],
-) -> Vec<Vec<Rational>> {
-    h_basis_powers_mod_relation_coeff(max_h_power, h_power_relation)
-}
+/// The non-equivariant twisted Laurent series is the rational specialization
+/// of the generic coefficient Laurent series.
+pub type HLaurentSeries = HCoeffLaurentSeries<Rational>;
 
 fn base_h_power_relation(n: usize, base_weights: &[Rational]) -> Result<Vec<Rational>, GwError> {
     base_h_power_relation_coeff(n, base_weights)
@@ -367,12 +147,63 @@ fn h_affine_power_mod_relation(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct HCoeffLaurentSeries<C = RatFun> {
+pub struct HCoeffLaurentSeries<C = RatFun> {
     max_h_power: usize,
     coeffs: Vec<BTreeMap<i32, C>>,
 }
 
 impl<C: Coeff> HCoeffLaurentSeries<C> {
+    fn multiply_by_h(&self) -> Self {
+        let mut out = Self::zero(self.max_h_power);
+        for h_power in 0..self.max_h_power {
+            for (z_power, coeff) in &self.coeffs[h_power] {
+                out.add_term(h_power + 1, *z_power, coeff.clone());
+            }
+        }
+        out
+    }
+
+    fn multiply_by_linear(&self, h_coeff: C, z_coeff: C) -> Self {
+        self.multiply_by_affine(h_coeff, C::zero(), z_coeff)
+    }
+
+    fn multiply_by_affine(&self, h_coeff: C, constant: C, z_coeff: C) -> Self {
+        let mut out = Self::zero(self.max_h_power);
+        for h_power in 0..=self.max_h_power {
+            for (z_power, coeff) in &self.coeffs[h_power] {
+                if !constant.is_zero() {
+                    out.add_term(h_power, *z_power, coeff.mul(&constant));
+                }
+                if !z_coeff.is_zero() {
+                    out.add_term(h_power, z_power + 1, coeff.mul(&z_coeff));
+                }
+                if !h_coeff.is_zero() && h_power < self.max_h_power {
+                    out.add_term(h_power + 1, *z_power, coeff.mul(&h_coeff));
+                }
+            }
+        }
+        out
+    }
+
+    fn multiply(&self, rhs: &Self) -> Self {
+        assert_eq!(self.max_h_power, rhs.max_h_power);
+        let mut out = Self::zero(self.max_h_power);
+        for left_h in 0..=self.max_h_power {
+            for (left_z, left_coeff) in &self.coeffs[left_h] {
+                for right_h in 0..=self.max_h_power - left_h {
+                    for (right_z, right_coeff) in &rhs.coeffs[right_h] {
+                        out.add_term(
+                            left_h + right_h,
+                            left_z + right_z,
+                            left_coeff.mul(right_coeff),
+                        );
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn zero(max_h_power: usize) -> Self {
         Self {
             max_h_power,
