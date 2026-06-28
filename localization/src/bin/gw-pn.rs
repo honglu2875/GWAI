@@ -1,3 +1,4 @@
+use clap::{Args, Parser, Subcommand};
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
@@ -20,39 +21,247 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const EXAMPLES: &str = "Examples:
+  gw-pn tests
+  gw-pn psi --g 2 --powers 4
+  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)'
+  gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'
+  gw-pn twisted --n 2 --twist -3 --g 2 --d 3
+  gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant
+  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3
+  gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex
+  gw-pn resolvent --n 2 --g 0 --d 1 --markings 3
+  gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3
+  gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3
+  gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3";
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "gw-pn",
+    about = "Exact computations for Gromov-Witten invariants of projective space",
+    arg_required_else_help = true,
+    after_help = EXAMPLES
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Witten-Kontsevich psi (descendant) intersection numbers
+    Psi(PsiArgs),
+    /// One ordinary P^n invariant through the Givental/S/R path
+    Compute(ComputeArgs),
+    /// Negative split-bundle twisted invariants
+    Twisted(TwistedArgs),
+    /// Vary the degree for a fixed or bounded insertion profile
+    DegreeSeries(DegreeSeriesArgs),
+    /// Vary the genus for a fixed or bounded insertion profile
+    GenusSeries(GenusSeriesArgs),
+    /// Human-readable stable-graph formula skeleton (text or TeX)
+    Formula(FormulaArgs),
+    /// Fixed-degree labelled resolvent generating function
+    Resolvent(ResolventArgs),
+    /// Bounded sparse descendant potential for ordinary P^n
+    Series(SeriesArgs),
+    /// Run the built-in validation suite
+    #[command(alias = "test")]
+    Tests,
+}
+
+#[derive(Debug, Args)]
+struct PsiArgs {
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    /// Comma-separated psi powers, e.g. 4 or 0,0,0
+    #[arg(long)]
+    powers: String,
+}
+
+#[derive(Debug, Args)]
+struct ComputeArgs {
+    #[arg(long)]
+    n: usize,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    #[arg(long)]
+    mode: Option<String>,
+    /// Insertion tauK(CLASS); repeat for multiple markings
+    #[arg(long)]
+    insert: Vec<String>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long = "nonequivariant-limit")]
+    nonequivariant_limit: bool,
+}
+
+#[derive(Debug, Args)]
+struct TwistedArgs {
+    #[arg(long)]
+    n: usize,
+    /// Negative split degrees, e.g. -1 or -1,-1
+    #[arg(long, allow_hyphen_values = true)]
+    twist: String,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    #[arg(long)]
+    insert: Vec<String>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long)]
+    factored: bool,
+}
+
+#[derive(Debug, Args)]
+struct DegreeSeriesArgs {
+    #[arg(long)]
+    n: usize,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree-max")]
+    d_max: usize,
+    #[arg(long, visible_alias = "degree-min")]
+    d_min: Option<usize>,
+    #[arg(long, allow_hyphen_values = true)]
+    twist: Option<String>,
+    #[arg(long)]
+    mode: Option<String>,
+    #[arg(long)]
+    insert: Vec<String>,
+    #[arg(long, visible_alias = "m-max")]
+    max_markings: Option<usize>,
+    #[arg(long, visible_alias = "k-max")]
+    max_descendant: Option<usize>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long)]
+    include_zero: bool,
+}
+
+#[derive(Debug, Args)]
+struct GenusSeriesArgs {
+    #[arg(long)]
+    n: usize,
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    #[arg(long, visible_alias = "genus-max")]
+    g_max: usize,
+    #[arg(long, visible_alias = "genus-min")]
+    g_min: Option<usize>,
+    #[arg(long, allow_hyphen_values = true)]
+    twist: Option<String>,
+    #[arg(long)]
+    mode: Option<String>,
+    #[arg(long)]
+    insert: Vec<String>,
+    #[arg(long, visible_alias = "m-max")]
+    max_markings: Option<usize>,
+    #[arg(long, visible_alias = "k-max")]
+    max_descendant: Option<usize>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long)]
+    include_zero: bool,
+}
+
+#[derive(Debug, Args)]
+struct FormulaArgs {
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "m")]
+    markings: usize,
+    #[arg(long)]
+    n: Option<usize>,
+    #[arg(long)]
+    colors: Option<usize>,
+    #[arg(long, visible_alias = "k-max")]
+    max_descendant: Option<usize>,
+    #[arg(long, visible_alias = "degree")]
+    d: Option<usize>,
+    #[arg(long)]
+    format: Option<String>,
+    #[arg(long, allow_hyphen_values = true)]
+    twist: Option<String>,
+    #[arg(long)]
+    basis: Option<String>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long)]
+    expand: bool,
+    #[arg(long)]
+    no_glossary: bool,
+    #[arg(long)]
+    tex: bool,
+}
+
+#[derive(Debug, Args)]
+struct ResolventArgs {
+    #[arg(long)]
+    n: usize,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    #[arg(long, visible_alias = "m")]
+    markings: usize,
+    #[arg(long, allow_hyphen_values = true)]
+    twist: Option<String>,
+    #[arg(long)]
+    mode: Option<String>,
+    #[arg(long)]
+    equivariant: bool,
+    #[arg(long)]
+    validate: bool,
+}
+
+#[derive(Debug, Args)]
+struct SeriesArgs {
+    #[arg(long)]
+    n: usize,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree-max")]
+    d_max: usize,
+    #[arg(long, visible_alias = "m-max")]
+    max_markings: usize,
+    #[arg(long, visible_alias = "k-max")]
+    max_descendant: Option<usize>,
+    #[arg(long)]
+    mode: Option<String>,
+    #[arg(long)]
+    include_zero: bool,
+    #[arg(long)]
+    equivariant: bool,
+}
+
 fn main() {
-    if let Err(err) = run() {
+    let cli = Cli::parse();
+    if let Err(err) = run(cli.command) {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), GwError> {
-    let mut args = env::args().skip(1).collect::<Vec<_>>();
-    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        print_help();
-        return Ok(());
-    }
-
-    let command = args.remove(0);
-    match command.as_str() {
-        "psi" => run_psi(&args),
-        "compute" => run_compute(&args),
-        "twisted" => run_twisted(&args),
-        "degree-series" => run_degree_series(&args),
-        "genus-series" => run_genus_series(&args),
-        "formula" => run_formula(&args),
-        "resolvent" => run_resolvent(&args),
-        "series" => run_series(&args),
-        "tests" | "test" => run_tests(&args),
-        _ => Err(GwError::ParseError(format!(
-            "unknown command `{command}`; try --help"
-        ))),
+fn run(command: Commands) -> Result<(), GwError> {
+    match command {
+        Commands::Psi(args) => run_psi(args),
+        Commands::Compute(args) => run_compute(args),
+        Commands::Twisted(args) => run_twisted(args),
+        Commands::DegreeSeries(args) => run_degree_series(args),
+        Commands::GenusSeries(args) => run_genus_series(args),
+        Commands::Formula(args) => run_formula(args),
+        Commands::Resolvent(args) => run_resolvent(args),
+        Commands::Series(args) => run_series(args),
+        Commands::Tests => run_tests(),
     }
 }
 
-fn run_tests(args: &[String]) -> Result<(), GwError> {
-    validate_flags(args, &[])?;
+fn run_tests() -> Result<(), GwError> {
     let report = run_builtin_tests();
     for case in &report.cases {
         let status = if case.passed { "ok" } else { "FAILED" };
@@ -76,23 +285,11 @@ fn run_tests(args: &[String]) -> Result<(), GwError> {
     }
 }
 
-fn run_psi(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--powers"),
-        ],
-    )?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let powers_raw = parse_string_flag(args, "--powers")?
-        .ok_or_else(|| GwError::ParseError("missing --powers".to_string()))?;
-    let powers = if powers_raw.trim().is_empty() {
+fn run_psi(args: PsiArgs) -> Result<(), GwError> {
+    let powers = if args.powers.trim().is_empty() {
         Vec::new()
     } else {
-        powers_raw
+        args.powers
             .split(',')
             .map(|part| {
                 part.trim().parse::<usize>().map_err(|_| {
@@ -101,56 +298,21 @@ fn run_psi(args: &[String]) -> Result<(), GwError> {
             })
             .collect::<Result<Vec<_>, _>>()?
     };
-    let value = WittenKontsevich::new().psi_integral(genus, &powers);
+    let value = WittenKontsevich::new().psi_integral(args.g, &powers);
     println!("{value}");
     Ok(())
 }
 
-fn run_series(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--n"),
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--d-max"),
-            CliFlag::value("--degree-max"),
-            CliFlag::value("--max-markings"),
-            CliFlag::value("--m-max"),
-            CliFlag::value("--max-descendant"),
-            CliFlag::value("--k-max"),
-            CliFlag::value("--mode"),
-            CliFlag::switch("--include-zero"),
-            CliFlag::switch("--equivariant"),
-        ],
-    )?;
-    let n = required_usize(args, "--n")?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let degree_max = first_usize_flag(args, &["--d-max", "--degree-max"])?
-        .ok_or_else(|| GwError::ParseError("missing --d-max".to_string()))?;
-    let max_markings = first_usize_flag(args, &["--max-markings", "--m-max"])?
-        .ok_or_else(|| GwError::ParseError("missing --max-markings".to_string()))?;
-    let max_descendant_power =
-        first_usize_flag(args, &["--max-descendant", "--k-max"])?.unwrap_or(0);
-    let include_zero = has_flag(args, "--include-zero");
-    let mode = match parse_string_flag(args, "--mode")?.as_deref() {
-        None | Some("givental") => ComputeMode::Givental,
-        Some(other) => {
-            return Err(GwError::ParseError(format!(
-                "invalid --mode `{other}`; expected givental"
-            )))
-        }
-    };
+fn run_series(args: SeriesArgs) -> Result<(), GwError> {
     let req = SeriesRequest {
-        n,
-        genus,
-        degree_max,
-        max_markings,
-        max_descendant_power,
-        include_zero,
-        equivariant: has_flag(args, "--equivariant"),
-        mode,
+        n: args.n,
+        genus: args.g,
+        degree_max: args.d_max,
+        max_markings: args.max_markings,
+        max_descendant_power: args.max_descendant.unwrap_or(0),
+        include_zero: args.include_zero,
+        equivariant: args.equivariant,
+        mode: parse_compute_mode(args.mode.as_deref())?,
         truncation: None,
     };
     let result = compute_series(req)?;
@@ -171,36 +333,13 @@ fn run_series(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
-fn run_twisted(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--n"),
-            CliFlag::value("--twist"),
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--d"),
-            CliFlag::value("--degree"),
-            CliFlag::value("--insert"),
-            CliFlag::switch("--equivariant"),
-            CliFlag::switch("--factored"),
-        ],
-    )?;
-    let n = required_usize(args, "--n")?;
-    let twist = parse_negative_twist_flag(args, "--twist")?
-        .ok_or_else(|| GwError::ParseError("missing --twist".to_string()))?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let degree = first_usize_flag(args, &["--d", "--degree"])?
-        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
-    let insertions = repeated_string_flag(args, "--insert")
-        .into_iter()
-        .map(|raw| parse_insertion(n, &raw))
-        .collect::<Result<Vec<_>, _>>()?;
+fn run_twisted(args: TwistedArgs) -> Result<(), GwError> {
+    let twist = parse_negative_twist(&args.twist)?;
+    let insertions = parse_insertions(args.n, &args.insert)?;
 
-    let mut req = TwistedInvariantRequest::new(n, twist, genus, degree, insertions)?;
-    req.equivariant = has_flag(args, "--equivariant");
-    if has_flag(args, "--factored") && !req.equivariant {
+    let mut req = TwistedInvariantRequest::new(args.n, twist, args.g, args.d, insertions)?;
+    req.equivariant = args.equivariant;
+    if args.factored && !req.equivariant {
         return Err(GwError::ParseError(
             "--factored for twisted computations currently requires --equivariant".to_string(),
         ));
@@ -227,36 +366,8 @@ fn print_fiber_parameters(twist: &NegativeSplitBundleTwist) {
     println!("parameters: {parameters}");
 }
 
-fn run_formula(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--markings"),
-            CliFlag::value("--m"),
-            CliFlag::value("--n"),
-            CliFlag::value("--colors"),
-            CliFlag::value("--max-descendant"),
-            CliFlag::value("--k-max"),
-            CliFlag::value("--d"),
-            CliFlag::value("--degree"),
-            CliFlag::value("--format"),
-            CliFlag::value("--twist"),
-            CliFlag::value("--basis"),
-            CliFlag::switch("--equivariant"),
-            CliFlag::switch("--expand"),
-            CliFlag::switch("--no-glossary"),
-            CliFlag::switch("--tex"),
-        ],
-    )?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let markings = first_usize_flag(args, &["--markings", "--m"])?
-        .ok_or_else(|| GwError::ParseError("missing --markings".to_string()))?;
-    let colors_flag = first_usize_flag(args, &["--colors"])?;
-    let n_flag = first_usize_flag(args, &["--n"])?;
-    let colors = match (colors_flag, n_flag) {
+fn run_formula(args: FormulaArgs) -> Result<(), GwError> {
+    let colors = match (args.colors, args.n) {
         (Some(_), Some(_)) => {
             return Err(GwError::ParseError(
                 "pass either --colors or --n, not both".to_string(),
@@ -266,19 +377,22 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
         (None, Some(n)) => n + 1,
         (None, None) => return Err(GwError::ParseError("missing --colors or --n".to_string())),
     };
-    let mut request = FormulaRequest::new(genus, markings, colors);
-    request.max_descendant_power =
-        first_usize_flag(args, &["--max-descendant", "--k-max"])?.unwrap_or(0);
-    request.q_degree = first_usize_flag(args, &["--d", "--degree"])?;
-    request.include_glossary = !has_flag(args, "--no-glossary");
-    request.basis = parse_formula_basis(args)?;
-    request.expansion =
-        formula_expansion_from_args(args, n_flag, colors, request.basis.requires_expansion())?;
+    let twist = parse_negative_twist_opt(args.twist.as_deref())?;
+    let mut request = FormulaRequest::new(args.g, args.markings, colors);
+    request.max_descendant_power = args.max_descendant.unwrap_or(0);
+    request.q_degree = args.d;
+    request.include_glossary = !args.no_glossary;
+    request.basis = parse_formula_basis(args.basis.as_deref())?;
+    request.expansion = formula_expansion(
+        args.expand,
+        args.equivariant,
+        twist.as_deref(),
+        args.n,
+        colors,
+        request.basis.requires_expansion(),
+    )?;
     let skeleton = build_formula_skeleton(request)?;
-    let format = match (
-        parse_string_flag(args, "--format")?,
-        has_flag(args, "--tex"),
-    ) {
+    let format = match (args.format, args.tex) {
         (Some(_), true) => {
             return Err(GwError::ParseError(
                 "pass either --format tex or --tex, not both".to_string(),
@@ -301,35 +415,16 @@ fn run_formula(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
-fn run_resolvent(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--n"),
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--d"),
-            CliFlag::value("--degree"),
-            CliFlag::value("--markings"),
-            CliFlag::value("--m"),
-            CliFlag::value("--twist"),
-            CliFlag::value("--mode"),
-            CliFlag::switch("--equivariant"),
-            CliFlag::switch("--validate"),
-        ],
-    )?;
-    let n = required_usize(args, "--n")?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let degree = first_usize_flag(args, &["--d", "--degree"])?
-        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
-    let markings = first_usize_flag(args, &["--markings", "--m"])?
-        .ok_or_else(|| GwError::ParseError("missing --markings".to_string()))?;
-    let twist = parse_negative_twist_flag(args, "--twist")?;
+fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
+    let n = args.n;
+    let genus = args.g;
+    let degree = args.d;
+    let markings = args.markings;
+    let twist = parse_negative_twist_opt(args.twist.as_deref())?;
     let twist_model = parse_twist_model(twist.as_ref())?;
-    let mode = parse_compute_mode(args)?;
-    let equivariant = has_flag(args, "--equivariant");
-    let validate = has_flag(args, "--validate");
+    let mode = parse_compute_mode(args.mode.as_deref())?;
+    let equivariant = args.equivariant;
+    let validate = args.validate;
     let virtual_dimension = match twist_model.as_ref() {
         Some(twist) => twist.virtual_dimension(n, genus, degree, markings),
         None => ordinary_virtual_dimension(n, genus, degree, markings),
@@ -601,23 +696,24 @@ fn resolvent_insertion_range(markings: usize) -> String {
     }
 }
 
-fn formula_expansion_from_args(
-    args: &[String],
+fn formula_expansion(
+    expand: bool,
+    equivariant: bool,
+    twist: Option<&[usize]>,
     n_flag: Option<usize>,
     colors: usize,
     force: bool,
 ) -> Result<Option<FormulaExpansion>, GwError> {
-    if !force && !has_flag(args, "--expand") {
+    if !force && !expand {
         return Ok(None);
     }
-    let equivariant = has_flag(args, "--equivariant");
-    if let Some(degrees) = parse_negative_twist_flag(args, "--twist")? {
+    if let Some(degrees) = twist {
         let n = n_flag.ok_or_else(|| {
             GwError::ParseError("twisted formula expansion needs --n".to_string())
         })?;
         return Ok(Some(FormulaExpansion::NegativeSplitTwisted {
             n,
-            degrees,
+            degrees: degrees.to_vec(),
             equivariant,
         }));
     }
@@ -632,8 +728,8 @@ fn formula_expansion_from_args(
     Ok(Some(FormulaExpansion::ProjectiveSpace { n, equivariant }))
 }
 
-fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
-    match parse_string_flag(args, "--basis")?.as_deref() {
+fn parse_formula_basis(basis: Option<&str>) -> Result<FormulaBasisMode, GwError> {
+    match basis {
         None => Ok(FormulaBasisMode::Raw),
         Some("coefficients") | Some("coefficient") => Ok(FormulaBasisMode::Coefficients),
         Some("raw") => Ok(FormulaBasisMode::Raw),
@@ -651,24 +747,26 @@ fn parse_formula_basis(args: &[String]) -> Result<FormulaBasisMode, GwError> {
     }
 }
 
-fn run_degree_series(args: &[String]) -> Result<(), GwError> {
-    validate_flags(args, degree_series_flags())?;
-    let n = required_usize(args, "--n")?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let degree_max = first_usize_flag(args, &["--d-max", "--degree-max"])?
-        .ok_or_else(|| GwError::ParseError("missing --d-max".to_string()))?;
-    let twist = parse_negative_twist_flag(args, "--twist")?;
-    let degree_min = first_usize_flag(args, &["--d-min", "--degree-min"])?
-        .unwrap_or(if twist.is_some() { 1 } else { 0 });
+fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
+    let n = args.n;
+    let genus = args.g;
+    let degree_max = args.d_max;
+    let twist = parse_negative_twist_opt(args.twist.as_deref())?;
+    let degree_min = args.d_min.unwrap_or(if twist.is_some() { 1 } else { 0 });
     if degree_min > degree_max {
         return Err(GwError::ParseError(format!(
             "--d-min ({degree_min}) cannot exceed --d-max ({degree_max})"
         )));
     }
-    let mode = parse_compute_mode(args)?;
-    let equivariant = has_flag(args, "--equivariant");
-    let insertion_selection = parse_series_insertions(n, args)?;
+    let mode = parse_compute_mode(args.mode.as_deref())?;
+    let equivariant = args.equivariant;
+    let insertion_selection = parse_series_insertions(
+        n,
+        &args.insert,
+        args.max_markings,
+        args.max_descendant,
+        args.include_zero,
+    )?;
     let twist_model = parse_twist_model(twist.as_ref())?;
 
     let mut warnings = Vec::new();
@@ -732,23 +830,26 @@ fn run_degree_series(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
-fn run_genus_series(args: &[String]) -> Result<(), GwError> {
-    validate_flags(args, genus_series_flags())?;
-    let n = required_usize(args, "--n")?;
-    let degree = first_usize_flag(args, &["--d", "--degree"])?
-        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
-    let genus_max = first_usize_flag(args, &["--g-max", "--genus-max"])?
-        .ok_or_else(|| GwError::ParseError("missing --g-max".to_string()))?;
-    let genus_min = first_usize_flag(args, &["--g-min", "--genus-min"])?.unwrap_or(0);
+fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
+    let n = args.n;
+    let degree = args.d;
+    let genus_max = args.g_max;
+    let genus_min = args.g_min.unwrap_or(0);
     if genus_min > genus_max {
         return Err(GwError::ParseError(format!(
             "--g-min ({genus_min}) cannot exceed --g-max ({genus_max})"
         )));
     }
-    let twist = parse_negative_twist_flag(args, "--twist")?;
-    let mode = parse_compute_mode(args)?;
-    let equivariant = has_flag(args, "--equivariant");
-    let insertion_selection = parse_series_insertions(n, args)?;
+    let twist = parse_negative_twist_opt(args.twist.as_deref())?;
+    let mode = parse_compute_mode(args.mode.as_deref())?;
+    let equivariant = args.equivariant;
+    let insertion_selection = parse_series_insertions(
+        n,
+        &args.insert,
+        args.max_markings,
+        args.max_descendant,
+        args.include_zero,
+    )?;
     let twist_model = parse_twist_model(twist.as_ref())?;
 
     let mut warnings = Vec::new();
@@ -812,41 +913,21 @@ fn run_genus_series(args: &[String]) -> Result<(), GwError> {
     Ok(())
 }
 
-fn run_compute(args: &[String]) -> Result<(), GwError> {
-    validate_flags(
-        args,
-        &[
-            CliFlag::value("--n"),
-            CliFlag::value("--g"),
-            CliFlag::value("--genus"),
-            CliFlag::value("--d"),
-            CliFlag::value("--degree"),
-            CliFlag::value("--mode"),
-            CliFlag::value("--insert"),
-            CliFlag::switch("--equivariant"),
-            CliFlag::switch("--nonequivariant-limit"),
-        ],
-    )?;
-    let n = required_usize(args, "--n")?;
-    let genus = first_usize_flag(args, &["--g", "--genus"])?
-        .ok_or_else(|| GwError::ParseError("missing --g".to_string()))?;
-    let degree = first_usize_flag(args, &["--d", "--degree"])?
-        .ok_or_else(|| GwError::ParseError("missing --d".to_string()))?;
-    let mode = parse_compute_mode(args)?;
-    let insertions = parse_insertions(n, args)?;
-
+fn run_compute(args: ComputeArgs) -> Result<(), GwError> {
+    let n = args.n;
+    let insertions = parse_insertions(n, &args.insert)?;
     let req = InvariantRequest {
         n,
-        genus,
-        degree,
+        genus: args.g,
+        degree: args.d,
         insertions,
-        equivariant: has_flag(args, "--equivariant"),
-        mode,
+        equivariant: args.equivariant,
+        mode: parse_compute_mode(args.mode.as_deref())?,
         truncation: None,
     };
     let result = compute(req)?;
     println!("{}", result.value);
-    if has_flag(args, "--nonequivariant-limit") {
+    if args.nonequivariant_limit {
         let weights = default_lambda_line_weights(n);
         let limit = result.nonequivariant_limit_line(n, &weights)?;
         println!("nonequivariant_limit: {limit}");
@@ -897,145 +978,6 @@ struct BoundedInsertionScan {
     include_zero: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CliFlag {
-    name: &'static str,
-    takes_value: bool,
-}
-
-impl CliFlag {
-    const fn value(name: &'static str) -> Self {
-        Self {
-            name,
-            takes_value: true,
-        }
-    }
-
-    const fn switch(name: &'static str) -> Self {
-        Self {
-            name,
-            takes_value: false,
-        }
-    }
-}
-
-const DEGREE_SERIES_FLAGS: &[CliFlag] = &[
-    CliFlag::value("--n"),
-    CliFlag::value("--g"),
-    CliFlag::value("--genus"),
-    CliFlag::value("--d-max"),
-    CliFlag::value("--degree-max"),
-    CliFlag::value("--d-min"),
-    CliFlag::value("--degree-min"),
-    CliFlag::value("--twist"),
-    CliFlag::value("--mode"),
-    CliFlag::value("--insert"),
-    CliFlag::value("--max-markings"),
-    CliFlag::value("--m-max"),
-    CliFlag::value("--max-descendant"),
-    CliFlag::value("--k-max"),
-    CliFlag::switch("--equivariant"),
-    CliFlag::switch("--include-zero"),
-];
-
-const GENUS_SERIES_FLAGS: &[CliFlag] = &[
-    CliFlag::value("--n"),
-    CliFlag::value("--d"),
-    CliFlag::value("--degree"),
-    CliFlag::value("--g-max"),
-    CliFlag::value("--genus-max"),
-    CliFlag::value("--g-min"),
-    CliFlag::value("--genus-min"),
-    CliFlag::value("--twist"),
-    CliFlag::value("--mode"),
-    CliFlag::value("--insert"),
-    CliFlag::value("--max-markings"),
-    CliFlag::value("--m-max"),
-    CliFlag::value("--max-descendant"),
-    CliFlag::value("--k-max"),
-    CliFlag::switch("--equivariant"),
-    CliFlag::switch("--include-zero"),
-];
-
-fn degree_series_flags() -> &'static [CliFlag] {
-    DEGREE_SERIES_FLAGS
-}
-
-fn genus_series_flags() -> &'static [CliFlag] {
-    GENUS_SERIES_FLAGS
-}
-
-fn validate_flags(args: &[String], allowed: &[CliFlag]) -> Result<(), GwError> {
-    let mut idx = 0;
-    while idx < args.len() {
-        let arg = &args[idx];
-        if let Some(flag) = allowed.iter().find(|candidate| candidate.name == arg) {
-            if flag.takes_value {
-                let value = args
-                    .get(idx + 1)
-                    .ok_or_else(|| GwError::ParseError(format!("{arg} requires a value")))?;
-                if allowed
-                    .iter()
-                    .any(|candidate| candidate.name == value.as_str())
-                {
-                    return Err(GwError::ParseError(format!("{arg} requires a value")));
-                }
-                idx += 2;
-            } else {
-                idx += 1;
-            }
-            continue;
-        }
-
-        if arg.starts_with('-') {
-            let suggestion = suggest_flag(arg, allowed)
-                .map(|candidate| format!("; maybe you meant `{candidate}`"))
-                .unwrap_or_default();
-            return Err(GwError::ParseError(format!(
-                "unknown flag `{arg}`{suggestion}"
-            )));
-        }
-
-        return Err(GwError::ParseError(format!("unexpected argument `{arg}`")));
-    }
-    Ok(())
-}
-
-fn suggest_flag(arg: &str, allowed: &[CliFlag]) -> Option<&'static str> {
-    let (name, distance) = allowed
-        .iter()
-        .map(|flag| (flag.name, levenshtein(arg, flag.name)))
-        .min_by_key(|(_, distance)| *distance)?;
-    (distance <= flag_suggestion_threshold(arg)).then_some(name)
-}
-
-fn flag_suggestion_threshold(arg: &str) -> usize {
-    match arg.len() {
-        0..=6 => 1,
-        7..=12 => 2,
-        _ => 3,
-    }
-}
-
-fn levenshtein(left: &str, right: &str) -> usize {
-    let right_len = right.chars().count();
-    let mut previous = (0..=right_len).collect::<Vec<_>>();
-    let mut current = vec![0; right_len + 1];
-
-    for (left_idx, left_char) in left.chars().enumerate() {
-        current[0] = left_idx + 1;
-        for (right_idx, right_char) in right.chars().enumerate() {
-            let substitution = previous[right_idx] + usize::from(left_char != right_char);
-            let insertion = current[right_idx] + 1;
-            let deletion = previous[right_idx + 1] + 1;
-            current[right_idx + 1] = substitution.min(insertion).min(deletion);
-        }
-        std::mem::swap(&mut previous, &mut current);
-    }
-
-    previous[right_len]
-}
-
 fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<PathBuf>, GwError> {
     if warnings.is_empty() {
         return Ok(None);
@@ -1068,14 +1010,18 @@ fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<Path
     Ok(Some(path))
 }
 
-fn parse_series_insertions(n: usize, args: &[String]) -> Result<InsertionSelection, GwError> {
-    let explicit = parse_insertions(n, args)?;
+fn parse_series_insertions(
+    n: usize,
+    insert: &[String],
+    max_markings: Option<usize>,
+    max_descendant: Option<usize>,
+    include_zero: bool,
+) -> Result<InsertionSelection, GwError> {
+    let explicit = parse_insertions(n, insert)?;
     if !explicit.is_empty() {
         return Ok(InsertionSelection::Fixed(explicit));
     }
 
-    let max_markings = first_usize_flag(args, &["--max-markings", "--m-max"])?;
-    let max_descendant = first_usize_flag(args, &["--max-descendant", "--k-max"])?;
     if max_markings.is_none() {
         if max_descendant.is_some() {
             return Err(GwError::ParseError(
@@ -1087,15 +1033,12 @@ fn parse_series_insertions(n: usize, args: &[String]) -> Result<InsertionSelecti
 
     Ok(InsertionSelection::Bounded(BoundedInsertionScan {
         profiles: bounded_insertion_profiles(n, max_markings.unwrap(), max_descendant.unwrap_or(0)),
-        include_zero: has_flag(args, "--include-zero"),
+        include_zero,
     }))
 }
 
-fn parse_insertions(n: usize, args: &[String]) -> Result<Vec<gw_pn::Insertion>, GwError> {
-    repeated_string_flag(args, "--insert")
-        .into_iter()
-        .map(|raw| parse_insertion(n, &raw))
-        .collect()
+fn parse_insertions(n: usize, insert: &[String]) -> Result<Vec<gw_pn::Insertion>, GwError> {
+    insert.iter().map(|raw| parse_insertion(n, raw)).collect()
 }
 
 fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
@@ -1120,36 +1063,35 @@ fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
     Ok(tau(descendant_power, class))
 }
 
-fn parse_negative_twist_flag(args: &[String], flag: &str) -> Result<Option<Vec<usize>>, GwError> {
-    let Some(raw) = parse_string_flag(args, flag)? else {
-        return Ok(None);
-    };
-    let degrees = raw
-        .split(',')
+fn parse_negative_twist(raw: &str) -> Result<Vec<usize>, GwError> {
+    raw.split(',')
         .map(|part| {
             let part = part.trim();
             if part.is_empty() {
                 return Err(GwError::ParseError(format!(
-                    "empty twist degree in {flag} value `{raw}`"
+                    "empty twist degree in --twist value `{raw}`"
                 )));
             }
             let degree = part.parse::<isize>().map_err(|_| {
-                GwError::ParseError(format!("invalid twist degree `{part}` in {flag}"))
+                GwError::ParseError(format!("invalid twist degree `{part}` in --twist"))
             })?;
             if degree >= 0 {
                 return Err(GwError::ParseError(format!(
-                    "negative split bundles must be written with negative degrees, e.g. `{flag} -3` or `{flag} -1,-1`; got `{part}`"
+                    "negative split bundles must be written with negative degrees, e.g. `--twist -3` or `--twist -1,-1`; got `{part}`"
                 )));
             }
             degree
                 .checked_abs()
                 .map(|value| value as usize)
                 .ok_or_else(|| {
-                    GwError::ParseError(format!("invalid twist degree `{part}` in {flag}"))
+                    GwError::ParseError(format!("invalid twist degree `{part}` in --twist"))
                 })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Some(degrees))
+        .collect()
+}
+
+fn parse_negative_twist_opt(raw: Option<&str>) -> Result<Option<Vec<usize>>, GwError> {
+    raw.map(parse_negative_twist).transpose()
 }
 
 fn parse_twist_model(
@@ -1160,8 +1102,8 @@ fn parse_twist_model(
         .transpose()
 }
 
-fn parse_compute_mode(args: &[String]) -> Result<ComputeMode, GwError> {
-    match parse_string_flag(args, "--mode")?.as_deref() {
+fn parse_compute_mode(mode: Option<&str>) -> Result<ComputeMode, GwError> {
+    match mode {
         None | Some("givental") => Ok(ComputeMode::Givental),
         Some(other) => Err(GwError::ParseError(format!(
             "invalid --mode `{other}`; expected givental"
@@ -1182,62 +1124,6 @@ fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
             Ok(CohomologyClass::h_power(n, power))
         }
     }
-}
-
-fn required_usize(args: &[String], flag: &str) -> Result<usize, GwError> {
-    parse_usize_flag(args, flag)?.ok_or_else(|| GwError::ParseError(format!("missing {flag}")))
-}
-
-fn first_usize_flag(args: &[String], flags: &[&str]) -> Result<Option<usize>, GwError> {
-    for flag in flags {
-        if let Some(value) = parse_usize_flag(args, flag)? {
-            return Ok(Some(value));
-        }
-    }
-    Ok(None)
-}
-
-fn parse_usize_flag(args: &[String], flag: &str) -> Result<Option<usize>, GwError> {
-    parse_string_flag(args, flag)?
-        .map(|value| {
-            value
-                .parse::<usize>()
-                .map_err(|_| GwError::ParseError(format!("invalid value `{value}` for {flag}")))
-        })
-        .transpose()
-}
-
-fn parse_string_flag(args: &[String], flag: &str) -> Result<Option<String>, GwError> {
-    let mut idx = 0;
-    while idx < args.len() {
-        if args[idx] == flag {
-            return args
-                .get(idx + 1)
-                .cloned()
-                .map(Some)
-                .ok_or_else(|| GwError::ParseError(format!("{flag} requires a value")));
-        }
-        idx += 1;
-    }
-    Ok(None)
-}
-
-fn repeated_string_flag(args: &[String], flag: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut idx = 0;
-    while idx < args.len() {
-        if args[idx] == flag {
-            if let Some(value) = args.get(idx + 1) {
-                out.push(value.clone());
-            }
-        }
-        idx += 1;
-    }
-    out
-}
-
-fn has_flag(args: &[String], flag: &str) -> bool {
-    args.iter().any(|arg| arg == flag)
 }
 
 fn default_lambda_line_weights(n: usize) -> Vec<Rational> {
@@ -1336,100 +1222,95 @@ fn insertion_list_label(insertions: &[gw_pn::Insertion]) -> String {
         .join(" ")
 }
 
-fn print_help() {
-    println!(
-        "gw-pn\n\
-\n\
-Commands:\n\
-  gw-pn tests\n\
-  gw-pn psi --g 2 --powers 4\n\
-  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)' --mode givental\n\
-  gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'\n\
-  gw-pn twisted --n 2 --twist -3 --g 2 --d 3\n\
-  gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex\n\
-  gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --format tex-fragment\n\
-  gw-pn resolvent --n 2 --g 0 --d 1 --markings 3\n\
-  gw-pn resolvent --n 2 --twist -3 --g 2 --d 1 --markings 1 --validate\n\
-  gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3\n\
-  gw-pn degree-series --n 2 --twist -1 --g 2 --d-max 2 --max-markings 1 --max-descendant 5\n\
-  gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3\n\
-  gw-pn genus-series --n 2 --twist -1 --d 2 --g-max 2 --max-markings 1 --max-descendant 5\n\
-  gw-pn series --n 2 --g 0 --d-max 1 --max-markings 3 --mode givental\n\
-\n\
-Supported compute seed cases:\n\
-  P^0 point-theory psi integrals, genus-zero degree-zero constants,\n\
-  and genus-zero three-point primary small quantum products.\n\
-\n\
-Twisted flags:\n\
-  twisted --equivariant uses the factored symbolic engine by default.\n\
-  --factored is accepted only with --equivariant as an explicit spelling."
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| value.to_string()).collect()
-    }
-
     #[test]
-    fn flag_validation_suggests_close_match() {
-        let err = validate_flags(
-            &args(&[
-                "--n",
-                "2",
-                "--g",
-                "2",
-                "--d-max",
-                "3",
-                "--max-descendants",
-                "5",
-            ]),
-            degree_series_flags(),
-        )
-        .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("maybe you meant `--max-descendant`"));
-    }
-
-    #[test]
-    fn flag_validation_accepts_negative_twist_value() {
-        validate_flags(
-            &args(&["--n", "1", "--twist", "-1,-1", "--g", "2", "--d", "1"]),
-            &[
-                CliFlag::value("--n"),
-                CliFlag::value("--twist"),
-                CliFlag::value("--g"),
-                CliFlag::value("--d"),
-            ],
-        )
+    fn cli_parses_negative_twist_value() {
+        let cli = Cli::try_parse_from([
+            "gw-pn", "twisted", "--n", "1", "--twist", "-1,-1", "--g", "2", "--d", "3",
+        ])
         .unwrap();
+        match cli.command {
+            Commands::Twisted(args) => {
+                assert_eq!(parse_negative_twist(&args.twist).unwrap(), vec![1, 1]);
+            }
+            _ => panic!("expected twisted subcommand"),
+        }
     }
 
     #[test]
-    fn flag_validation_rejects_unused_positional_arguments() {
-        let err = validate_flags(&args(&["extra"]), &[]).unwrap_err();
-        assert!(err.to_string().contains("unexpected argument `extra`"));
+    fn cli_accepts_long_aliases() {
+        let cli = Cli::try_parse_from([
+            "gw-pn", "compute", "--n", "2", "--genus", "0", "--degree", "1",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Compute(args) => {
+                assert_eq!((args.n, args.g, args.d), (2, 0, 1));
+            }
+            _ => panic!("expected compute subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_collects_repeated_insertions() {
+        let cli = Cli::try_parse_from([
+            "gw-pn",
+            "compute",
+            "--n",
+            "2",
+            "--g",
+            "0",
+            "--d",
+            "1",
+            "--insert",
+            "tau0(H^2)",
+            "--insert",
+            "tau0(H)",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Compute(args) => assert_eq!(args.insert.len(), 2),
+            _ => panic!("expected compute subcommand"),
+        }
+    }
+
+    #[test]
+    fn cli_rejects_unknown_flag() {
+        let err = Cli::try_parse_from([
+            "gw-pn",
+            "degree-series",
+            "--n",
+            "2",
+            "--g",
+            "2",
+            "--d-max",
+            "3",
+            "--max-descendants",
+            "5",
+        ])
+        .unwrap_err();
+        // clap reports the unknown flag (and suggests --max-descendant).
+        assert!(err.to_string().contains("--max-descendants"));
+    }
+
+    #[test]
+    fn parse_negative_twist_rejects_nonnegative() {
+        let err = parse_negative_twist("3").unwrap_err();
+        assert!(err.to_string().contains("negative degrees"));
     }
 
     #[test]
     fn formula_expansion_ignores_twist_without_expand() {
-        let expansion =
-            formula_expansion_from_args(&args(&["--twist", "-3"]), Some(2), 3, false).unwrap();
+        let expansion = formula_expansion(false, false, Some(&[3]), Some(2), 3, false).unwrap();
         assert_eq!(expansion, None);
     }
 
     #[test]
     fn formula_expansion_infers_projective_with_expand() {
-        let expansion =
-            formula_expansion_from_args(&args(&["--expand"]), Some(2), 3, false).unwrap();
+        let expansion = formula_expansion(true, false, None, Some(2), 3, false).unwrap();
         assert_eq!(
             expansion,
             Some(FormulaExpansion::ProjectiveSpace {
@@ -1441,9 +1322,7 @@ mod tests {
 
     #[test]
     fn formula_expansion_infers_twisted_with_expand_and_twist() {
-        let expansion =
-            formula_expansion_from_args(&args(&["--expand", "--twist", "-3"]), Some(2), 3, false)
-                .unwrap();
+        let expansion = formula_expansion(true, false, Some(&[3]), Some(2), 3, false).unwrap();
         assert_eq!(
             expansion,
             Some(FormulaExpansion::NegativeSplitTwisted {
@@ -1457,11 +1336,10 @@ mod tests {
     #[test]
     fn formula_basis_raw_forces_expansion() {
         assert_eq!(
-            parse_formula_basis(&args(&["--basis", "raw"])).unwrap(),
+            parse_formula_basis(Some("raw")).unwrap(),
             FormulaBasisMode::Raw
         );
-        let expansion =
-            formula_expansion_from_args(&args(&["--basis", "raw"]), Some(2), 3, true).unwrap();
+        let expansion = formula_expansion(false, false, None, Some(2), 3, true).unwrap();
         assert!(matches!(
             expansion,
             Some(FormulaExpansion::ProjectiveSpace {
@@ -1474,20 +1352,20 @@ mod tests {
     #[test]
     fn formula_basis_coefficients_is_legacy_unrolled_mode() {
         assert_eq!(
-            parse_formula_basis(&args(&["--basis", "coefficients"])).unwrap(),
+            parse_formula_basis(Some("coefficients")).unwrap(),
             FormulaBasisMode::Coefficients
         );
     }
 
     #[test]
     fn formula_basis_resolvent_is_not_a_formula_basis() {
-        let err = parse_formula_basis(&args(&["--basis", "resolvent"])).unwrap_err();
+        let err = parse_formula_basis(Some("resolvent")).unwrap_err();
         assert!(err.to_string().contains("resolvent subcommand"));
     }
 
     #[test]
     fn formula_basis_rational_was_removed() {
-        let err = parse_formula_basis(&args(&["--basis", "rational"])).unwrap_err();
+        let err = parse_formula_basis(Some("rational")).unwrap_err();
         assert!(err
             .to_string()
             .contains("formula rational basis was removed"));
