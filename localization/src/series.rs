@@ -184,9 +184,17 @@ impl<C: Coeff> QSeries<C> {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = QSeries::<C>::one(self.max_degree());
-        for _ in 0..exp {
-            out = out.mul(self);
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = out.mul(&base);
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = base.mul(&base);
+            }
         }
         out
     }
@@ -547,14 +555,14 @@ pub(crate) fn invert_series_with_linear_term_one<C: Coeff>(
         inverse[1] = C::one();
     }
     for degree in 2..=max_degree {
-        let mut trial = inverse.clone();
-        trial[degree] = C::one();
-        let contribution = compose_plain_series(series, &trial, max_degree)[degree].clone();
-        let mut baseline = inverse.clone();
-        baseline[degree] = C::zero();
-        let current = compose_plain_series(series, &baseline, max_degree)[degree].clone();
-        let sensitivity = contribution.sub(&current);
-        inverse[degree] = current.neg().div(&sensitivity);
+        // With series = z + O(z^2) and input = z + ..., the coefficient of
+        // z^degree in series(input) depends on input[degree] with derivative
+        // exactly one: the linear term contributes input[degree] directly, and
+        // every higher power of the input reaches z^degree only through
+        // lower-order input coefficients.  So the still-unset inverse[degree]
+        // must cancel the currently composed coefficient.
+        let current = compose_plain_series(series, &inverse, degree)[degree].clone();
+        inverse[degree] = current.neg();
     }
     inverse
 }
@@ -627,6 +635,25 @@ mod tests {
         assert_eq!(inv.coeff(1), Some(&Rational::from(-1)));
         assert_eq!(inv.coeff(2), Some(&Rational::one()));
         assert_eq!(inv.coeff(3), Some(&Rational::from(-1)));
+    }
+
+    #[test]
+    fn series_inversion_round_trips_through_composition() {
+        let max_degree = 6;
+        let mut series = vec![RatFun::zero(); max_degree + 1];
+        for (degree, coeff) in series.iter_mut().enumerate().skip(1) {
+            *coeff = RatFun::from(degree);
+        }
+        let inverse = invert_series_with_linear_term_one(&series, max_degree);
+        let composed = compose_plain_series(&series, &inverse, max_degree);
+        for (degree, coeff) in composed.iter().enumerate() {
+            let expected = if degree == 1 {
+                RatFun::one()
+            } else {
+                RatFun::zero()
+            };
+            assert_eq!(*coeff, expected, "composition defect at degree {degree}");
+        }
     }
 
     #[test]
