@@ -368,8 +368,12 @@ impl<'b> Div<&'b FactoredRatFun> for &FactoredRatFun {
     type Output = FactoredRatFun;
 
     fn div(self, rhs: &'b FactoredRatFun) -> Self::Output {
+        // Only the structural check is affordable here: `is_zero` falls back
+        // to a full denominator expansion for multi-term values, which would
+        // run on every division.  A multi-term rhs that cancels to zero is
+        // still caught below, where the expansion happens anyway.
         assert!(
-            !rhs.is_zero(),
+            !rhs.is_structurally_zero(),
             "division by zero factored rational function"
         );
         if rhs.terms.len() == 1 {
@@ -531,6 +535,17 @@ mod tests {
         assert!(expr.is_zero());
         assert_eq!(expr.to_ratfun(), RatFun::zero());
         assert_eq!((&mu / &mu).as_rational(), Some(Rational::one()));
+    }
+
+    #[test]
+    #[should_panic(expected = "division by zero")]
+    fn division_by_hidden_zero_panics() {
+        // Multi-term rhs whose terms cancel to zero: the cheap structural
+        // check passes, but the expansion in the multi-term division path
+        // must still refuse the zero denominator.
+        let mu = FactoredRatFun::variable("mu_0");
+        let hidden_zero = &(&mu / &mu) - &FactoredRatFun::one();
+        let _ = &FactoredRatFun::one() / &hidden_zero;
     }
 
     #[test]
