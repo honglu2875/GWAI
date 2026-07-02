@@ -51,6 +51,9 @@ Examples:
 --insert 'tau5(1)'
 ```
 
+A bare class is shorthand for its primary insertion: `--insert H^2` means
+`--insert 'tau0(H^2)'` (no shell quoting needed).
+
 Pass multiple insertions by repeating `--insert`.
 
 ## `psi`
@@ -85,6 +88,9 @@ cargo run --quiet -- compute --n <n> --g <genus> --d <degree> \
   --mode givental
 ```
 
+`--d` may be omitted: for `P^n` the dimension constraint determines the degree
+from the genus and insertions, and the CLI infers and reports it.
+
 Supported `--mode` values:
 
 - `givental`
@@ -97,6 +103,9 @@ cargo run --quiet -- compute --n 2 --g 0 --d 1 \
   --insert 'tau0(H^2)' \
   --insert 'tau0(H)' \
   --mode givental
+
+# same invariant, with shorthand insertions and inferred degree
+cargo run --quiet -- compute --n 2 --g 0 --insert H^2 --insert H^2 --insert H
 ```
 
 ## `twisted`
@@ -540,19 +549,27 @@ rows, local Calabi-Yau tables, and the legacy direct stable-map localization
 code. They are used by tests and diagnostics rather than as production
 computation shortcuts.
 
+## Performance Notes
+
+The graph engine picks a coefficient representation per computation: plain
+rationals when everything is constant (the non-equivariant production path),
+factored rational functions for symbolic equivariant contractions, and
+expanded `RatFun` only as a fallback.  Stable-graph tables are generated up to
+isomorphism with individualization-refinement canonicalization and cached on
+disk once generation is expensive.  Representative timings on `P^1` stationary
+descendants: genus 3 in well under a second, genus 4 in about a minute (a few
+seconds once the graph table is cached), genus-2 fully symbolic equivariant in
+under two seconds.
+
 ## TODO
 
-- Continue improving the factored rational-function engine for full symbolic
-  equivariant negative split-bundle graph contractions.  It is the default for
-  `twisted --equivariant`; non-equivariant computations use the ordinary
-  rational engine.  Remaining work: avoid dense canonical-leg product blow-up
-  in larger stable symbolic graph contractions.
 - Generalize the reconstruction interfaces beyond `P^n`, with twisted,
   equivariant, and eventually other semisimple CohFT targets sharing the same
   Givental graph evaluator.
-- Improve performance for the genus-4 local-curve frontier, especially
-  `O(-1) + O(-1) -> P^1`, where graph recursion and calibration caching are the
-  next bottlenecks.
-- Continue optimizing the main untwisted path for larger genus, degree, and
-  marking bounds. The likely targets are batched series evaluation, more
-  aggressive graph pruning, and reduced repeated `S/R` materialization.
+- Route the twisted and series/master equivariant paths through the same
+  factored kernel construction the ordinary equivariant path now uses.
+- Speed up high-genus stable-graph generation further: the remaining cost is
+  the raw connected edge-multiset enumeration, which calls for orderly
+  (canonical-extension) generation rather than enumerate-and-quotient.
+- Genericize the J-calibration solve itself over the coefficient ring so the
+  equivariant path never materializes expanded `RatFun` matrices at all.

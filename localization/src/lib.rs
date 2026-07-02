@@ -15,9 +15,10 @@
 //! gw-pn formula --n 2 --g 2 --markings 1 --twist -3 --basis raw --format tex
 //! ```
 //!
-//! The `factored` module is the staged replacement coefficient engine for
-//! symbolic equivariant work: it keeps denominator factors unexpanded and can be
-//! validated against the existing expanded `RatFun` engine.
+//! The `factored` module keeps denominator factors unexpanded and is the
+//! default coefficient engine for symbolic equivariant graph contraction; the
+//! expanded `RatFun` engine remains available as a fallback and validation
+//! target (`GWAI_DISABLE_FACTORED_GRAPH`).
 
 pub mod algebra;
 pub mod error;

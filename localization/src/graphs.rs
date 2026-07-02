@@ -43,8 +43,8 @@ pub struct StableGraph {
 }
 
 /// Complete isomorphism invariant of a stable graph: the lexicographically
-/// smallest `(genera, sorted edges, legs)` tuple over the vertex relabelings
-/// allowed by [`refined_vertex_classes`].
+/// smallest `(genera, sorted edges, legs)` tuple over the discrete leaf
+/// labelings of the individualization-refinement search.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct CanonicalGraphKey {
     genera: Vec<usize>,
