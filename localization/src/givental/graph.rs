@@ -96,7 +96,7 @@ pub(crate) struct GraphEvalProfile {
 impl GraphEvalProfile {
     fn new() -> Self {
         Self {
-            enabled: std::env::var_os("GW_PROFILE").is_some(),
+            enabled: crate::env_flag("GW_PROFILE"),
             started: Instant::now(),
             calibration_elapsed: Duration::ZERO,
             option_elapsed: Duration::ZERO,
@@ -659,7 +659,7 @@ where
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
-    let total = if insertions.is_empty() && !env_flag("GWAI_DISABLE_RATIONAL_GRAPH") {
+    let total = if insertions.is_empty() && !crate::env_flag("GWAI_DISABLE_RATIONAL_GRAPH") {
         evaluate_rational_no_insertion_graphs_if_possible(
             graphs.as_ref(),
             &kernel,
@@ -1836,17 +1836,6 @@ pub(crate) fn master_worker_count(work_items: usize) -> usize {
         .filter(|count| *count > 0)
         .unwrap_or_else(|| available.min(MASTER_DEFAULT_MAX_WORKERS));
     requested.min(work_items).max(1)
-}
-
-pub(crate) fn env_flag(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-        .unwrap_or(false)
 }
 
 pub(crate) fn contract_task_chunk(
@@ -3431,7 +3420,7 @@ where
     // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
     // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
     // the canonical idempotent basis used by the graph colors.
-    let profile_enabled = std::env::var_os("GW_PROFILE").is_some();
+    let profile_enabled = crate::env_flag("GW_PROFILE");
     insertions
         .iter()
         .enumerate()

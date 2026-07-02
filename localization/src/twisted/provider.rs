@@ -49,24 +49,13 @@ pub(crate) fn twisted_calibration_validation_from_env() -> TwistedCalibrationVal
     // Set either variable to 1/true/yes/on/full when debugging a calibration
     // change and wanting self-adjointness, diagonalization, and unitarity checks
     // to run before caching the graph kernel.
-    if env_flag_enabled("GWAI_VALIDATE_TWISTED_CALIBRATION")
-        || env_flag_enabled("GW_VALIDATE_CALIBRATION")
+    if crate::env_flag("GWAI_VALIDATE_TWISTED_CALIBRATION")
+        || crate::env_flag("GW_VALIDATE_CALIBRATION")
     {
         TwistedCalibrationValidation::Full
     } else {
         TwistedCalibrationValidation::Fast
     }
-}
-
-pub(crate) fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name)
-        .map(|value| {
-            matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on" | "full"
-            )
-        })
-        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -835,7 +824,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         r_order: usize,
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
-        let profile_enabled = std::env::var_os("GW_PROFILE").is_some();
+        let profile_enabled = crate::env_flag("GW_PROFILE");
         let started = std::time::Instant::now();
         let base_weights = self.factored_base_weights();
         let fiber_weights = self.factored_fiber_weights();

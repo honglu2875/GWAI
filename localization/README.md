@@ -506,6 +506,22 @@ Useful flags:
 If the series command produces warnings or skipped coefficients, the CLI writes
 them to a temporary file and prints the path on stderr.
 
+## Environment Variables
+
+Debug and tuning knobs, all off by default. Boolean flags are enabled by
+`1`/`true`/`yes`/`on`/`full` (case-insensitive); anything else — including
+`0` — leaves them off.
+
+- `GW_PROFILE`: print timing and counter diagnostics for calibration, option
+  construction, and graph contraction to stderr.
+- `GW_THREADS`: worker thread count for parallel graph evaluation (defaults to
+  available parallelism, capped at 8).
+- `GWAI_DISABLE_RATIONAL_GRAPH`: disable the plain-rational fast path for
+  no-insertion graph sums and force the symbolic evaluator.
+- `GWAI_VALIDATE_TWISTED_CALIBRATION` (alias: `GW_VALIDATE_CALIBRATION`): run
+  expensive self-adjointness, diagonalization, and unitarity checks on twisted
+  calibrations before caching the graph kernel.
+
 ## Current Scope
 
 The stable-graph/Givental engine is implemented for stable CohFT ranges. Some

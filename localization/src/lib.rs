@@ -316,6 +316,23 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
     })
 }
 
+/// Crate-wide boolean environment flag.
+///
+/// Enabled by `1`, `true`, `yes`, `on`, or `full` (case-insensitive); unset,
+/// empty, or any other value — including `0` — disables.  Every debug/tuning
+/// flag in the crate goes through this helper so that `FLAG=0` never means
+/// "on".
+pub(crate) fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on" | "full"
+            )
+        })
+        .unwrap_or(false)
+}
+
 pub(crate) fn insertion_basis(n: usize, max_descendant_power: usize) -> Vec<Insertion> {
     let mut basis = Vec::new();
     for descendant_power in 0..=max_descendant_power {
