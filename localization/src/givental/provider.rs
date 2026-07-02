@@ -3,6 +3,7 @@
 //! S-matrix, and H-multiplication construction.
 
 use super::*;
+use crate::factored::FactoredRatFun;
 
 /// Semisimple calibration data in a canonical idempotent frame.
 ///
@@ -1003,4 +1004,128 @@ pub(crate) fn h_power_relation_series_at_lambda_weights(
         rhs[0] = rhs[0].add(&QSeries::q(q_degree));
     }
     rhs
+}
+
+/// Equivariant projective-space provider over factored coefficients.
+///
+/// The J-calibration itself is cheap to build in expanded `RatFun` (small,
+/// low-degree entries), but constructing `R^{-1}` and the edge propagators
+/// from it — and then contracting graphs — multiplies those entries many
+/// times, which is exactly where expanded denominators blow up.  This wrapper
+/// converts the calibration once and lets everything downstream run over
+/// [`FactoredRatFun`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoredProjectiveSpaceProvider(pub ProjectiveSpaceProvider);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FactoredKernelCacheKey {
+    n: usize,
+    q_degree: usize,
+    r_order: usize,
+    graph_dimension: usize,
+}
+
+pub(crate) fn projective_space_factored_graph_kernel(
+    n: usize,
+    q_degree: usize,
+    r_order: usize,
+    graph_dimension: usize,
+) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
+    static CACHE: OnceLock<
+        Mutex<HashMap<FactoredKernelCacheKey, Arc<GiventalGraphKernel<FactoredRatFun>>>>,
+    > = OnceLock::new();
+    let key = FactoredKernelCacheKey {
+        n,
+        q_degree,
+        r_order,
+        graph_dimension,
+    };
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
+        return Ok(kernel);
+    }
+
+    let calibration = projective_space_j_calibration(n, q_degree, r_order)?;
+    let kernel = Arc::new(GiventalGraphKernel::from_calibration(
+        calibration_to_factored(&calibration),
+        graph_dimension,
+    )?);
+    cache.lock().unwrap().insert(key, kernel.clone());
+    Ok(kernel)
+}
+
+impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSpaceProvider {
+    type Insertion = Insertion;
+
+    fn coeff_colors(&self) -> usize {
+        self.0.colors()
+    }
+
+    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        insertion.descendant_power
+    }
+
+    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        self.0.insertion_degree(insertions)
+    }
+
+    fn coeff_virtual_dimension(
+        &self,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Option<isize> {
+        self.0.virtual_dimension(genus, degree, markings)
+    }
+
+    fn coeff_expected_degree_from_dimension(
+        &self,
+        genus: usize,
+        insertions: &[Self::Insertion],
+    ) -> Option<usize> {
+        self.0.expected_degree_from_dimension(genus, insertions)
+    }
+
+    fn coeff_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
+        series_s_matrix_to_factored(&self.0.descendant_s_matrix(q_degree, z_order)?)
+    }
+
+    fn coeff_graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
+        projective_space_factored_graph_kernel(self.0.n, q_degree, r_order, graph_dimension)
+    }
+
+    fn coeff_insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries<FactoredRatFun>>, GwError> {
+        Ok(self
+            .0
+            .insertion_vector(insertion, q_degree)?
+            .iter()
+            .map(qseries_to_factored)
+            .collect())
+    }
+
+    fn coeff_scalar_fallback_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        truncation: Option<&Truncation>,
+    ) -> Result<Option<FactoredRatFun>, GwError> {
+        Ok(self
+            .0
+            .scalar_fallback_value(genus, degree, insertions, truncation)?
+            .map(FactoredRatFun::from_ratfun))
+    }
 }

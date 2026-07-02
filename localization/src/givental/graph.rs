@@ -297,16 +297,20 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
         });
     }
 
-    let value = compute_semisimple_graph_value(
-        &provider,
-        req.genus,
-        req.degree,
-        &req.insertions,
-        req.truncation.as_ref(),
-    )?;
     if req.equivariant {
+        // Symbolic lambda parameters: build the kernel and contract over
+        // factored coefficients from the start, expanding only the final
+        // value.  Building R^{-1} and the edge propagators in expanded RatFun
+        // costs orders of magnitude more than the calibration itself.
+        let value = compute_semisimple_graph_value_with_coeff::<FactoredRatFun, _>(
+            &FactoredProjectiveSpaceProvider(provider),
+            req.genus,
+            req.degree,
+            &req.insertions,
+            req.truncation.as_ref(),
+        )?;
         return Ok(InvariantResult {
-            value,
+            value: value.to_ratfun(),
             engine: "givental-r-graph",
             notes: vec![
                 "computed by truncated J-calibrated R-matrix stable-graph expansion; result remains equivariant"
@@ -314,6 +318,14 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
             ],
         });
     }
+
+    let value = compute_semisimple_graph_value(
+        &provider,
+        req.genus,
+        req.degree,
+        &req.insertions,
+        req.truncation.as_ref(),
+    )?;
 
     if provider.specialized_nonequivariant() {
         return Ok(InvariantResult {
@@ -2213,25 +2225,47 @@ pub(crate) fn series_r_matrix_to_factored(
     }
 }
 
+pub(crate) fn calibration_to_factored(
+    calibration: &SemisimpleCalibration,
+) -> SemisimpleCalibration<FactoredRatFun> {
+    SemisimpleCalibration {
+        r_matrix: series_r_matrix_to_factored(&calibration.r_matrix),
+        metric: series_matrix_to_factored(&calibration.metric),
+        psi: series_matrix_to_factored(&calibration.psi),
+        psi_inverse: series_matrix_to_factored(&calibration.psi_inverse),
+        connection: series_matrix_to_factored(&calibration.connection),
+        delta: qseries_slice_to_factored(&calibration.delta),
+        inverse_delta: qseries_slice_to_factored(&calibration.inverse_delta),
+        relative_sqrt_delta: qseries_slice_to_factored(&calibration.relative_sqrt_delta),
+        relative_sqrt_delta_inverse: qseries_slice_to_factored(
+            &calibration.relative_sqrt_delta_inverse,
+        ),
+    }
+}
+
+pub(crate) fn series_s_matrix_to_factored(
+    matrix: &SeriesSMatrix,
+) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
+    SeriesSMatrix::from_coefficients(
+        matrix.size(),
+        matrix.q_degree(),
+        matrix.z_order(),
+        matrix
+            .coefficients()
+            .iter()
+            .map(series_matrix_to_factored)
+            .collect(),
+        matrix.calibration().clone(),
+    )
+}
+
 /// Factored-denominator twin of a symbolic graph kernel.
 pub(crate) fn kernel_to_factored(
     kernel: &GiventalGraphKernel,
 ) -> GiventalGraphKernel<FactoredRatFun> {
     let calibration = &kernel.calibration;
     GiventalGraphKernel {
-        calibration: SemisimpleCalibration {
-            r_matrix: series_r_matrix_to_factored(&calibration.r_matrix),
-            metric: series_matrix_to_factored(&calibration.metric),
-            psi: series_matrix_to_factored(&calibration.psi),
-            psi_inverse: series_matrix_to_factored(&calibration.psi_inverse),
-            connection: series_matrix_to_factored(&calibration.connection),
-            delta: qseries_slice_to_factored(&calibration.delta),
-            inverse_delta: qseries_slice_to_factored(&calibration.inverse_delta),
-            relative_sqrt_delta: qseries_slice_to_factored(&calibration.relative_sqrt_delta),
-            relative_sqrt_delta_inverse: qseries_slice_to_factored(
-                &calibration.relative_sqrt_delta_inverse,
-            ),
-        },
+        calibration: calibration_to_factored(calibration),
         inverse_r: kernel
             .inverse_r
             .iter()

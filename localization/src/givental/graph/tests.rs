@@ -432,6 +432,25 @@ fn rational_graph_path_matches_dense_evaluator_with_insertions() {
 }
 
 #[test]
+fn equivariant_compute_limits_to_nonequivariant_value() {
+    // The equivariant path now runs over factored coefficients end to end;
+    // its expanded result must still specialize to the known number.
+    let req = InvariantRequest {
+        equivariant: true,
+        ..InvariantRequest::new(1, 1, 1, vec![tau(2, CohomologyClass::h_power(1, 1))])
+    };
+    let result = compute_by_givental_graphs(&req).unwrap();
+    assert_eq!(result.engine, "givental-r-graph");
+    assert_eq!(
+        result
+            .value
+            .nonequivariant_limit_line(1, &[Rational::from(2), Rational::from(3)])
+            .unwrap(),
+        Rational::new(1, 24)
+    );
+}
+
+#[test]
 fn factored_graph_path_matches_symbolic_evaluator() {
     // Symbolic equivariant kernel: coefficients are genuine rational
     // functions in lambda, so the factored tier engages.  Compare against the
