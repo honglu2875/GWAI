@@ -215,8 +215,7 @@ impl WittenKontsevich {
 
         for j in 0..rest.len() {
             let dj = rest[j];
-            let coeff =
-                double_factorial_odd(2 * (d0 + dj) - 1) / double_factorial_odd(2 * dj - 1);
+            let coeff = double_factorial_odd(2 * (d0 + dj) - 1) / double_factorial_odd(2 * dj - 1);
             let mut next = rest.clone();
             next.remove(j);
             next.push(d0 + dj - 1);
@@ -314,10 +313,7 @@ mod tests {
         for k in 1..=10i128 {
             denominator = denominator * Rational::from(24) * Rational::from(k);
         }
-        assert_eq!(
-            wk.psi_integral(10, &[28]),
-            Rational::one() / denominator
-        );
+        assert_eq!(wk.psi_integral(10, &[28]), Rational::one() / denominator);
     }
 
     #[test]
