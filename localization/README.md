@@ -549,6 +549,36 @@ rows, local Calabi-Yau tables, and the legacy direct stable-map localization
 code. They are used by tests and diagnostics rather than as production
 computation shortcuts.
 
+## Architecture: Targets, Recipes, and the CohFT Engine
+
+The computation core is a semisimple-CohFT evaluator: it consumes a
+calibration (canonical frame data plus `R`-matrix) and a descendant
+`S`-matrix, and contracts stable graphs without inspecting target geometry.
+Three layers sit above it:
+
+- **`givental::target::GwTarget`** describes a space: dimension, Fano-index
+  datum, classical eigenvalue seeds at the torus fixed points, the
+  quantum/classical divisor multiplication, and the insertion dictionary.
+  `TargetProvider<T>` turns any implementation into an engine-facing
+  provider.  `ProjectiveTarget` is the reference implementation and is held
+  equal to the production `P^n` path by tests.
+- **`givental::recipe`** holds the target-agnostic constructions: Newton
+  root series and Lagrange frames from a quantum ring, the Dubrovin
+  connection and `R`-flatness recursion with Bernoulli asymptotics derived
+  from fixed-point weight differences, and the descendant `S`-matrix from
+  the quantum differential equation.  The mirror-map/Birkhoff route used by
+  twisted theories is an alternative recipe for the same contract and still
+  lives in the `twisted` module.
+- Providers may also supply calibrations directly
+  (`GiventalGraphKernel::from_parts`) for experiments that bypass both
+  recipes.
+
+Current `GwTarget` scope: one Novikov variable and divisor-generated rings
+with the divisor-power flat basis.  Higher Picard rank (e.g. `P^n x P^m`)
+requires a multi-parameter Novikov series layer first; the twisted theories
+are equivalent in spirit to a second family of targets and will migrate onto
+the same interface once the I-function recipe is extracted.
+
 ## Performance Notes
 
 The graph engine picks a coefficient representation per computation: plain
@@ -563,9 +593,11 @@ under two seconds.
 
 ## TODO
 
-- Generalize the reconstruction interfaces beyond `P^n`, with twisted,
-  equivariant, and eventually other semisimple CohFT targets sharing the same
-  Givental graph evaluator.
+- Multi-parameter Novikov series layer, unlocking Picard-rank >= 2 targets
+  (`P^n x P^m` first, cross-validated against the product formula).
+- Extract the I-function/mirror-map/Birkhoff recipe from the twisted module
+  so I-function-defined targets (toric complete intersections) register the
+  same way, and migrate the twisted theories onto the target interface.
 - Route the twisted and series/master equivariant paths through the same
   factored kernel construction the ordinary equivariant path now uses.
 - Speed up high-genus stable-graph generation further: the remaining cost is
