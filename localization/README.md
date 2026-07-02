@@ -518,6 +518,12 @@ Debug and tuning knobs, all off by default. Boolean flags are enabled by
   available parallelism, capped at 8).
 - `GWAI_DISABLE_RATIONAL_GRAPH`: disable the plain-rational fast path for
   graph sums with constant coefficients and force the symbolic evaluator.
+- `GWAI_DISABLE_FACTORED_GRAPH`: disable the factored-denominator contraction
+  tier for symbolic (equivariant) graph sums.
+- `GWAI_DISABLE_GRAPH_CACHE`: do not read or write the on-disk stable-graph
+  tables.
+- `GWAI_GRAPH_CACHE_DIR`: directory for the on-disk stable-graph tables
+  (default `$XDG_CACHE_HOME/gw-pn` or `~/.cache/gw-pn`).
 - `GWAI_VALIDATE_TWISTED_CALIBRATION` (alias: `GW_VALIDATE_CALIBRATION`): run
   expensive self-adjointness, diagonalization, and unitarity checks on twisted
   calibrations before caching the graph kernel.

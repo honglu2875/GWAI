@@ -414,10 +414,17 @@ pub struct StableGraphBounds {
 
 pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
     // The universal Givental sum only needs stable graphs for fixed (g,n), so
-    // cache them independently of target, degree, and insertions.
+    // cache them independently of target, degree, and insertions — in memory
+    // for this process, and on disk for expensive tables so high-genus runs
+    // pay generation once per machine rather than once per invocation.
     static CACHE: OnceLock<Mutex<BTreeMap<(usize, usize), Vec<StableGraph>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
     if let Some(graphs) = cache.lock().unwrap().get(&(genus, legs)).cloned() {
+        return graphs;
+    }
+
+    if let Some(graphs) = load_stable_graphs_from_disk(genus, legs) {
+        cache.lock().unwrap().insert((genus, legs), graphs.clone());
         return graphs;
     }
 
@@ -427,6 +434,7 @@ pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
     } else {
         1
     };
+    let started = std::time::Instant::now();
     let graphs = stable_graphs_with_bounds(
         genus,
         legs,
@@ -434,8 +442,165 @@ pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
             max_vertices: max_vertices.max(1),
         },
     );
+    if started.elapsed() >= DISK_CACHE_MIN_GENERATION_TIME {
+        store_stable_graphs_to_disk(genus, legs, &graphs);
+    }
     cache.lock().unwrap().insert((genus, legs), graphs.clone());
     graphs
+}
+
+/// Only tables that took real work to generate are worth a disk file.
+const DISK_CACHE_MIN_GENERATION_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Bump when the generator, canonical representatives, or encoding change.
+const DISK_CACHE_FORMAT: &str = "v1";
+
+fn stable_graph_cache_path(genus: usize, legs: usize) -> Option<std::path::PathBuf> {
+    if crate::env_flag("GWAI_DISABLE_GRAPH_CACHE") {
+        return None;
+    }
+    let base = std::env::var_os("GWAI_GRAPH_CACHE_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("XDG_CACHE_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|home| std::path::PathBuf::from(home).join(".cache"))
+                })
+                .map(|cache| cache.join("gw-pn"))
+        })?;
+    Some(base.join(format!(
+        "stable-graphs-{DISK_CACHE_FORMAT}-g{genus}-n{legs}.txt"
+    )))
+}
+
+fn load_stable_graphs_from_disk(genus: usize, legs: usize) -> Option<Vec<StableGraph>> {
+    let path = stable_graph_cache_path(genus, legs)?;
+    let contents = std::fs::read_to_string(path).ok()?;
+    let graphs = decode_stable_graphs(&contents, genus, legs)?;
+    // Cheap structural audit so a corrupt or stale file regenerates instead
+    // of silently poisoning every computation built on these tables.
+    graphs
+        .iter()
+        .all(|graph| {
+            graph.legs.len() == legs
+                && graph.genus() == genus
+                && graph.is_connected()
+                && graph.is_stable()
+        })
+        .then_some(graphs)
+}
+
+fn store_stable_graphs_to_disk(genus: usize, legs: usize, graphs: &[StableGraph]) {
+    let Some(path) = stable_graph_cache_path(genus, legs) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let temporary = path.with_extension("txt.tmp");
+    if std::fs::write(&temporary, encode_stable_graphs(genus, legs, graphs)).is_ok() {
+        let _ = std::fs::rename(&temporary, &path);
+    }
+}
+
+fn encode_stable_graphs(genus: usize, legs: usize, graphs: &[StableGraph]) -> String {
+    let mut out = format!(
+        "gw-pn stable graphs {DISK_CACHE_FORMAT}\ngenus {genus} legs {legs} count {}\n",
+        graphs.len()
+    );
+    for graph in graphs {
+        let genera = graph
+            .vertices
+            .iter()
+            .map(|vertex| vertex.genus.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let edges = graph
+            .edges
+            .iter()
+            .map(|edge| format!("{}-{}", edge.a, edge.b))
+            .collect::<Vec<_>>()
+            .join(",");
+        let leg_list = graph
+            .legs
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!("{genera}|{edges}|{leg_list}\n"));
+    }
+    out
+}
+
+fn decode_stable_graphs(contents: &str, genus: usize, legs: usize) -> Option<Vec<StableGraph>> {
+    let mut lines = contents.lines();
+    if lines.next()? != format!("gw-pn stable graphs {DISK_CACHE_FORMAT}") {
+        return None;
+    }
+    let header = lines.next()?;
+    let mut header_parts = header.split_whitespace();
+    if header_parts.next()? != "genus" || header_parts.next()?.parse::<usize>().ok()? != genus {
+        return None;
+    }
+    if header_parts.next()? != "legs" || header_parts.next()?.parse::<usize>().ok()? != legs {
+        return None;
+    }
+    if header_parts.next()? != "count" {
+        return None;
+    }
+    let count = header_parts.next()?.parse::<usize>().ok()?;
+
+    let mut graphs = Vec::with_capacity(count);
+    for line in lines {
+        let mut sections = line.split('|');
+        let genera = sections.next()?;
+        let edges = sections.next()?;
+        let leg_list = sections.next()?;
+        if sections.next().is_some() {
+            return None;
+        }
+        let vertices = split_csv(genera)?
+            .into_iter()
+            .map(|genus| StableVertex { genus })
+            .collect::<Vec<_>>();
+        let vertex_count = vertices.len();
+        let mut parsed_edges = Vec::new();
+        if !edges.is_empty() {
+            for pair in edges.split(',') {
+                let (a, b) = pair.split_once('-')?;
+                let edge = StableEdge::new(a.parse().ok()?, b.parse().ok()?);
+                if edge.b >= vertex_count {
+                    return None;
+                }
+                parsed_edges.push(edge);
+            }
+        }
+        let parsed_legs = split_csv(leg_list)?;
+        if parsed_legs.iter().any(|&vertex| vertex >= vertex_count) {
+            return None;
+        }
+        graphs.push(StableGraph {
+            vertices,
+            edges: parsed_edges,
+            legs: parsed_legs,
+        });
+    }
+    (graphs.len() == count).then_some(graphs)
+}
+
+fn split_csv(section: &str) -> Option<Vec<usize>> {
+    if section.is_empty() {
+        return Some(Vec::new());
+    }
+    section
+        .split(',')
+        .map(|value| value.parse::<usize>().ok())
+        .collect()
 }
 
 pub fn stable_graphs_with_bounds(
@@ -966,6 +1131,26 @@ mod tests {
                         "isomorphism classification mismatch:\n{left:?}\n{right:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn disk_cache_encoding_round_trips() {
+        for (genus, legs) in [(1usize, 2usize), (2, 1), (0, 4)] {
+            let graphs = stable_graphs(genus, legs);
+            let encoded = encode_stable_graphs(genus, legs, &graphs);
+            let decoded =
+                decode_stable_graphs(&encoded, genus, legs).expect("encoded table must decode");
+            assert_eq!(decoded, graphs);
+            // Header mismatches and truncation must be rejected, not
+            // silently accepted.
+            assert!(decode_stable_graphs(&encoded, genus + 1, legs).is_none());
+            assert!(decode_stable_graphs(&encoded, genus, legs + 1).is_none());
+            let mut truncated = encoded.lines().collect::<Vec<_>>();
+            if truncated.len() > 2 {
+                truncated.pop();
+                assert!(decode_stable_graphs(&truncated.join("\n"), genus, legs).is_none());
             }
         }
     }
