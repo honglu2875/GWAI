@@ -24,7 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const EXAMPLES: &str = "Examples:
   gw-pn tests
   gw-pn psi --g 2 --powers 4
-  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)'
+  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)'\n  gw-pn compute --n 2 --g 0 --insert H^2 --insert H^2 --insert H
   gw-pn twisted --n 2 --twist -1 --g 2 --d 2 --insert 'tau4(H)'
   gw-pn twisted --n 2 --twist -3 --g 2 --d 3
   gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant
@@ -80,16 +80,22 @@ struct PsiArgs {
 }
 
 #[derive(Debug, Args)]
+#[command(after_help = "Examples:
+  gw-pn compute --n 2 --g 0 --d 1 --insert 'tau0(H^2)' --insert 'tau0(H^2)' --insert 'tau0(H)'\n  gw-pn compute --n 2 --g 0 --insert H^2 --insert H^2 --insert H
+  gw-pn compute --n 2 --g 0 --insert H^2 --insert H^2 --insert H     (degree inferred, tau0 implied)
+  gw-pn compute --n 1 --g 2 --insert 'tau4(H)'                       (degree inferred: 1)")]
 struct ComputeArgs {
     #[arg(long)]
     n: usize,
     #[arg(long, visible_alias = "genus")]
     g: usize,
+    /// Curve degree; omit to infer it from the dimension constraint
     #[arg(long, visible_alias = "degree")]
-    d: usize,
+    d: Option<usize>,
     #[arg(long)]
     mode: Option<String>,
-    /// Insertion tauK(CLASS); repeat for multiple markings
+    /// Insertion tauK(CLASS) with CLASS one of 1, H, H^p; a bare CLASS means
+    /// tau0(CLASS); repeat for multiple markings
     #[arg(long)]
     insert: Vec<String>,
     #[arg(long)]
@@ -916,10 +922,25 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
 fn run_compute(args: ComputeArgs) -> Result<(), GwError> {
     let n = args.n;
     let insertions = parse_insertions(n, &args.insert)?;
+    let degree = match args.d {
+        Some(degree) => degree,
+        None => {
+            let probe = InvariantRequest::new(n, args.g, 0, insertions.clone());
+            let degree = probe.expected_degree_from_dimension().ok_or_else(|| {
+                GwError::ParseError(
+                    "cannot infer --d: no degree makes the virtual dimension match these \
+                     insertions; pass --d explicitly"
+                        .to_string(),
+                )
+            })?;
+            println!("note: degree inferred from the dimension constraint: --d {degree}");
+            degree
+        }
+    };
     let req = InvariantRequest {
         n,
         genus: args.g,
-        degree: args.d,
+        degree,
         insertions,
         equivariant: args.equivariant,
         mode: parse_compute_mode(args.mode.as_deref())?,
@@ -1042,23 +1063,31 @@ fn parse_insertions(n: usize, insert: &[String]) -> Result<Vec<gw_pn::Insertion>
 }
 
 fn parse_insertion(n: usize, raw: &str) -> Result<gw_pn::Insertion, GwError> {
+    let invalid = || {
+        GwError::ParseError(format!(
+            "invalid insertion `{raw}`: expected `tauK(CLASS)` or a bare `CLASS` (meaning \
+             tau0), with CLASS one of `1`, `H`, `H^p` — for example `tau2(H^2)` or `H`"
+        ))
+    };
     let compact = raw
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>();
-    let open = compact
-        .find('(')
-        .ok_or_else(|| GwError::ParseError(format!("invalid insertion `{raw}`")))?;
-    let close = compact
-        .strip_suffix(')')
-        .ok_or_else(|| GwError::ParseError(format!("invalid insertion `{raw}`")))?;
+    let Some(open) = compact.find('(') else {
+        if compact.starts_with("tau") {
+            return Err(invalid());
+        }
+        // Bare class shorthand: `H^2` means `tau0(H^2)`.
+        return Ok(tau(0, parse_class(n, &compact)?));
+    };
+    let close = compact.strip_suffix(')').ok_or_else(invalid)?;
     let tau_part = &close[..open];
     let class_part = &close[open + 1..];
     let descendant_power = tau_part
         .strip_prefix("tau")
-        .ok_or_else(|| GwError::ParseError(format!("invalid insertion `{raw}`")))?
+        .ok_or_else(invalid)?
         .parse::<usize>()
-        .map_err(|_| GwError::ParseError(format!("invalid insertion `{raw}`")))?;
+        .map_err(|_| invalid())?;
     let class = parse_class(n, class_part)?;
     Ok(tau(descendant_power, class))
 }
@@ -1116,11 +1145,16 @@ fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
         "1" => Ok(CohomologyClass::one(n)),
         "H" => Ok(CohomologyClass::h_power(n, 1)),
         _ => {
+            let invalid = || {
+                GwError::ParseError(format!(
+                    "invalid class `{raw}`: expected `1`, `H`, or `H^p` with 0 <= p <= n"
+                ))
+            };
             let power = raw
                 .strip_prefix("H^")
-                .ok_or_else(|| GwError::ParseError(format!("invalid class `{raw}`")))?
+                .ok_or_else(invalid)?
                 .parse::<usize>()
-                .map_err(|_| GwError::ParseError(format!("invalid class `{raw}`")))?;
+                .map_err(|_| invalid())?;
             Ok(CohomologyClass::h_power(n, power))
         }
     }
@@ -1248,10 +1282,39 @@ mod tests {
         .unwrap();
         match cli.command {
             Commands::Compute(args) => {
-                assert_eq!((args.n, args.g, args.d), (2, 0, 1));
+                assert_eq!((args.n, args.g, args.d), (2, 0, Some(1)));
             }
             _ => panic!("expected compute subcommand"),
         }
+    }
+
+    #[test]
+    fn cli_compute_degree_is_optional() {
+        let cli = Cli::try_parse_from(["gw-pn", "compute", "--n", "2", "--g", "0"]).unwrap();
+        match cli.command {
+            Commands::Compute(args) => assert_eq!(args.d, None),
+            _ => panic!("expected compute subcommand"),
+        }
+    }
+
+    #[test]
+    fn insertion_shorthand_means_tau_zero() {
+        assert_eq!(
+            parse_insertion(2, "H^2").unwrap(),
+            tau(0, CohomologyClass::h_power(2, 2))
+        );
+        assert_eq!(
+            parse_insertion(2, "1").unwrap(),
+            tau(0, CohomologyClass::one(2))
+        );
+        assert_eq!(
+            parse_insertion(2, "tau3(H)").unwrap(),
+            tau(3, CohomologyClass::h_power(2, 1))
+        );
+        // A malformed tau insertion must report the insertion format, not
+        // fall through to the bare-class parser.
+        let err = parse_insertion(2, "tau3[H]").unwrap_err().to_string();
+        assert!(err.contains("tauK(CLASS)"), "unexpected error: {err}");
     }
 
     #[test]
