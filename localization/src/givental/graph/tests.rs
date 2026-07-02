@@ -344,7 +344,7 @@ fn semisimple_graph_coefficients_match_single_value_path() {
 }
 
 #[test]
-fn rational_no_insertion_graph_sidecar_matches_dense_evaluator() {
+fn rational_graph_path_matches_dense_evaluator_without_insertions() {
     let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
     let genus = 2;
     let q_degree = 1;
@@ -364,8 +364,9 @@ fn rational_no_insertion_graph_sidecar_matches_dense_evaluator() {
         &mut dense_profile,
     );
     let mut rational_profile = GraphEvalProfile::new();
-    let rational = evaluate_rational_no_insertion_graphs_if_possible(
+    let rational = evaluate_rational_graphs_if_possible(
         graphs.as_ref(),
+        &[],
         &kernel,
         q_degree,
         graph_dimension,
@@ -374,6 +375,135 @@ fn rational_no_insertion_graph_sidecar_matches_dense_evaluator() {
     .expect("nonequivariant P1 graph kernel should be rational");
 
     assert_eq!(rational, dense);
+}
+
+#[test]
+fn rational_graph_path_matches_dense_evaluator_with_insertions() {
+    let provider = ProjectiveSpaceProvider::lambda_line_nonequivariant(1);
+    let genus = 2;
+    let markings = 1;
+    let q_degree = 1;
+    let graph_dimension = 3 * genus + markings - 3;
+    let kernel = provider
+        .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
+        .unwrap();
+    let graphs = prepared_stable_graphs(genus, markings, provider.colors());
+
+    let insertions = vec![tau(4, CohomologyClass::h_power(1, 1))];
+    let descendant_s = provider.descendant_s_matrix(q_degree, 4).unwrap();
+    let insertion_terms = ancestor_insertion_terms_from_provider(
+        &provider,
+        &insertions,
+        &descendant_s,
+        &kernel.calibration.psi_inverse,
+        q_degree,
+        graph_dimension,
+    )
+    .unwrap();
+    let leg_options = leg_options_by_marking_color(
+        &insertion_terms,
+        &kernel.inverse_r,
+        q_degree,
+        graph_dimension,
+        provider.colors(),
+    );
+
+    let mut dense_profile = GraphEvalProfile::new();
+    let dense = evaluate_scalar_graphs_parallel(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut dense_profile,
+    );
+    let mut rational_profile = GraphEvalProfile::new();
+    let rational = evaluate_rational_graphs_if_possible(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut rational_profile,
+    )
+    .expect("nonequivariant P1 leg options should be rational");
+
+    assert_eq!(rational, dense);
+}
+
+#[test]
+fn factored_graph_path_matches_symbolic_evaluator() {
+    // Symbolic equivariant kernel: coefficients are genuine rational
+    // functions in lambda, so the factored tier engages.  Compare against the
+    // plain symbolic evaluator by exact evaluation at generic weights, since
+    // the two paths may represent the same value differently.
+    let provider = ProjectiveSpaceProvider::symbolic_equivariant(1);
+    let genus = 1;
+    let markings = 1;
+    let q_degree = 1;
+    let graph_dimension = 3 * genus + markings - 3;
+    let kernel = provider
+        .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
+        .unwrap();
+    let graphs = prepared_stable_graphs(genus, markings, provider.colors());
+
+    let insertions = vec![tau(2, CohomologyClass::h_power(1, 1))];
+    let descendant_s = provider.descendant_s_matrix(q_degree, 2).unwrap();
+    let insertion_terms = ancestor_insertion_terms_from_provider(
+        &provider,
+        &insertions,
+        &descendant_s,
+        &kernel.calibration.psi_inverse,
+        q_degree,
+        graph_dimension,
+    )
+    .unwrap();
+    let leg_options = leg_options_by_marking_color(
+        &insertion_terms,
+        &kernel.inverse_r,
+        q_degree,
+        graph_dimension,
+        provider.colors(),
+    );
+
+    let mut dense_profile = GraphEvalProfile::new();
+    let dense = evaluate_scalar_graphs_parallel(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut dense_profile,
+    );
+    let mut factored_profile = GraphEvalProfile::new();
+    let factored = evaluate_factored_graphs(
+        graphs.as_ref(),
+        &leg_options,
+        &kernel,
+        q_degree,
+        graph_dimension,
+        &mut factored_profile,
+    );
+
+    let weights = [
+        crate::algebra::Rational::from(2),
+        crate::algebra::Rational::from(5),
+    ];
+    for degree in 0..=q_degree {
+        assert_eq!(
+            factored
+                .coeff(degree)
+                .unwrap()
+                .evaluate_lambda_weights(1, &weights)
+                .unwrap(),
+            dense
+                .coeff(degree)
+                .unwrap()
+                .evaluate_lambda_weights(1, &weights)
+                .unwrap(),
+            "factored/symbolic mismatch at q^{degree}"
+        );
+    }
 }
 
 #[test]

@@ -517,7 +517,7 @@ Debug and tuning knobs, all off by default. Boolean flags are enabled by
 - `GW_THREADS`: worker thread count for parallel graph evaluation (defaults to
   available parallelism, capped at 8).
 - `GWAI_DISABLE_RATIONAL_GRAPH`: disable the plain-rational fast path for
-  no-insertion graph sums and force the symbolic evaluator.
+  graph sums with constant coefficients and force the symbolic evaluator.
 - `GWAI_VALIDATE_TWISTED_CALIBRATION` (alias: `GW_VALIDATE_CALIBRATION`): run
   expensive self-adjointness, diagonalization, and unitarity checks on twisted
   calibrations before caching the graph kernel.
