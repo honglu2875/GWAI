@@ -141,68 +141,89 @@ impl StableGraph {
         format!("g:{genera}|e:{edges}|l:{legs}")
     }
 
-    /// Canonical form over class-respecting relabelings.
-    ///
-    /// Only permutations preserving the refined vertex classes can realize an
-    /// isomorphism, so restricting the minimization to them yields the same
-    /// equivalence classes as a full `V!` sweep at a fraction of the cost.
+    /// Canonical form by individualization-refinement.
     pub(crate) fn canonical_key(&self) -> CanonicalGraphKey {
-        let vertex_count = self.vertices.len();
-        if vertex_count == 0 {
-            return CanonicalGraphKey::default();
-        }
-        let classes = refined_vertex_classes(self);
-        let mut targets = Vec::with_capacity(classes.len());
-        let mut next_position = 0usize;
-        for class in &classes {
-            targets.push((next_position..next_position + class.len()).collect::<Vec<_>>());
-            next_position += class.len();
-        }
-
-        let mut best: Option<CanonicalGraphKey> = None;
-        for_each_class_assignment(&classes, &targets, vertex_count, &mut |permutation| {
-            let key = self.key_with_permutation(permutation);
-            if best.as_ref().is_none_or(|current| key < *current) {
-                best = Some(key);
-            }
-        });
-        best.expect("at least one class-respecting permutation exists")
+        self.canonical_data().key
     }
 
     pub fn automorphism_order(&self) -> usize {
-        let vertex_count = self.vertices.len();
-        if vertex_count == 0 {
-            return 1;
-        }
-        let classes = refined_vertex_classes(self);
-        // Automorphisms map each vertex to a same-class vertex, so each class
-        // permutes over its own original index positions.
-        let targets = classes.clone();
-        let base = self.key_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
-        let mut total = 0usize;
-        for_each_class_assignment(&classes, &targets, vertex_count, &mut |permutation| {
-            if self.key_with_permutation(permutation) == base {
-                total += edge_bijection_count_after_permutation(self, permutation);
-            }
-        });
-        total
+        self.canonical_data()
+            .automorphisms
+            .iter()
+            .map(|permutation| edge_bijection_count_after_permutation(self, permutation))
+            .sum()
     }
 
     pub fn vertex_automorphism_permutations(&self) -> Vec<Vec<usize>> {
+        self.canonical_data().automorphisms
+    }
+
+    /// Canonical key and the complete vertex-automorphism list, both from one
+    /// individualization-refinement search.
+    ///
+    /// Weisfeiler-Leman refinement alone stalls on regular structures (every
+    /// vertex identical), where enumerating all class-respecting relabelings
+    /// costs a product of class factorials.  Instead, whenever a class of size
+    /// two or more remains, branch by distinguishing each of its members in
+    /// turn and re-refining; distinguishing one vertex usually cascades, so
+    /// the leaf count tracks the automorphism count rather than the factorial.
+    ///
+    /// The canonical key is the minimum over the leaf labelings.  Because the
+    /// branching cell and refinement depend only on isomorphism-invariant
+    /// data, the leaf key multiset — hence the minimum — is an isomorphism
+    /// invariant.  The automorphism group acts freely and transitively on the
+    /// minimal-key leaves, so pairing one fixed minimal leaf with every
+    /// minimal leaf yields each vertex automorphism exactly once.
+    fn canonical_data(&self) -> GraphCanonicalData {
         let vertex_count = self.vertices.len();
         if vertex_count == 0 {
-            return vec![Vec::new()];
+            return GraphCanonicalData {
+                key: CanonicalGraphKey::default(),
+                automorphisms: vec![Vec::new()],
+            };
         }
-        let classes = refined_vertex_classes(self);
-        let targets = classes.clone();
-        let base = self.key_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
-        let mut out = Vec::new();
-        for_each_class_assignment(&classes, &targets, vertex_count, &mut |permutation| {
-            if self.key_with_permutation(permutation) == base {
-                out.push(permutation.to_vec());
+
+        let leaves = RefinementSearch::new(self).leaves();
+        let mut best: Option<CanonicalGraphKey> = None;
+        let mut minimal_leaves = Vec::new();
+        for leaf in leaves {
+            let key = self.key_with_permutation(&leaf);
+            match best.as_ref().map(|current| key.cmp(current)) {
+                None | Some(Ordering::Less) => {
+                    best = Some(key);
+                    minimal_leaves.clear();
+                    minimal_leaves.push(leaf);
+                }
+                Some(Ordering::Equal) => minimal_leaves.push(leaf),
+                Some(Ordering::Greater) => {}
             }
+        }
+
+        let reference = minimal_leaves
+            .first()
+            .cloned()
+            .expect("individualization-refinement produces at least one leaf");
+        let automorphisms = minimal_leaves
+            .into_iter()
+            .map(|leaf| {
+                let mut automorphism = vec![0usize; vertex_count];
+                for (reference_old, &leaf_old) in reference.iter().zip(leaf.iter()) {
+                    automorphism[*reference_old] = leaf_old;
+                }
+                automorphism
+            })
+            .collect::<Vec<_>>();
+        debug_assert!({
+            let identity_key = self.key_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
+            automorphisms
+                .iter()
+                .all(|automorphism| self.key_with_permutation(automorphism) == identity_key)
         });
-        out
+
+        GraphCanonicalData {
+            key: best.expect("at least one leaf"),
+            automorphisms,
+        }
     }
 
     fn key_with_permutation(&self, permutation: &[usize]) -> CanonicalGraphKey {
@@ -239,72 +260,137 @@ impl StableGraph {
     }
 }
 
-/// Partition of the vertices into isomorphism-invariant classes.
-///
-/// Starts from the local invariant `(genus, loop count, marking labels,
-/// non-loop multiplicity multiset)` and refines by neighbor classes until
-/// stable (Weisfeiler-Leman color refinement).  Class ids — and therefore the
-/// order of the returned classes — depend only on invariant data, never on
-/// vertex labels, so isomorphic graphs produce corresponding partitions.
-fn refined_vertex_classes(graph: &StableGraph) -> Vec<Vec<usize>> {
-    let vertex_count = graph.vertices.len();
-    if vertex_count == 0 {
-        return Vec::new();
-    }
+struct GraphCanonicalData {
+    key: CanonicalGraphKey,
+    /// Complete vertex-automorphism list, encoded like the permutations of
+    /// `key_with_permutation`: relabeling by each entry reproduces the
+    /// identity-labelled graph.
+    automorphisms: Vec<Vec<usize>>,
+}
 
-    let mut adjacency = vec![BTreeMap::<usize, usize>::new(); vertex_count];
-    let mut loops = vec![0usize; vertex_count];
-    for edge in &graph.edges {
-        if edge.is_loop() {
-            loops[edge.a] += 1;
-        } else {
-            *adjacency[edge.a].entry(edge.b).or_default() += 1;
-            *adjacency[edge.b].entry(edge.a).or_default() += 1;
+/// Individualization-refinement search over vertex colorings.
+///
+/// Colors start from the local invariant `(genus, loop count, marking labels,
+/// non-loop multiplicity multiset)` and are refined by neighbor colors until
+/// stable (Weisfeiler-Leman).  When refinement stalls with a class of two or
+/// more vertices, the search branches: each member of the first such class is
+/// individualized in turn and refinement restarts.  Every branching choice
+/// (the class picked, the refinement itself) depends only on
+/// isomorphism-invariant data, so the discrete leaf colorings of isomorphic
+/// graphs correspond under any isomorphism.
+struct RefinementSearch<'g> {
+    graph: &'g StableGraph,
+    /// `adjacency[v]`: sorted `(neighbor, multiplicity)` pairs over non-loop
+    /// edges; loops and legs are folded into the initial colors.
+    adjacency: Vec<Vec<(usize, usize)>>,
+}
+
+impl<'g> RefinementSearch<'g> {
+    fn new(graph: &'g StableGraph) -> Self {
+        let vertex_count = graph.vertices.len();
+        let mut adjacency_maps = vec![BTreeMap::<usize, usize>::new(); vertex_count];
+        for edge in &graph.edges {
+            if !edge.is_loop() {
+                *adjacency_maps[edge.a].entry(edge.b).or_default() += 1;
+                *adjacency_maps[edge.b].entry(edge.a).or_default() += 1;
+            }
+        }
+        Self {
+            graph,
+            adjacency: adjacency_maps
+                .into_iter()
+                .map(|map| map.into_iter().collect())
+                .collect(),
         }
     }
-    let mut leg_labels = vec![Vec::<usize>::new(); vertex_count];
-    for (marking, &vertex) in graph.legs.iter().enumerate() {
-        leg_labels[vertex].push(marking);
-    }
 
-    let initial = (0..vertex_count)
-        .map(|vertex| {
-            let mut multiplicities = adjacency[vertex].values().copied().collect::<Vec<_>>();
-            multiplicities.sort_unstable();
-            (
-                graph.vertices[vertex].genus,
-                loops[vertex],
-                leg_labels[vertex].clone(),
-                multiplicities,
-            )
-        })
-        .collect::<Vec<_>>();
-    let mut colors = colors_from_signatures(&initial);
-
-    loop {
+    fn initial_colors(&self) -> Vec<usize> {
+        let vertex_count = self.graph.vertices.len();
+        let mut loops = vec![0usize; vertex_count];
+        for edge in &self.graph.edges {
+            if edge.is_loop() {
+                loops[edge.a] += 1;
+            }
+        }
+        let mut leg_labels = vec![Vec::<usize>::new(); vertex_count];
+        for (marking, &vertex) in self.graph.legs.iter().enumerate() {
+            leg_labels[vertex].push(marking);
+        }
         let signatures = (0..vertex_count)
             .map(|vertex| {
-                let mut neighbor_colors = adjacency[vertex]
+                let mut multiplicities = self.adjacency[vertex]
                     .iter()
-                    .map(|(&neighbor, &multiplicity)| (colors[neighbor], multiplicity))
+                    .map(|&(_, multiplicity)| multiplicity)
                     .collect::<Vec<_>>();
-                neighbor_colors.sort_unstable();
-                (colors[vertex], neighbor_colors)
+                multiplicities.sort_unstable();
+                (
+                    self.graph.vertices[vertex].genus,
+                    loops[vertex],
+                    leg_labels[vertex].clone(),
+                    multiplicities,
+                )
             })
             .collect::<Vec<_>>();
-        let next = colors_from_signatures(&signatures);
-        if next == colors {
-            break;
-        }
-        colors = next;
+        colors_from_signatures(&signatures)
     }
 
-    let class_count = colors.iter().max().map(|max| max + 1).unwrap_or(0);
-    let mut classes = vec![Vec::new(); class_count];
-    for (vertex, &color) in colors.iter().enumerate() {
-        classes[color].push(vertex);
+    fn refine(&self, colors: &mut Vec<usize>) {
+        loop {
+            let signatures = (0..colors.len())
+                .map(|vertex| {
+                    let mut neighbor_colors = self.adjacency[vertex]
+                        .iter()
+                        .map(|&(neighbor, multiplicity)| (colors[neighbor], multiplicity))
+                        .collect::<Vec<_>>();
+                    neighbor_colors.sort_unstable();
+                    (colors[vertex], neighbor_colors)
+                })
+                .collect::<Vec<_>>();
+            let next = colors_from_signatures(&signatures);
+            if next == *colors {
+                return;
+            }
+            *colors = next;
+        }
     }
-    classes
+
+    /// Discrete leaf colorings as permutations `permutation[color] = vertex`.
+    fn leaves(&self) -> Vec<Vec<usize>> {
+        let mut colors = self.initial_colors();
+        self.refine(&mut colors);
+        let mut out = Vec::new();
+        self.branch(colors, &mut out);
+        out
+    }
+
+    fn branch(&self, colors: Vec<usize>, out: &mut Vec<Vec<usize>>) {
+        let vertex_count = colors.len();
+        let mut counts = vec![0usize; vertex_count];
+        for &color in &colors {
+            counts[color] += 1;
+        }
+        let Some(target_color) = counts.iter().position(|&count| count >= 2) else {
+            // Discrete: color ids are dense ranks, so they are the positions.
+            let mut permutation = vec![0usize; vertex_count];
+            for (vertex, &color) in colors.iter().enumerate() {
+                permutation[color] = vertex;
+            }
+            out.push(permutation);
+            return;
+        };
+
+        for vertex in 0..vertex_count {
+            if colors[vertex] != target_color {
+                continue;
+            }
+            let signatures = (0..vertex_count)
+                .map(|other| (colors[other], usize::from(other == vertex)))
+                .collect::<Vec<_>>();
+            let mut next = colors_from_signatures(&signatures);
+            self.refine(&mut next);
+            self.branch(next, out);
+        }
+    }
 }
 
 fn colors_from_signatures<S: Ord>(signatures: &[S]) -> Vec<usize> {
@@ -319,60 +405,6 @@ fn colors_from_signatures<S: Ord>(signatures: &[S]) -> Vec<usize> {
                 .expect("signature present in its own sorted list")
         })
         .collect()
-}
-
-/// Visits every permutation (`permutation[new] = old`) that assigns each
-/// class's vertices onto that class's target positions, in every order.
-fn for_each_class_assignment(
-    classes: &[Vec<usize>],
-    targets: &[Vec<usize>],
-    vertex_count: usize,
-    visit: &mut impl FnMut(&[usize]),
-) {
-    fn rec(
-        classes: &mut [Vec<usize>],
-        targets: &[Vec<usize>],
-        class_index: usize,
-        position: usize,
-        permutation: &mut [usize],
-        visit: &mut impl FnMut(&[usize]),
-    ) {
-        if class_index == classes.len() {
-            visit(permutation);
-            return;
-        }
-        let class_size = classes[class_index].len();
-        if position == class_size {
-            rec(classes, targets, class_index + 1, 0, permutation, visit);
-            return;
-        }
-        for swap in position..class_size {
-            classes[class_index].swap(position, swap);
-            permutation[targets[class_index][position]] = classes[class_index][position];
-            rec(
-                classes,
-                targets,
-                class_index,
-                position + 1,
-                permutation,
-                visit,
-            );
-            classes[class_index].swap(position, swap);
-        }
-    }
-
-    debug_assert_eq!(
-        classes.iter().map(Vec::len).sum::<usize>(),
-        vertex_count,
-        "classes partition the vertices"
-    );
-    debug_assert!(classes
-        .iter()
-        .zip(targets.iter())
-        .all(|(class, target)| class.len() == target.len()));
-    let mut scratch = classes.to_vec();
-    let mut permutation = vec![0usize; vertex_count];
-    rec(&mut scratch, targets, 0, 0, &mut permutation, visit);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,7 +454,6 @@ pub fn stable_graphs_with_bounds(
     // skeleton, and canonical skeletons of isomorphic multigraphs are equal as
     // multisets, so every isomorphism class survives exactly once without any
     // per-decoration canonical form.
-    let mut seen = BTreeSet::new();
     let mut out = Vec::new();
 
     for vertex_count in 1..=bounds.max_vertices.max(1) {
@@ -433,14 +464,6 @@ pub fn stable_graphs_with_bounds(
         for edge_count in min_edges..=max_edges {
             let h1 = edge_count + 1 - vertex_count;
             let genus_sum = genus - h1;
-            // Upper bound on the decorations a multiset with this vertex and
-            // edge count can carry; the skeleton-level quotient only pays off
-            // when its sweep amortizes over enough decorations.  Both inputs
-            // are isomorphism-invariant, so isomorphic multisets always take
-            // the same dedupe path.
-            let decoration_scale = leg_assignments
-                .len()
-                .saturating_mul(compositions_count(genus_sum, vertex_count));
             for_each_connected_edge_multiset(vertex_count, &pair_types, edge_count, &mut |edges| {
                 // Computed lazily: multisets whose valences admit no stable
                 // decoration never pay for a canonicality sweep.
@@ -472,30 +495,21 @@ pub fn stable_graphs_with_bounds(
                         continue;
                     }
                     for extra in compositions(genus_sum - required, vertex_count) {
-                        let quotient = quotient_cache.get_or_insert_with(|| {
-                            skeleton_quotient(vertex_count, edges, decoration_scale)
-                        });
+                        let quotient = quotient_cache
+                            .get_or_insert_with(|| skeleton_quotient(vertex_count, edges));
                         let automorphisms = match quotient {
-                            SkeletonQuotient::Canonical(automorphisms) => Some(&*automorphisms),
+                            SkeletonQuotient::Canonical(automorphisms) => automorphisms,
                             // A relabelled isomorph of a canonical multiset
                             // elsewhere in the enumeration: skip it entirely.
                             SkeletonQuotient::NotCanonical => return,
-                            // Coarse skeleton classes (near-regular
-                            // multigraphs) or too few decorations to amortize
-                            // the sweep: dedupe per decorated graph, where
-                            // genera and legs refine the classes.
-                            SkeletonQuotient::PerDecoration => None,
                         };
                         let genera = genus_minimums
                             .iter()
                             .zip(extra.iter())
                             .map(|(&minimum, &extra_genus)| minimum + extra_genus)
                             .collect::<Vec<_>>();
-                        if let Some(automorphisms) = automorphisms {
-                            if !decoration_is_orbit_minimal(automorphisms, &genera, leg_assignment)
-                            {
-                                continue;
-                            }
+                        if !decoration_is_orbit_minimal(automorphisms, &genera, leg_assignment) {
+                            continue;
                         }
                         let graph = StableGraph {
                             vertices: genera
@@ -506,9 +520,6 @@ pub fn stable_graphs_with_bounds(
                             legs: leg_assignment.clone(),
                         };
                         debug_assert!(graph.is_connected() && graph.is_stable());
-                        if automorphisms.is_none() && !seen.insert(graph.canonical_key()) {
-                            continue;
-                        }
                         out.push(graph);
                     }
                 }
@@ -534,73 +545,21 @@ enum SkeletonQuotient {
     /// A relabelled isomorph of a canonical multiset elsewhere in the
     /// enumeration.
     NotCanonical,
-    /// Skeleton-level quotient not worthwhile here; dedupe per decoration.
-    PerDecoration,
 }
 
-/// Cap on `prod_i k_i!` over the refined skeleton classes, above which the
-/// skeleton-level quotient falls back to per-decoration canonical dedupe.
-const SKELETON_ORBIT_SWEEP_LIMIT: usize = 720;
-
-fn skeleton_quotient(
-    vertex_count: usize,
-    edges: &[StableEdge],
-    decoration_scale: usize,
-) -> SkeletonQuotient {
+fn skeleton_quotient(vertex_count: usize, edges: &[StableEdge]) -> SkeletonQuotient {
     let skeleton = StableGraph {
         vertices: vec![StableVertex { genus: 0 }; vertex_count],
         edges: edges.to_vec(),
         legs: Vec::new(),
     };
-    let classes = refined_vertex_classes(&skeleton);
-    let mut sweep_size = 1usize;
-    for class in &classes {
-        sweep_size = sweep_size.saturating_mul(factorial(class.len()));
-    }
-    // The two sweeps below cost about 2 * sweep_size key constructions; the
-    // decorated path costs roughly one canonical key per stable decoration.
-    // Prefer the skeleton quotient only when it can amortize.
-    if sweep_size > SKELETON_ORBIT_SWEEP_LIMIT || 2 * sweep_size > decoration_scale {
-        return SkeletonQuotient::PerDecoration;
-    }
     let identity_key = skeleton.key_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
-
-    // Canonicality: the identity key must *equal* the minimal key over the
-    // block-ordered class-respecting relabelings.  Comparing with `<` alone
-    // would be wrong: the identity arrangement is generally not among the
-    // block arrangements, so a merely differently-arranged labelling could
-    // pass while a relabelled isomorph of it also passes.
-    let mut identity_is_minimal = false;
-    let mut smaller_exists = false;
-    let mut targets = Vec::with_capacity(classes.len());
-    let mut next_position = 0usize;
-    for class in &classes {
-        targets.push((next_position..next_position + class.len()).collect::<Vec<_>>());
-        next_position += class.len();
+    let data = skeleton.canonical_data();
+    if data.key == identity_key {
+        SkeletonQuotient::Canonical(data.automorphisms)
+    } else {
+        SkeletonQuotient::NotCanonical
     }
-    for_each_class_assignment(&classes, &targets, vertex_count, &mut |permutation| {
-        if smaller_exists {
-            return;
-        }
-        let key = skeleton.key_with_permutation(permutation);
-        match key.cmp(&identity_key) {
-            Ordering::Less => smaller_exists = true,
-            Ordering::Equal => identity_is_minimal = true,
-            Ordering::Greater => {}
-        }
-    });
-    if smaller_exists || !identity_is_minimal {
-        return SkeletonQuotient::NotCanonical;
-    }
-
-    // Automorphisms: class members permute over their own original positions.
-    let mut automorphisms = Vec::new();
-    for_each_class_assignment(&classes, &classes, vertex_count, &mut |permutation| {
-        if skeleton.key_with_permutation(permutation) == identity_key {
-            automorphisms.push(permutation.to_vec());
-        }
-    });
-    SkeletonQuotient::Canonical(automorphisms)
 }
 
 /// Whether `(genera, legs)` is lexicographically minimal in its orbit under
@@ -749,22 +708,6 @@ fn labelled_leg_assignments(legs: usize, vertex_count: usize) -> Vec<Vec<usize>>
     let mut out = Vec::new();
     rec(legs, vertex_count, &mut Vec::new(), &mut out);
     out
-}
-
-/// Number of compositions of `total` into `parts` nonnegative parts,
-/// `C(total + parts - 1, parts - 1)`, saturating on overflow.
-fn compositions_count(total: usize, parts: usize) -> usize {
-    if parts == 0 {
-        return 0;
-    }
-    let mut out = 1u128;
-    for k in 1..parts {
-        out = out.saturating_mul((total + k) as u128) / k as u128;
-        if out > usize::MAX as u128 {
-            return usize::MAX;
-        }
-    }
-    out as usize
 }
 
 fn compositions(total: usize, parts: usize) -> Vec<Vec<usize>> {
