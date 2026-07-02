@@ -516,7 +516,7 @@ pub fn projective_graph_bounded_potential_coefficients(
         .flat_map(|row| row.iter())
         .map(Vec::len)
         .sum();
-    let external_kernel = evaluate_external_graphs_parallel(
+    let external_kernel = evaluate_external_graphs_auto(
         std::slice::from_ref(prepared),
         markings,
         colors,
@@ -1649,7 +1649,7 @@ where
             .sum();
 
         let graphs_started = Instant::now();
-        let total = evaluate_restricted_external_graphs_parallel(
+        let total = evaluate_restricted_external_graphs_auto(
             graphs.as_ref(),
             &template,
             &graph_kernel,
@@ -1743,7 +1743,7 @@ where
             .sum();
 
         let graphs_started = Instant::now();
-        let total = evaluate_external_graphs_parallel(
+        let total = evaluate_external_graphs_auto(
             graphs.as_ref(),
             markings,
             self.colors(),
@@ -2346,6 +2346,119 @@ pub(crate) fn evaluate_factored_graphs(
             .iter()
             .map(FactoredRatFun::to_ratfun)
             .collect(),
+    )
+}
+
+fn external_kernel_to_ratfun(kernel: ExternalLegKernel<Rational>) -> ExternalLegKernel {
+    ExternalLegKernel {
+        markings: kernel.markings,
+        colors: kernel.colors,
+        max_power: kernel.max_power,
+        q_degree: kernel.q_degree,
+        state_count: kernel.state_count,
+        entries: kernel
+            .entries
+            .iter()
+            .map(rational_qseries_to_ratfun)
+            .collect(),
+    }
+}
+
+fn restricted_template_to_rational(
+    template: &RestrictedExternalLegKernel,
+) -> RestrictedExternalLegKernel<Rational> {
+    RestrictedExternalLegKernel {
+        markings: template.markings,
+        colors: template.colors,
+        max_power: template.max_power,
+        q_degree: template.q_degree,
+        states_by_marking_color: template.states_by_marking_color.clone(),
+        state_index_by_marking_color_power: template.state_index_by_marking_color_power.clone(),
+        state_counts: template.state_counts.clone(),
+        strides: template.strides.clone(),
+        entries: vec![QSeries::<Rational>::zero(template.q_degree); template.entries.len()],
+    }
+}
+
+fn restricted_kernel_to_ratfun(
+    template: &RestrictedExternalLegKernel,
+    kernel: RestrictedExternalLegKernel<Rational>,
+) -> RestrictedExternalLegKernel {
+    let mut out = template.zero_like();
+    out.entries = kernel
+        .entries
+        .iter()
+        .map(rational_qseries_to_ratfun)
+        .collect();
+    out
+}
+
+/// [`evaluate_external_graphs_parallel`], but over plain rationals whenever
+/// the kernel is constant.
+pub(crate) fn evaluate_external_graphs_auto(
+    graphs: &[PreparedStableGraph],
+    markings: usize,
+    colors: usize,
+    kernel: &Arc<GiventalGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+    profile: &mut GraphEvalProfile,
+) -> ExternalLegKernel {
+    if !crate::env_flag("GWAI_DISABLE_RATIONAL_GRAPH") {
+        if let Some(rational_kernel) = kernel_to_rational(kernel) {
+            let total = evaluate_external_graphs_parallel(
+                graphs,
+                markings,
+                colors,
+                &Arc::new(rational_kernel),
+                q_degree,
+                graph_dimension,
+                profile,
+            );
+            return external_kernel_to_ratfun(total);
+        }
+    }
+    evaluate_external_graphs_parallel(
+        graphs,
+        markings,
+        colors,
+        kernel,
+        q_degree,
+        graph_dimension,
+        profile,
+    )
+}
+
+/// [`evaluate_restricted_external_graphs_parallel`], but over plain rationals
+/// whenever the kernel is constant.
+pub(crate) fn evaluate_restricted_external_graphs_auto(
+    graphs: &[PreparedStableGraph],
+    template: &RestrictedExternalLegKernel,
+    kernel: &Arc<GiventalGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+    profile: &mut GraphEvalProfile,
+) -> RestrictedExternalLegKernel {
+    if !crate::env_flag("GWAI_DISABLE_RATIONAL_GRAPH") {
+        if let Some(rational_kernel) = kernel_to_rational(kernel) {
+            let total = evaluate_restricted_external_graphs_parallel(
+                graphs,
+                &restricted_template_to_rational(template),
+                &Arc::new(rational_kernel),
+                q_degree,
+                graph_dimension,
+                profile,
+            );
+            return restricted_kernel_to_ratfun(template, total);
+        }
+    }
+    evaluate_restricted_external_graphs_parallel(
+        graphs,
+        template,
+        kernel,
+        q_degree,
+        graph_dimension,
+        profile,
     )
 }
 
