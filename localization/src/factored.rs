@@ -163,9 +163,17 @@ impl FactoredRatFun {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = Self::one();
-        for _ in 0..exp {
-            out = &out * self;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = &out * &base;
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = &base * &base;
+            }
         }
         out
     }

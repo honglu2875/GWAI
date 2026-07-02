@@ -1,12 +1,59 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
+use std::sync::{OnceLock, RwLock};
 
 use crate::error::GwError;
 use num_bigint::BigInt;
 use num_rational::BigRational;
 use num_traits::{One, Signed, Zero};
+
+/// Global variable-name interner.
+///
+/// Symbolic variables register once and are identified by dense `u32` ids
+/// afterwards, so polynomial arithmetic never allocates, clones, or compares
+/// name strings.  The table is append-only; display and name-based evaluation
+/// resolve back through it, and `lambda_i` indices are parsed once at intern
+/// time.  Multiplication and comparison of monomials never touch the table.
+#[derive(Default)]
+struct SymbolTable {
+    /// `id -> (name, lambda index if the name is lambda_i)`.
+    symbols: Vec<(String, Option<usize>)>,
+    ids: HashMap<String, u32>,
+}
+
+fn symbol_table() -> &'static RwLock<SymbolTable> {
+    static TABLE: OnceLock<RwLock<SymbolTable>> = OnceLock::new();
+    TABLE.get_or_init(RwLock::default)
+}
+
+fn intern_symbol(name: &str) -> u32 {
+    if let Some(&id) = symbol_table().read().unwrap().ids.get(name) {
+        return id;
+    }
+    let mut table = symbol_table().write().unwrap();
+    if let Some(&id) = table.ids.get(name) {
+        return id;
+    }
+    let id = u32::try_from(table.symbols.len()).expect("symbol table overflow");
+    let lambda = name
+        .strip_prefix("lambda_")
+        .and_then(|raw| raw.parse().ok());
+    table.symbols.push((name.to_string(), lambda));
+    table.ids.insert(name.to_string(), id);
+    id
+}
+
+fn symbol_name(id: u32) -> String {
+    symbol_table().read().unwrap().symbols[id as usize]
+        .0
+        .clone()
+}
+
+fn symbol_lambda_index(id: u32) -> Option<usize> {
+    symbol_table().read().unwrap().symbols[id as usize].1
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Rational(BigRational);
@@ -38,9 +85,17 @@ impl Rational {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = Rational::one();
-        for _ in 0..exp {
-            out = out * self.clone();
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = Rational(out.0 * &base.0);
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = Rational(&base.0 * &base.0);
+            }
         }
         out
     }
@@ -86,7 +141,7 @@ impl Add for Rational {
 
 impl AddAssign for Rational {
     fn add_assign(&mut self, rhs: Self) {
-        *self = self.clone() + rhs;
+        self.0 += rhs.0;
     }
 }
 
@@ -94,7 +149,7 @@ impl Sub for Rational {
     type Output = Rational;
 
     fn sub(self, rhs: Self) -> Self::Output {
-        self + (-rhs)
+        Rational(self.0 - rhs.0)
     }
 }
 
@@ -176,9 +231,17 @@ pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
     }
 
     fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = Self::one();
-        for _ in 0..exp {
-            out = out.mul(self);
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = out.mul(&base);
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = base.mul(&base);
+            }
         }
         out
     }
@@ -210,28 +273,35 @@ impl Coeff for Rational {
     }
 
     fn neg(&self) -> Self {
-        -self.clone()
+        Rational(-&self.0)
     }
 
     fn add(&self, rhs: &Self) -> Self {
-        self.clone() + rhs.clone()
+        Rational(&self.0 + &rhs.0)
     }
 
     fn sub(&self, rhs: &Self) -> Self {
-        self.clone() - rhs.clone()
+        Rational(&self.0 - &rhs.0)
     }
 
     fn mul(&self, rhs: &Self) -> Self {
-        self.clone() * rhs.clone()
+        Rational(&self.0 * &rhs.0)
     }
 
     fn div(&self, rhs: &Self) -> Self {
-        self.clone() / rhs.clone()
+        assert!(!rhs.is_zero(), "division by zero");
+        Rational(&self.0 / &rhs.0)
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Monomial(Vec<(String, i32)>);
+/// Product of interned variables with integer exponents, kept sorted by
+/// variable id.
+///
+/// Arithmetic (multiplication, quotient splitting) works purely on the ids by
+/// linear merges; only display and name-based evaluation resolve names through
+/// the symbol table.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Monomial(Vec<(u32, i32)>);
 
 impl Monomial {
     pub fn one() -> Self {
@@ -239,37 +309,72 @@ impl Monomial {
     }
 
     pub fn variable(name: impl Into<String>) -> Self {
-        Self(vec![(name.into(), 1)])
+        Self(vec![(intern_symbol(&name.into()), 1)])
     }
 
     pub fn mul(&self, rhs: &Self) -> Self {
-        let mut exps = BTreeMap::<String, i32>::new();
-        for (name, exp) in self.0.iter().chain(rhs.0.iter()) {
-            *exps.entry(name.clone()).or_default() += *exp;
+        let mut out = Vec::with_capacity(self.0.len() + rhs.0.len());
+        let mut left = 0usize;
+        let mut right = 0usize;
+        while left < self.0.len() && right < rhs.0.len() {
+            match self.0[left].0.cmp(&rhs.0[right].0) {
+                Ordering::Less => {
+                    out.push(self.0[left]);
+                    left += 1;
+                }
+                Ordering::Greater => {
+                    out.push(rhs.0[right]);
+                    right += 1;
+                }
+                Ordering::Equal => {
+                    let exp = self.0[left].1 + rhs.0[right].1;
+                    if exp != 0 {
+                        out.push((self.0[left].0, exp));
+                    }
+                    left += 1;
+                    right += 1;
+                }
+            }
         }
-        Self(
-            exps.into_iter()
-                .filter(|(_, exp)| *exp != 0)
-                .collect::<Vec<_>>(),
-        )
+        out.extend_from_slice(&self.0[left..]);
+        out.extend_from_slice(&rhs.0[right..]);
+        Self(out)
     }
 
     fn split_quotient_monomials(&self, rhs: &Self) -> (Self, Self) {
-        let mut exps = BTreeMap::<String, i32>::new();
-        for (name, exp) in &self.0 {
-            *exps.entry(name.clone()).or_default() += *exp;
-        }
-        for (name, exp) in &rhs.0 {
-            *exps.entry(name.clone()).or_default() -= *exp;
-        }
         let mut numerator = Vec::new();
         let mut denominator = Vec::new();
-        for (name, exp) in exps {
+        let mut push = |id: u32, exp: i32| {
             if exp > 0 {
-                numerator.push((name, exp));
+                numerator.push((id, exp));
             } else if exp < 0 {
-                denominator.push((name, -exp));
+                denominator.push((id, -exp));
             }
+        };
+        let mut left = 0usize;
+        let mut right = 0usize;
+        while left < self.0.len() && right < rhs.0.len() {
+            match self.0[left].0.cmp(&rhs.0[right].0) {
+                Ordering::Less => {
+                    push(self.0[left].0, self.0[left].1);
+                    left += 1;
+                }
+                Ordering::Greater => {
+                    push(rhs.0[right].0, -rhs.0[right].1);
+                    right += 1;
+                }
+                Ordering::Equal => {
+                    push(self.0[left].0, self.0[left].1 - rhs.0[right].1);
+                    left += 1;
+                    right += 1;
+                }
+            }
+        }
+        for &(id, exp) in &self.0[left..] {
+            push(id, exp);
+        }
+        for &(id, exp) in &rhs.0[right..] {
+            push(id, -exp);
         }
         (Self(numerator), Self(denominator))
     }
@@ -277,8 +382,8 @@ impl Monomial {
     fn lambda_line_weighted_degree(&self, weights: &[Rational]) -> Option<(i32, Rational)> {
         let mut degree = 0i32;
         let mut coefficient = Rational::one();
-        for (name, exp) in &self.0 {
-            if let Some(idx) = lambda_index(name) {
+        for (id, exp) in &self.0 {
+            if let Some(idx) = symbol_lambda_index(*id) {
                 if idx >= weights.len() {
                     return None;
                 }
@@ -303,8 +408,8 @@ impl Monomial {
         let mut degree = 0i32;
         let mut coefficient = Rational::one();
         let mut residual = Vec::new();
-        for (name, exp) in &self.0 {
-            if let Some(idx) = lambda_index(name) {
+        for (id, exp) in &self.0 {
+            if let Some(idx) = symbol_lambda_index(*id) {
                 if idx >= weights.len() {
                     return None;
                 }
@@ -315,7 +420,7 @@ impl Monomial {
                     coefficient = coefficient / weights[idx].pow_usize((-*exp) as usize);
                 }
             } else {
-                residual.push((name.clone(), *exp));
+                residual.push((*id, *exp));
             }
         }
         Some((degree, coefficient, Monomial(residual)))
@@ -323,8 +428,8 @@ impl Monomial {
 
     fn evaluate_lambda_weights(&self, weights: &[Rational]) -> Option<Rational> {
         let mut coefficient = Rational::one();
-        for (name, exp) in &self.0 {
-            let idx = lambda_index(name)?;
+        for (id, exp) in &self.0 {
+            let idx = symbol_lambda_index(*id)?;
             if idx >= weights.len() {
                 return None;
             }
@@ -339,8 +444,9 @@ impl Monomial {
 
     fn evaluate_variables(&self, values: &BTreeMap<String, Rational>) -> Result<Rational, GwError> {
         let mut coefficient = Rational::one();
-        for (name, exp) in &self.0 {
-            let value = values.get(name).ok_or_else(|| {
+        for (id, exp) in &self.0 {
+            let name = symbol_name(*id);
+            let value = values.get(&name).ok_or_else(|| {
                 GwError::AlgebraFailure(format!(
                     "missing value for symbolic variable `{name}` in monomial `{self}`"
                 ))
@@ -353,17 +459,17 @@ impl Monomial {
         }
         Ok(coefficient)
     }
-}
 
-impl Ord for Monomial {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
-impl PartialOrd for Monomial {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+    /// Factors as `(name, exponent)` pairs sorted by name, for display paths
+    /// that must not depend on interning order.
+    fn named_factors(&self) -> Vec<(String, i32)> {
+        let mut named = self
+            .0
+            .iter()
+            .map(|&(id, exp)| (symbol_name(id), exp))
+            .collect::<Vec<_>>();
+        named.sort();
+        named
     }
 }
 
@@ -372,7 +478,7 @@ impl fmt::Display for Monomial {
         if self.0.is_empty() {
             return write!(f, "1");
         }
-        for (idx, (name, exp)) in self.0.iter().enumerate() {
+        for (idx, (name, exp)) in self.named_factors().iter().enumerate() {
             if idx > 0 {
                 write!(f, "*")?;
             }
@@ -475,9 +581,17 @@ impl SparsePoly {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = SparsePoly::one();
-        for _ in 0..exp {
-            out = &out * self;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = &out * &base;
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = &base * &base;
+            }
         }
         out
     }
@@ -614,8 +728,18 @@ impl fmt::Display for SparsePoly {
         if self.terms.is_empty() {
             return write!(f, "0");
         }
+        // Terms are stored in interning-id order; print in name order so the
+        // rendered polynomial does not depend on which variables were interned
+        // first in this process.
+        let mut terms = self
+            .terms
+            .iter()
+            .map(|(monomial, coeff)| (monomial.named_factors(), monomial, coeff))
+            .collect::<Vec<_>>();
+        terms.sort_by(|left, right| left.0.cmp(&right.0));
+
         let mut first = true;
-        for (monomial, coeff) in &self.terms {
+        for (named, monomial, coeff) in terms {
             if !first {
                 if coeff.is_negative() {
                     write!(f, " - ")?;
@@ -628,8 +752,7 @@ impl fmt::Display for SparsePoly {
             first = false;
 
             let abs_coeff = coeff.abs();
-            let monomial_is_one = monomial.0.is_empty();
-            if monomial_is_one {
+            if named.is_empty() {
                 write!(f, "{abs_coeff}")?;
             } else if abs_coeff == Rational::one() {
                 write!(f, "{monomial}")?;
@@ -756,9 +879,17 @@ impl RatFun {
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
+        let mut base = self.clone();
+        let mut exp = exp;
         let mut out = RatFun::one();
-        for _ in 0..exp {
-            out = &out * self;
+        while exp > 0 {
+            if exp & 1 == 1 {
+                out = &out * &base;
+            }
+            exp >>= 1;
+            if exp > 0 {
+                base = &base * &base;
+            }
         }
         out
     }
@@ -1053,10 +1184,6 @@ fn ratio_laurent_series_coeff<C: Coeff>(
         }
     }
     Ok(coeffs)
-}
-
-fn lambda_index(name: &str) -> Option<usize> {
-    name.strip_prefix("lambda_")?.parse().ok()
 }
 
 impl From<Rational> for RatFun {
