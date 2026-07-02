@@ -215,8 +215,8 @@ impl WittenKontsevich {
 
         for j in 0..rest.len() {
             let dj = rest[j];
-            let coeff = Rational::from(double_factorial_odd(2 * (d0 + dj) - 1))
-                / Rational::from(double_factorial_odd(2 * dj - 1));
+            let coeff =
+                double_factorial_odd(2 * (d0 + dj) - 1) / double_factorial_odd(2 * dj - 1);
             let mut next = rest.clone();
             next.remove(j);
             next.push(d0 + dj - 1);
@@ -226,8 +226,7 @@ impl WittenKontsevich {
         if d0 >= 2 {
             for a in 0..=(d0 - 2) {
                 let b = d0 - 2 - a;
-                let coeff = Rational::from(double_factorial_odd(2 * a + 1))
-                    * Rational::from(double_factorial_odd(2 * b + 1));
+                let coeff = double_factorial_odd(2 * a + 1) * double_factorial_odd(2 * b + 1);
                 let mut bracket = Rational::zero();
 
                 if genus > 0 {
@@ -256,7 +255,7 @@ impl WittenKontsevich {
             }
         }
 
-        total / Rational::from(double_factorial_odd(2 * d0 + 1))
+        total / double_factorial_odd(2 * d0 + 1)
     }
 }
 
@@ -266,12 +265,14 @@ impl TautologicalOracle for WittenKontsevich {
     }
 }
 
-fn double_factorial_odd(n: usize) -> i128 {
+fn double_factorial_odd(n: usize) -> Rational {
+    // Exact big-rational accumulation: (2d+1)!! exceeds i128 already for
+    // d >= 28, which one-point integrals reach around genus 10.
     debug_assert!(n % 2 == 1);
-    let mut out = 1i128;
+    let mut out = Rational::one();
     let mut k = n;
     while k > 1 {
-        out *= k as i128;
+        out = out * Rational::from(k);
         k -= 2;
     }
     out
@@ -301,6 +302,22 @@ mod tests {
         let wk = WittenKontsevich::new();
         assert_eq!(wk.psi_integral(2, &[4]), Rational::new(1, 1152));
         assert_eq!(wk.psi_integral(3, &[7]), Rational::new(1, 82944));
+    }
+
+    #[test]
+    fn one_point_genus_ten_matches_closed_form() {
+        // <tau_{3g-2}>_g = 1/(24^g g!).  At g = 10 the DVV recursion needs
+        // (2*28+1)!! = 57!!, which overflows i128; this locks the exact
+        // big-rational path.
+        let wk = WittenKontsevich::new();
+        let mut denominator = Rational::one();
+        for k in 1..=10i128 {
+            denominator = denominator * Rational::from(24) * Rational::from(k);
+        }
+        assert_eq!(
+            wk.psi_integral(10, &[28]),
+            Rational::one() / denominator
+        );
     }
 
     #[test]

@@ -2408,7 +2408,7 @@ pub(crate) fn rational_vertex_contribution_with_translations(
             }
             powers.extend(std::iter::repeat_n(power, multiplicity));
 
-            symmetry = symmetry * Rational::from(factorial(multiplicity));
+            symmetry = symmetry * factorial(multiplicity);
         }
         if coefficient.is_zero() {
             continue;
@@ -4011,7 +4011,7 @@ where
             }
             powers.extend(std::iter::repeat_n(power, multiplicity));
 
-            let multiplicity_factor = C::from_usize(factorial(multiplicity));
+            let multiplicity_factor = C::from_rational(factorial(multiplicity));
             symmetry = symmetry.mul(&multiplicity_factor);
         }
         if coefficient.is_structurally_zero() {
@@ -4047,8 +4047,14 @@ where
     genus_factor.mul(&calibration.relative_sqrt_delta[color].pow_usize(valence))
 }
 
-pub(crate) fn factorial(n: usize) -> usize {
-    (1..=n).product::<usize>().max(1)
+pub(crate) fn factorial(n: usize) -> Rational {
+    // Exact big-rational accumulation: usize factorials overflow at 21!,
+    // which translation multiplicities can reach at high vertex dimension.
+    let mut out = Rational::one();
+    for k in 2..=n {
+        out = out * Rational::from(k);
+    }
+    out
 }
 
 /// Unordered translation excess profiles.

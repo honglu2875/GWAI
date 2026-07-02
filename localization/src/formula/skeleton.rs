@@ -1750,7 +1750,7 @@ fn vertex_expanded_terms(genus: usize, color: &str, base_powers: &[usize]) -> Ve
                 .sum::<usize>();
             let mut powers = base_powers.to_vec();
             let mut factors = Vec::new();
-            let mut symmetry = 1usize;
+            let mut symmetry = 1u128;
             for (translation_excess, multiplicity) in partition {
                 let translation_power = translation_excess + 1;
                 powers.extend(std::iter::repeat_n(translation_power, multiplicity));
@@ -1801,7 +1801,7 @@ fn vertex_expanded_factor_terms_tex(
                 .sum::<usize>();
             let mut powers = base_powers.to_vec();
             let mut factors = Vec::new();
-            let mut symmetry = 1usize;
+            let mut symmetry = 1u128;
             for (translation_excess, multiplicity) in partition {
                 let translation_power = translation_excess + 1;
                 powers.extend(std::iter::repeat_n(translation_power, multiplicity));
@@ -2055,8 +2055,10 @@ fn translation_partitions(total: usize) -> Vec<Vec<(usize, usize)>> {
     out
 }
 
-fn factorial(n: usize) -> usize {
-    (1..=n).product::<usize>().max(1)
+fn factorial(n: usize) -> u128 {
+    // u128 keeps rendered symmetry factors exact well past the usize
+    // overflow at 21!.
+    (1..=n as u128).product::<u128>().max(1)
 }
 
 #[cfg(test)]

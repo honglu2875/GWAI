@@ -4,6 +4,10 @@ use crate::factored::FactoredRatFun;
 use crate::geometry::CohomologyClass;
 use crate::{tau, ComputeMode, InvariantRequest};
 
+fn usize_factorial(n: usize) -> usize {
+    (1..=n).product::<usize>().max(1)
+}
+
 #[test]
 fn translation_excess_partitions_group_ordered_compositions() {
     let partitions = translation_excess_partitions(4);
@@ -29,9 +33,9 @@ fn translation_excess_partitions_group_ordered_compositions() {
                 .sum::<usize>();
             let denominator = partition
                 .iter()
-                .map(|(_, multiplicity)| factorial(*multiplicity))
+                .map(|(_, multiplicity)| usize_factorial(*multiplicity))
                 .product::<usize>();
-            factorial(translation_count) / denominator
+            usize_factorial(translation_count) / denominator
         })
         .sum::<usize>();
     assert_eq!(ordered_terms, 8);
@@ -49,9 +53,9 @@ fn translation_partition_symmetries_recover_ordered_composition_counts() {
                     .sum::<usize>();
                 let denominator = partition
                     .iter()
-                    .map(|(_, multiplicity)| factorial(*multiplicity))
+                    .map(|(_, multiplicity)| usize_factorial(*multiplicity))
                     .product::<usize>();
-                factorial(translation_count) / denominator
+                usize_factorial(translation_count) / denominator
             })
             .sum::<usize>();
         assert_eq!(ordered_terms, 1usize << (total - 1));
