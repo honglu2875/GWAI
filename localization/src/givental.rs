@@ -52,6 +52,8 @@ mod provider;
 pub use provider::*;
 pub mod recipe;
 pub use recipe::{calibration_from_canonical_frame, descendant_s_from_divisor_qde, CanonicalFrame};
+pub mod target;
+pub use target::{GwTarget, ProjectiveTarget, TargetProvider};
 mod graph;
 pub use graph::*;
 use r_solve::*;

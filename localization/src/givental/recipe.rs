@@ -148,3 +148,90 @@ pub fn descendant_s_from_divisor_qde(
         calibration,
     })
 }
+
+/// Evaluates a polynomial with `q`-series coefficients at a `q`-series point
+/// (Horner form).
+pub(crate) fn evaluate_series_polynomial(coefficients: &[QSeries], point: &QSeries) -> QSeries {
+    let q_degree = point.max_degree();
+    let mut out = QSeries::zero(q_degree);
+    for coefficient in coefficients.iter().rev() {
+        out = out.mul(point).add(coefficient);
+    }
+    out
+}
+
+pub(crate) fn series_polynomial_derivative(coefficients: &[QSeries]) -> Vec<QSeries> {
+    coefficients
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(power, coefficient)| coefficient.scale(&RatFun::from(power)))
+        .collect()
+}
+
+/// Newton iteration for one root branch of a polynomial with `q`-series
+/// coefficients, seeded at its classical (`q = 0`) value.
+///
+/// Converges in the `q`-adic topology as long as the seed is a simple root of
+/// the classical polynomial — the semisimplicity assumption.
+pub fn newton_root_series(
+    charpoly: &[QSeries],
+    seed: &RatFun,
+    q_degree: usize,
+) -> Result<QSeries, GwError> {
+    let derivative = series_polynomial_derivative(charpoly);
+    let mut root = QSeries::constant(seed.clone(), q_degree);
+    for _ in 0..=q_degree {
+        let value = evaluate_series_polynomial(charpoly, &root);
+        if value.coeffs().iter().all(RatFun::is_zero) {
+            break;
+        }
+        let slope = evaluate_series_polynomial(&derivative, &root);
+        root = root.sub(&value.div(&slope)?);
+    }
+    Ok(root)
+}
+
+/// Canonical frame of a divisor-generated semisimple ring from its root
+/// series, by Lagrange interpolation.
+///
+/// Assumes the flat basis is `1, D, D^2, ...` for the divisor generator `D`,
+/// so idempotents are `prod_{j != i}(D - u_j)/(u_i - u_j)`, the evaluation
+/// matrix is the Vandermonde of the roots, and the metric norms are
+/// `1/P'(u_i)` (the residue pairing of the presentation).
+pub fn divisor_lagrange_frame(
+    roots: Vec<QSeries>,
+    q_degree: usize,
+) -> Result<CanonicalFrame, GwError> {
+    let size = roots.len();
+    let mut inverse_metric_norms = Vec::with_capacity(size);
+    let mut metric_norms = Vec::with_capacity(size);
+    let mut transition_to_flat = vec![vec![QSeries::zero(q_degree); size]; size];
+
+    for branch in 0..size {
+        let mut numerator = vec![QSeries::one(q_degree)];
+        let mut denominator = QSeries::one(q_degree);
+        for other in 0..size {
+            if other == branch {
+                continue;
+            }
+            numerator =
+                multiply_qseries_polynomial_by_linear(&numerator, &roots[other].neg(), q_degree);
+            denominator = denominator.mul(&roots[branch].sub(&roots[other]));
+        }
+        let denominator_inv = denominator.inverse()?;
+        for (row, coefficient) in numerator.into_iter().enumerate() {
+            transition_to_flat[row][branch] = coefficient.mul(&denominator_inv);
+        }
+        metric_norms.push(denominator.inverse()?);
+        inverse_metric_norms.push(denominator);
+    }
+
+    Ok(CanonicalFrame {
+        flat_to_canonical: canonical_evaluation_matrix(&roots),
+        transition_to_flat: SeriesMatrix::from_entries(transition_to_flat),
+        roots,
+        metric_norms,
+        inverse_metric_norms,
+    })
+}
