@@ -90,11 +90,20 @@ impl LocGraph {
     }
 
     pub fn first_betti(&self) -> usize {
+        // b1 = E - V + C.  Counting components keeps this correct (and free of
+        // usize underflow) for disconnected graphs, where the connected-only
+        // formula E - V + 1 fails.
         if self.vertices.is_empty() {
-            0
-        } else {
-            self.edges.len() + 1 - self.vertices.len()
+            return 0;
         }
+        let mut dsu = DisjointSet::new(self.vertices.len());
+        for edge in &self.edges {
+            dsu.union(edge.from, edge.to);
+        }
+        let components = (0..self.vertices.len())
+            .filter(|&vertex| dsu.find(vertex) == vertex)
+            .count();
+        self.edges.len() + components - self.vertices.len()
     }
 
     pub fn genus(&self) -> usize {

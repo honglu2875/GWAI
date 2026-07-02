@@ -43,11 +43,22 @@ pub struct StableGraph {
 
 impl StableGraph {
     pub fn first_betti(&self) -> usize {
+        // b1 = E - V + C.  Counting components keeps this correct (and free of
+        // usize underflow) for disconnected graphs, e.g. forests with more
+        // than one tree, where the connected-only formula E - V + 1 fails.
         if self.vertices.is_empty() {
-            0
-        } else {
-            self.edges.len() + 1 - self.vertices.len()
+            return 0;
         }
+        let mut dsu = DisjointSet::new(self.vertices.len());
+        for edge in &self.edges {
+            if !edge.is_loop() {
+                dsu.union(edge.a, edge.b);
+            }
+        }
+        let components = (0..self.vertices.len())
+            .filter(|&vertex| dsu.find(vertex) == vertex)
+            .count();
+        self.edges.len() + components - self.vertices.len()
     }
 
     pub fn genus(&self) -> usize {
@@ -412,6 +423,28 @@ mod tests {
         assert!(graphs
             .iter()
             .any(|g| { g.vertices.len() == 1 && g.vertices[0].genus == 1 && g.edges.is_empty() }));
+    }
+
+    #[test]
+    fn first_betti_handles_disconnected_graphs() {
+        let forest = StableGraph {
+            vertices: vec![StableVertex { genus: 1 }, StableVertex { genus: 2 }],
+            edges: vec![],
+            legs: vec![0, 1],
+        };
+        assert_eq!(forest.first_betti(), 0);
+        assert_eq!(forest.genus(), 3);
+
+        let mixed = StableGraph {
+            vertices: vec![
+                StableVertex { genus: 0 },
+                StableVertex { genus: 0 },
+                StableVertex { genus: 1 },
+            ],
+            edges: vec![StableEdge::new(0, 1), StableEdge::new(0, 1)],
+            legs: vec![2, 2],
+        };
+        assert_eq!(mixed.first_betti(), 1);
     }
 
     #[test]
