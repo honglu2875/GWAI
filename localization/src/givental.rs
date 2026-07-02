@@ -50,6 +50,8 @@ mod r_solve;
 pub use matrices::*;
 mod provider;
 pub use provider::*;
+pub mod recipe;
+pub use recipe::{calibration_from_canonical_frame, descendant_s_from_divisor_qde, CanonicalFrame};
 mod graph;
 pub use graph::*;
 use r_solve::*;

@@ -528,68 +528,21 @@ pub fn projective_space_j_calibration(
 
     let frobenius = FrobeniusData::quantum(n);
     let canonical = frobenius.quantum_canonical_data(q_degree)?;
-    let size = n + 1;
-
-    let transition = canonical.transition_matrix();
-    let relative_sqrt_delta = canonical
-        .inverse_metric_norms
-        .iter()
-        .map(relative_sqrt_delta_series)
-        .collect::<Result<Vec<_>, _>>()?;
-    let relative_sqrt_delta_inv = relative_sqrt_delta
-        .iter()
-        .map(QSeries::inverse)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let relative_scale = SeriesMatrix::diagonal(relative_sqrt_delta.clone());
-    let relative_scale_inv = SeriesMatrix::diagonal(relative_sqrt_delta_inv.clone());
-    let evaluation = canonical_evaluation_matrix(&canonical.roots);
-    let psi = transition.mul(&relative_scale);
-    let psi_inverse = relative_scale_inv.mul(&evaluation);
-    let connection = psi_inverse.mul(&psi.q_derivative());
-
-    let metric = SeriesMatrix::diagonal(
-        canonical
-            .metric_norms
-            .iter()
-            .map(|norm| {
-                QSeries::constant(
-                    norm.coeff(0).cloned().unwrap_or_else(RatFun::zero),
-                    q_degree,
-                )
-            })
-            .collect(),
-    );
+    let frame = CanonicalFrame {
+        flat_to_canonical: canonical_evaluation_matrix(&canonical.roots),
+        transition_to_flat: canonical.transition_matrix(),
+        roots: canonical.roots,
+        metric_norms: canonical.metric_norms,
+        inverse_metric_norms: canonical.inverse_metric_norms,
+    };
     let classical_diagonal = classical_limit_diagonal_coefficients(n, z_order);
-    let coefficients = solve_projective_r_coefficients(
-        &canonical.roots,
-        &connection,
-        &metric,
+    let calibration = calibration_from_canonical_frame(
+        &frame,
         &classical_diagonal,
         q_degree,
         z_order,
+        CalibrationId("projective-space-j".to_string()),
     )?;
-
-    let r_matrix = SeriesRMatrix {
-        size,
-        q_degree,
-        z_order,
-        coefficients,
-        calibration: CalibrationId("projective-space-j".to_string()),
-        convention: CanonicalFrameConvention::RelativeNormalizedCanonicalIdempotents,
-    };
-
-    let calibration = ProjectiveSpaceJCalibration {
-        r_matrix,
-        metric,
-        psi,
-        psi_inverse,
-        connection,
-        delta: canonical.inverse_metric_norms,
-        inverse_delta: canonical.metric_norms,
-        relative_sqrt_delta,
-        relative_sqrt_delta_inverse: relative_sqrt_delta_inv,
-    };
     cache.lock().unwrap().insert(key, calibration.clone());
     Ok(calibration)
 }
@@ -614,70 +567,22 @@ pub(crate) fn projective_space_j_calibration_at_lambda_weights(
     }
 
     let canonical = specialized_quantum_canonical_data(n, q_degree, weights)?;
-    let size = n + 1;
-
-    let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
-
-    let relative_sqrt_delta = canonical
-        .inverse_metric_norms
-        .iter()
-        .map(relative_sqrt_delta_series)
-        .collect::<Result<Vec<_>, _>>()?;
-    let relative_sqrt_delta_inv = relative_sqrt_delta
-        .iter()
-        .map(QSeries::inverse)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let relative_scale = SeriesMatrix::diagonal(relative_sqrt_delta.clone());
-    let relative_scale_inv = SeriesMatrix::diagonal(relative_sqrt_delta_inv.clone());
-    let evaluation = canonical_evaluation_matrix(&canonical.roots);
-    let psi = transition.mul(&relative_scale);
-    let psi_inverse = relative_scale_inv.mul(&evaluation);
-    let connection = psi_inverse.mul(&psi.q_derivative());
-
-    let metric = SeriesMatrix::diagonal(
-        canonical
-            .metric_norms
-            .iter()
-            .map(|norm| {
-                QSeries::constant(
-                    norm.coeff(0).cloned().unwrap_or_else(RatFun::zero),
-                    q_degree,
-                )
-            })
-            .collect(),
-    );
+    let frame = CanonicalFrame {
+        flat_to_canonical: canonical_evaluation_matrix(&canonical.roots),
+        transition_to_flat: SeriesMatrix::from_entries(canonical.transition_to_flat),
+        roots: canonical.roots,
+        metric_norms: canonical.metric_norms,
+        inverse_metric_norms: canonical.inverse_metric_norms,
+    };
     let classical_diagonal =
         classical_limit_diagonal_coefficients_at_lambda_weights(n, z_order, weights);
-    let coefficients = solve_projective_r_coefficients(
-        &canonical.roots,
-        &connection,
-        &metric,
+    let calibration = calibration_from_canonical_frame(
+        &frame,
         &classical_diagonal,
         q_degree,
         z_order,
+        CalibrationId("projective-space-j-lambda-line".to_string()),
     )?;
-
-    let r_matrix = SeriesRMatrix {
-        size,
-        q_degree,
-        z_order,
-        coefficients,
-        calibration: CalibrationId("projective-space-j-lambda-line".to_string()),
-        convention: CanonicalFrameConvention::RelativeNormalizedCanonicalIdempotents,
-    };
-
-    let calibration = ProjectiveSpaceJCalibration {
-        r_matrix,
-        metric,
-        psi,
-        psi_inverse,
-        connection,
-        delta: canonical.inverse_metric_norms,
-        inverse_delta: canonical.metric_norms,
-        relative_sqrt_delta,
-        relative_sqrt_delta_inverse: relative_sqrt_delta_inv,
-    };
     cache.lock().unwrap().insert(key, calibration.clone());
     Ok(calibration)
 }
@@ -841,25 +746,14 @@ pub fn projective_space_descendant_s_matrix(
         }
     }
 
-    let size = n + 1;
     let quantum_h = series_h_multiplication_matrix(n, q_degree, true);
     let classical_h = series_h_multiplication_matrix(n, q_degree, false);
-    let mut coefficients = Vec::with_capacity(z_order + 1);
-    coefficients.push(SeriesMatrix::identity(size, q_degree));
-
-    for order in 1..=z_order {
-        let previous = &coefficients[order - 1];
-        let source = quantum_h.mul(previous).sub(&previous.mul(&classical_h));
-        coefficients.push(integrate_q_derivative_zero_constant_matrix(&source)?);
-    }
-
-    let descendant_s = SeriesSMatrix {
-        size,
-        q_degree,
+    let descendant_s = descendant_s_from_divisor_qde(
+        &quantum_h,
+        &classical_h,
         z_order,
-        coefficients,
-        calibration: CalibrationId("projective-space-small-j".to_string()),
-    };
+        CalibrationId("projective-space-small-j".to_string()),
+    )?;
     cache.lock().unwrap().insert(key, descendant_s.clone());
     Ok(descendant_s)
 }
@@ -898,26 +792,15 @@ pub(crate) fn projective_space_descendant_s_matrix_at_lambda_weights(
         }
     }
 
-    let size = n + 1;
     let quantum_h = series_h_multiplication_matrix_at_lambda_weights(n, q_degree, true, weights)?;
     let classical_h =
         series_h_multiplication_matrix_at_lambda_weights(n, q_degree, false, weights)?;
-    let mut coefficients = Vec::with_capacity(z_order + 1);
-    coefficients.push(SeriesMatrix::identity(size, q_degree));
-
-    for order in 1..=z_order {
-        let previous = &coefficients[order - 1];
-        let source = quantum_h.mul(previous).sub(&previous.mul(&classical_h));
-        coefficients.push(integrate_q_derivative_zero_constant_matrix(&source)?);
-    }
-
-    let descendant_s = SeriesSMatrix {
-        size,
-        q_degree,
+    let descendant_s = descendant_s_from_divisor_qde(
+        &quantum_h,
+        &classical_h,
         z_order,
-        coefficients,
-        calibration: CalibrationId("projective-space-small-j-lambda-line".to_string()),
-    };
+        CalibrationId("projective-space-small-j-lambda-line".to_string()),
+    )?;
     cache.lock().unwrap().insert(key, descendant_s.clone());
     Ok(descendant_s)
 }

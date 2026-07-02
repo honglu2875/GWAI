@@ -28,24 +28,11 @@ pub(crate) fn classical_limit_diagonal_coefficients_for_branch(
     branch: usize,
     z_order: usize,
 ) -> Vec<RatFun> {
-    let mut exponent = vec![RatFun::zero(); z_order + 1];
-    for r in 1..=z_order.div_ceil(2) {
-        let order = 2 * r - 1;
-        let coefficient =
-            bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
-        let coefficient = RatFun::from_rational(coefficient);
-        let mut weight_sum = RatFun::zero();
-        for other in 0..=n {
-            if other == branch {
-                continue;
-            }
-            let difference = &lambda(other) - &lambda(branch);
-            let term = &RatFun::one() / &difference.pow_usize(order);
-            weight_sum = &weight_sum + &term;
-        }
-        exponent[order] = &coefficient * &weight_sum;
-    }
-    exp_scalar_z_series(&exponent)
+    let differences = (0..=n)
+        .filter(|&other| other != branch)
+        .map(|other| &lambda(other) - &lambda(branch))
+        .collect::<Vec<_>>();
+    classical_r_asymptotics_for_point(&differences, z_order)
 }
 
 pub(crate) fn classical_limit_diagonal_coefficients_for_branch_at_lambda_weights(
@@ -54,20 +41,39 @@ pub(crate) fn classical_limit_diagonal_coefficients_for_branch_at_lambda_weights
     z_order: usize,
     weights: &[Rational],
 ) -> Vec<RatFun> {
+    let differences = (0..=n)
+        .filter(|&other| other != branch)
+        .map(|other| RatFun::from_rational(weights[other].clone() - weights[branch].clone()))
+        .collect::<Vec<_>>();
+    classical_r_asymptotics_for_point(&differences, z_order)
+}
+
+/// Diagonal `R`-matrix asymptotics at one semisimple point, from the pairwise
+/// eigenvalue differences at that point.
+///
+/// This is the Gamma-function/Bernoulli expansion
+/// `exp(sum_r B_{2r}/(2r(2r-1)) sum_w w^{-(2r-1)} z^{2r-1})`, where `w` runs
+/// over the supplied differences.  For a target with isolated torus fixed
+/// points, the differences at fixed point `p` are `s_j - s_p` for the
+/// classical eigenvalue seeds `s_i` (for `P^n`: `lambda_j - lambda_i`), so
+/// these constants are derivable from the same weight data that defines the
+/// equivariant frame.
+pub(crate) fn classical_r_asymptotics_for_point(
+    eigenvalue_differences: &[RatFun],
+    z_order: usize,
+) -> Vec<RatFun> {
     let mut exponent = vec![RatFun::zero(); z_order + 1];
     for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
         let coefficient =
             bernoulli_number(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
-        let mut weight_sum = Rational::zero();
-        for other in 0..=n {
-            if other == branch {
-                continue;
-            }
-            let difference = weights[other].clone() - weights[branch].clone();
-            weight_sum += Rational::one() / difference.pow_usize(order);
+        let coefficient = RatFun::from_rational(coefficient);
+        let mut weight_sum = RatFun::zero();
+        for difference in eigenvalue_differences {
+            let term = &RatFun::one() / &difference.pow_usize(order);
+            weight_sum = &weight_sum + &term;
         }
-        exponent[order] = RatFun::from_rational(coefficient * weight_sum);
+        exponent[order] = &coefficient * &weight_sum;
     }
     exp_scalar_z_series(&exponent)
 }
