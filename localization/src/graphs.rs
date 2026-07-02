@@ -5,6 +5,7 @@
 //! are labelled markings, and automorphism orders include both vertex
 //! symmetries and bijections of repeated edges.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Mutex, OnceLock};
 
@@ -410,11 +411,17 @@ pub fn stable_graphs_with_bounds(
     legs: usize,
     bounds: StableGraphBounds,
 ) -> Vec<StableGraph> {
-    // Generate connected multigraphs, assign legs and vertex genera, then
-    // canonicalize to quotient by graph isomorphism.  Connectivity is enforced
-    // during the edge-multiset recursion, and stability is enforced by giving
-    // each vertex its minimum admissible genus up front, so every candidate
-    // reaching the canonical-form dedupe is already a stable graph.
+    // Two-stage quotient by graph isomorphism.  Stage one: enumerate connected
+    // edge multisets (connectivity enforced inside the recursion) and keep
+    // only those that are canonical as unlabelled multigraphs, computing their
+    // vertex automorphisms in the same sweep.  Stage two: decorate each
+    // canonical skeleton with legs and genera — stability enforced by giving
+    // each vertex its minimum admissible genus up front — and keep exactly the
+    // decorations that are lexicographically minimal in their orbit under the
+    // skeleton automorphisms.  Isomorphic decorated graphs share an isomorphic
+    // skeleton, and canonical skeletons of isomorphic multigraphs are equal as
+    // multisets, so every isomorphism class survives exactly once without any
+    // per-decoration canonical form.
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
 
@@ -426,7 +433,19 @@ pub fn stable_graphs_with_bounds(
         for edge_count in min_edges..=max_edges {
             let h1 = edge_count + 1 - vertex_count;
             let genus_sum = genus - h1;
+            // Upper bound on the decorations a multiset with this vertex and
+            // edge count can carry; the skeleton-level quotient only pays off
+            // when its sweep amortizes over enough decorations.  Both inputs
+            // are isomorphism-invariant, so isomorphic multisets always take
+            // the same dedupe path.
+            let decoration_scale = leg_assignments
+                .len()
+                .saturating_mul(compositions_count(genus_sum, vertex_count));
             for_each_connected_edge_multiset(vertex_count, &pair_types, edge_count, &mut |edges| {
+                // Computed lazily: multisets whose valences admit no stable
+                // decoration never pay for a canonicality sweep.
+                let mut quotient_cache: Option<SkeletonQuotient> = None;
+
                 let mut edge_valence = vec![0usize; vertex_count];
                 for edge in edges {
                     edge_valence[edge.a] += 1;
@@ -453,28 +472,162 @@ pub fn stable_graphs_with_bounds(
                         continue;
                     }
                     for extra in compositions(genus_sum - required, vertex_count) {
+                        let quotient = quotient_cache.get_or_insert_with(|| {
+                            skeleton_quotient(vertex_count, edges, decoration_scale)
+                        });
+                        let automorphisms = match quotient {
+                            SkeletonQuotient::Canonical(automorphisms) => Some(&*automorphisms),
+                            // A relabelled isomorph of a canonical multiset
+                            // elsewhere in the enumeration: skip it entirely.
+                            SkeletonQuotient::NotCanonical => return,
+                            // Coarse skeleton classes (near-regular
+                            // multigraphs) or too few decorations to amortize
+                            // the sweep: dedupe per decorated graph, where
+                            // genera and legs refine the classes.
+                            SkeletonQuotient::PerDecoration => None,
+                        };
+                        let genera = genus_minimums
+                            .iter()
+                            .zip(extra.iter())
+                            .map(|(&minimum, &extra_genus)| minimum + extra_genus)
+                            .collect::<Vec<_>>();
+                        if let Some(automorphisms) = automorphisms {
+                            if !decoration_is_orbit_minimal(automorphisms, &genera, leg_assignment)
+                            {
+                                continue;
+                            }
+                        }
                         let graph = StableGraph {
-                            vertices: genus_minimums
-                                .iter()
-                                .zip(extra.iter())
-                                .map(|(&minimum, &extra_genus)| StableVertex {
-                                    genus: minimum + extra_genus,
-                                })
+                            vertices: genera
+                                .into_iter()
+                                .map(|genus| StableVertex { genus })
                                 .collect(),
                             edges: edges.to_vec(),
                             legs: leg_assignment.clone(),
                         };
                         debug_assert!(graph.is_connected() && graph.is_stable());
-                        if seen.insert(graph.canonical_key()) {
-                            out.push(graph);
+                        if automorphisms.is_none() && !seen.insert(graph.canonical_key()) {
+                            continue;
                         }
+                        out.push(graph);
                     }
                 }
             });
         }
     }
 
+    debug_assert_eq!(
+        out.iter()
+            .map(StableGraph::canonical_key)
+            .collect::<BTreeSet<_>>()
+            .len(),
+        out.len(),
+        "two-stage quotient produced duplicate isomorphism classes"
+    );
     out
+}
+
+enum SkeletonQuotient {
+    /// Canonical representative; carries the skeleton vertex automorphisms
+    /// (encoded as `permutation[new] = old`).
+    Canonical(Vec<Vec<usize>>),
+    /// A relabelled isomorph of a canonical multiset elsewhere in the
+    /// enumeration.
+    NotCanonical,
+    /// Skeleton-level quotient not worthwhile here; dedupe per decoration.
+    PerDecoration,
+}
+
+/// Cap on `prod_i k_i!` over the refined skeleton classes, above which the
+/// skeleton-level quotient falls back to per-decoration canonical dedupe.
+const SKELETON_ORBIT_SWEEP_LIMIT: usize = 720;
+
+fn skeleton_quotient(
+    vertex_count: usize,
+    edges: &[StableEdge],
+    decoration_scale: usize,
+) -> SkeletonQuotient {
+    let skeleton = StableGraph {
+        vertices: vec![StableVertex { genus: 0 }; vertex_count],
+        edges: edges.to_vec(),
+        legs: Vec::new(),
+    };
+    let classes = refined_vertex_classes(&skeleton);
+    let mut sweep_size = 1usize;
+    for class in &classes {
+        sweep_size = sweep_size.saturating_mul(factorial(class.len()));
+    }
+    // The two sweeps below cost about 2 * sweep_size key constructions; the
+    // decorated path costs roughly one canonical key per stable decoration.
+    // Prefer the skeleton quotient only when it can amortize.
+    if sweep_size > SKELETON_ORBIT_SWEEP_LIMIT || 2 * sweep_size > decoration_scale {
+        return SkeletonQuotient::PerDecoration;
+    }
+    let identity_key = skeleton.key_with_permutation(&(0..vertex_count).collect::<Vec<_>>());
+
+    // Canonicality: the identity key must *equal* the minimal key over the
+    // block-ordered class-respecting relabelings.  Comparing with `<` alone
+    // would be wrong: the identity arrangement is generally not among the
+    // block arrangements, so a merely differently-arranged labelling could
+    // pass while a relabelled isomorph of it also passes.
+    let mut identity_is_minimal = false;
+    let mut smaller_exists = false;
+    let mut targets = Vec::with_capacity(classes.len());
+    let mut next_position = 0usize;
+    for class in &classes {
+        targets.push((next_position..next_position + class.len()).collect::<Vec<_>>());
+        next_position += class.len();
+    }
+    for_each_class_assignment(&classes, &targets, vertex_count, &mut |permutation| {
+        if smaller_exists {
+            return;
+        }
+        let key = skeleton.key_with_permutation(permutation);
+        match key.cmp(&identity_key) {
+            Ordering::Less => smaller_exists = true,
+            Ordering::Equal => identity_is_minimal = true,
+            Ordering::Greater => {}
+        }
+    });
+    if smaller_exists || !identity_is_minimal {
+        return SkeletonQuotient::NotCanonical;
+    }
+
+    // Automorphisms: class members permute over their own original positions.
+    let mut automorphisms = Vec::new();
+    for_each_class_assignment(&classes, &classes, vertex_count, &mut |permutation| {
+        if skeleton.key_with_permutation(permutation) == identity_key {
+            automorphisms.push(permutation.to_vec());
+        }
+    });
+    SkeletonQuotient::Canonical(automorphisms)
+}
+
+/// Whether `(genera, legs)` is lexicographically minimal in its orbit under
+/// the skeleton automorphisms, so that each decorated isomorphism class keeps
+/// exactly one representative.
+fn decoration_is_orbit_minimal(
+    automorphisms: &[Vec<usize>],
+    genera: &[usize],
+    legs: &[usize],
+) -> bool {
+    let mut inverse = vec![0usize; genera.len()];
+    for permutation in automorphisms {
+        for (new, &old) in permutation.iter().enumerate() {
+            inverse[old] = new;
+        }
+        let permuted_genera = permutation.iter().map(|&old| genera[old]);
+        match permuted_genera.cmp(genera.iter().copied()) {
+            Ordering::Less => return false,
+            Ordering::Greater => continue,
+            Ordering::Equal => {}
+        }
+        let permuted_legs = legs.iter().map(|&old_vertex| inverse[old_vertex]);
+        if permuted_legs.cmp(legs.iter().copied()) == Ordering::Less {
+            return false;
+        }
+    }
+    true
 }
 
 fn edge_pair_types(vertex_count: usize) -> Vec<StableEdge> {
@@ -596,6 +749,22 @@ fn labelled_leg_assignments(legs: usize, vertex_count: usize) -> Vec<Vec<usize>>
     let mut out = Vec::new();
     rec(legs, vertex_count, &mut Vec::new(), &mut out);
     out
+}
+
+/// Number of compositions of `total` into `parts` nonnegative parts,
+/// `C(total + parts - 1, parts - 1)`, saturating on overflow.
+fn compositions_count(total: usize, parts: usize) -> usize {
+    if parts == 0 {
+        return 0;
+    }
+    let mut out = 1u128;
+    for k in 1..parts {
+        out = out.saturating_mul((total + k) as u128) / k as u128;
+        if out > usize::MAX as u128 {
+            return usize::MAX;
+        }
+    }
+    out as usize
 }
 
 fn compositions(total: usize, parts: usize) -> Vec<Vec<usize>> {
