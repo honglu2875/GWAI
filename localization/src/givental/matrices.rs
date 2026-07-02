@@ -3,63 +3,6 @@
 
 use super::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RMatrix {
-    size: usize,
-    z_order: usize,
-    coefficients: Vec<Vec<Vec<RatFun>>>,
-    calibration: CalibrationId,
-}
-
-impl RMatrix {
-    pub fn identity(size: usize, z_order: usize) -> Self {
-        let mut coefficients = vec![vec![vec![RatFun::zero(); size]; size]; z_order + 1];
-        for i in 0..size {
-            coefficients[0][i][i] = RatFun::one();
-        }
-        Self {
-            size,
-            z_order,
-            coefficients,
-            calibration: CalibrationId("identity".to_string()),
-        }
-    }
-
-    pub fn coefficient(&self, order: usize, row: usize, col: usize) -> Option<&RatFun> {
-        self.coefficients
-            .get(order)
-            .and_then(|matrix| matrix.get(row))
-            .and_then(|row_values| row_values.get(col))
-    }
-
-    pub fn check_unitarity_identity_case(&self) -> Result<(), GwError> {
-        if self.calibration.0 != "identity" {
-            return Err(GwError::ConventionMismatch(
-                "only identity calibration has a built-in check in the current scaffold"
-                    .to_string(),
-            ));
-        }
-        for order in 0..=self.z_order {
-            for row in 0..self.size {
-                for col in 0..self.size {
-                    let expected = if order == 0 && row == col {
-                        RatFun::one()
-                    } else {
-                        RatFun::zero()
-                    };
-                    if self.coefficients[order][row][col] != expected {
-                        return Err(GwError::ValidationFailure(format!(
-                            "identity R-matrix coefficient ({order},{row},{col}) is {}",
-                            self.coefficients[order][row][col]
-                        )));
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
 /// `q`-series valued `R(z) = 1 + R_1 z + ...` in the canonical frame.
 ///
 /// In Givental-Teleman reconstruction this is the upper-triangular symplectic

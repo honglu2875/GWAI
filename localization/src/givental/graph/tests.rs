@@ -63,14 +63,6 @@ fn translation_partition_symmetries_recover_ordered_composition_counts() {
 }
 
 #[test]
-fn identity_r_matrix_has_expected_coefficients() {
-    let r = RMatrix::identity(3, 4);
-    r.check_unitarity_identity_case().unwrap();
-    assert_eq!(r.coefficient(0, 2, 2), Some(&RatFun::one()));
-    assert_eq!(r.coefficient(1, 2, 2), Some(&RatFun::zero()));
-}
-
-#[test]
 fn series_identity_r_matrix_is_unitary_for_any_metric() {
     let metric = SeriesMatrix::from_entries(vec![
         vec![

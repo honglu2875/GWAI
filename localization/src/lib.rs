@@ -46,12 +46,15 @@ pub enum ComputeMode {
     Givental,
 }
 
+/// Optional caller-imposed cap on the `z`-order of the `S`/`R` calibration.
+///
+/// The graph engine derives the order it needs from each request and returns
+/// [`GwError::TruncationTooLow`] when this cap is below that.  Only the
+/// `z`-order is configurable; earlier revisions carried additional fields
+/// (`q_degree`, `descendant_degree`, `genus`) that were never consulted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Truncation {
-    pub q_degree: usize,
     pub z_order: usize,
-    pub descendant_degree: usize,
-    pub genus: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
