@@ -29,7 +29,7 @@ pub fn product_of_point_theories(
             "color {color} out of range for {colors} colors"
         )));
     }
-    let value = WittenKontsevich::new().psi_integral(genus, descendant_powers);
+    let value = WittenKontsevich::shared().psi_integral(genus, descendant_powers);
     Ok(RatFun::from_rational(value))
 }
 
@@ -1996,7 +1996,7 @@ pub(crate) fn evaluate_scalar_graph_chunk<C>(
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::new();
+    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = QSeries::<C>::zero(q_degree);
     for prepared in graphs {
@@ -2014,7 +2014,7 @@ where
                 &kernel.edge_options,
                 &kernel.calibration,
                 &kernel.translation,
-                &oracle,
+                oracle,
                 &mut vertex_cache,
                 q_degree,
                 graph_dimension,
@@ -2177,7 +2177,7 @@ pub(crate) fn evaluate_rational_no_insertion_graph_chunk(
     q_degree: usize,
     graph_dimension: usize,
 ) -> RationalGraphChunkResult {
-    let oracle = WittenKontsevich::new();
+    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut vertex_cache = HashMap::new();
     let mut total = RationalQSeries::zero(q_degree);
@@ -2193,7 +2193,7 @@ pub(crate) fn evaluate_rational_no_insertion_graph_chunk(
                 graph,
                 &coloring.colors,
                 kernel,
-                &oracle,
+                oracle,
                 &mut vertex_cache,
                 q_degree,
                 graph_dimension,
@@ -2511,7 +2511,7 @@ pub(crate) fn evaluate_external_graph_chunk<C>(
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::new();
+    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     for prepared in graphs {
@@ -2528,7 +2528,7 @@ where
                 &kernel.edge_options,
                 &kernel.calibration,
                 &kernel.translation,
-                &oracle,
+                oracle,
                 &mut vertex_cache,
                 q_degree,
                 graph_dimension,
@@ -2630,7 +2630,7 @@ pub(crate) fn evaluate_restricted_external_graph_chunk<C>(
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::new();
+    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = template.zero_like();
     for prepared in graphs {
@@ -2647,7 +2647,7 @@ where
                 &kernel.edge_options,
                 &kernel.calibration,
                 &kernel.translation,
-                &oracle,
+                oracle,
                 &mut vertex_cache,
                 q_degree,
                 graph_dimension,

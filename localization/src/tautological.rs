@@ -7,7 +7,7 @@
 
 use crate::algebra::Rational;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 pub trait TautologicalOracle: Send + Sync {
     /// Integral of `prod_i psi_i^{powers[i]}` over `Mbar_{g,n}`.
@@ -129,6 +129,16 @@ pub struct WittenKontsevich {
 impl WittenKontsevich {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Process-wide shared oracle.
+    ///
+    /// The DVV recursion is exponential in the marking count, so the memo
+    /// cache is valuable; sharing one instance means every graph worker and
+    /// every request amortizes it instead of rebuilding it per call.
+    pub fn shared() -> &'static WittenKontsevich {
+        static SHARED: OnceLock<WittenKontsevich> = OnceLock::new();
+        SHARED.get_or_init(WittenKontsevich::new)
     }
 
     fn psi_sorted(&self, genus: usize, powers: Vec<usize>) -> Rational {
