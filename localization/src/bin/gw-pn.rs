@@ -2,6 +2,9 @@ use clap::{Args, Parser, Subcommand};
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
+use gw_pn::givental::{
+    bidegree_dimension_matches, reconstruct_bidegree_invariants, ProductInsertion,
+};
 use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
@@ -65,9 +68,47 @@ enum Commands {
     Resolvent(ResolventArgs),
     /// Bounded sparse descendant potential for ordinary P^n
     Series(SeriesArgs),
+    /// P^n x P^m invariants by exact Novikov ray reconstruction
+    Product(ProductArgs),
     /// Run the built-in validation suite
     #[command(alias = "test")]
     Tests,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "Examples:
+  gw-pn product --n 1 --m 1 --g 0 --d 2 --insert 'tau0(H1*H2)' --insert 'tau0(H1*H2)' --insert 'tau0(H1*H2)'
+  gw-pn product --n 1 --m 1 --g 0 --d 1 --insert H1*H2 --insert H1 --insert H1
+  gw-pn product --n 1 --m 2 --g 0 --d 0 --insert H1 --insert H2^2 --insert 1
+
+Insertions are tauK(CLASS) with CLASS a product of H1^a and H2^b (or 1);
+a bare CLASS means tau0.  --d is the total degree d1 + d2; the command
+reports every bidegree.  Values are the non-equivariant invariants,
+computed at the given (or default) rational equivariant weights and
+reconstructed exactly from d + 1 Novikov rays.")]
+struct ProductArgs {
+    /// Dimension of the first factor P^n
+    #[arg(long)]
+    n: usize,
+    /// Dimension of the second factor P^m
+    #[arg(long)]
+    m: usize,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    /// Total curve degree d1 + d2
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    /// Insertion tauK(CLASS) with CLASS a product of H1^a, H2^b; repeat for
+    /// multiple markings
+    #[arg(long)]
+    insert: Vec<String>,
+    /// Comma-separated integer equivariant weights for the first factor
+    /// (n + 1 values, pairwise distinct)
+    #[arg(long, allow_hyphen_values = true)]
+    weights_x: Option<String>,
+    /// Comma-separated integer equivariant weights for the second factor
+    #[arg(long, allow_hyphen_values = true)]
+    weights_y: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -263,6 +304,7 @@ fn run(command: Commands) -> Result<(), GwError> {
         Commands::Formula(args) => run_formula(args),
         Commands::Resolvent(args) => run_resolvent(args),
         Commands::Series(args) => run_series(args),
+        Commands::Product(args) => run_product(args),
         Commands::Tests => run_tests(),
     }
 }
@@ -1058,6 +1100,118 @@ fn parse_series_insertions(
     }))
 }
 
+fn run_product(args: ProductArgs) -> Result<(), GwError> {
+    let weights_x = match args.weights_x.as_deref() {
+        Some(raw) => parse_integer_weights(raw, args.n + 1)?,
+        // Defaults chosen so all pairwise sums lambda_i + mu_j are distinct.
+        None => (0..=args.n).map(|i| Rational::from(i + 1)).collect(),
+    };
+    let weights_y = match args.weights_y.as_deref() {
+        Some(raw) => parse_integer_weights(raw, args.m + 1)?,
+        None => (0..=args.m)
+            .map(|j| Rational::from((args.n + 2) * (j + 1)))
+            .collect(),
+    };
+    let insertions = args
+        .insert
+        .iter()
+        .map(|raw| parse_product_insertion(raw))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let invariants = reconstruct_bidegree_invariants(
+        args.n,
+        args.m,
+        &weights_x,
+        &weights_y,
+        args.g,
+        args.d,
+        &insertions,
+    )?;
+    for (d2, value) in invariants.iter().enumerate() {
+        let d1 = args.d - d2;
+        if bidegree_dimension_matches(args.n, args.m, args.g, d1, d2, &insertions) {
+            println!("N[({d1},{d2})] = {value}");
+        } else {
+            println!("N[({d1},{d2})] = 0 (dimension mismatch)");
+        }
+    }
+    println!(
+        "note: reconstructed exactly from {} Novikov rays at rational equivariant weights",
+        args.d + 1
+    );
+    Ok(())
+}
+
+fn parse_integer_weights(raw: &str, expected: usize) -> Result<Vec<Rational>, GwError> {
+    let weights = raw
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<i128>()
+                .map(Rational::from)
+                .map_err(|_| {
+                    GwError::ParseError(format!("invalid integer weight `{part}` in `{raw}`"))
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if weights.len() != expected {
+        return Err(GwError::ParseError(format!(
+            "expected {expected} comma-separated weights, got {}",
+            weights.len()
+        )));
+    }
+    Ok(weights)
+}
+
+fn parse_product_insertion(raw: &str) -> Result<ProductInsertion, GwError> {
+    let invalid = || {
+        GwError::ParseError(format!(
+            "invalid product insertion `{raw}`: expected `tauK(CLASS)` or a bare `CLASS` \
+             (meaning tau0), with CLASS a `*`-product of `H1^a` and `H2^b` factors or `1` — \
+             for example `tau1(H1*H2^2)` or `H1`"
+        ))
+    };
+    let compact = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    let (descendant_power, class_part) = match compact.find('(') {
+        Some(open) => {
+            let inner = compact.strip_suffix(')').ok_or_else(invalid)?;
+            let descendant_power = inner[..open]
+                .strip_prefix("tau")
+                .ok_or_else(invalid)?
+                .parse::<usize>()
+                .map_err(|_| invalid())?;
+            (descendant_power, inner[open + 1..].to_string())
+        }
+        None => {
+            if compact.starts_with("tau") {
+                return Err(invalid());
+            }
+            (0, compact.clone())
+        }
+    };
+
+    let mut h1_power = 0usize;
+    let mut h2_power = 0usize;
+    for factor in class_part.split('*') {
+        if factor == "1" {
+            continue;
+        }
+        let (base, power) = match factor.split_once('^') {
+            Some((base, power)) => (base, power.parse::<usize>().map_err(|_| invalid())?),
+            None => (factor, 1),
+        };
+        match base {
+            "H1" => h1_power += power,
+            "H2" => h2_power += power,
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(ProductInsertion::new(descendant_power, h1_power, h2_power))
+}
+
 fn parse_insertions(n: usize, insert: &[String]) -> Result<Vec<gw_pn::Insertion>, GwError> {
     insert.iter().map(|raw| parse_insertion(n, raw)).collect()
 }
@@ -1294,6 +1448,39 @@ mod tests {
         match cli.command {
             Commands::Compute(args) => assert_eq!(args.d, None),
             _ => panic!("expected compute subcommand"),
+        }
+    }
+
+    #[test]
+    fn product_insertions_parse() {
+        let insertion = parse_product_insertion("tau1(H1*H2^2)").unwrap();
+        assert_eq!(
+            (
+                insertion.descendant_power,
+                insertion.h1_power,
+                insertion.h2_power
+            ),
+            (1, 1, 2)
+        );
+        let bare = parse_product_insertion("H1*H2").unwrap();
+        assert_eq!(
+            (bare.descendant_power, bare.h1_power, bare.h2_power),
+            (0, 1, 1)
+        );
+        let unit = parse_product_insertion("1").unwrap();
+        assert_eq!(
+            (unit.descendant_power, unit.h1_power, unit.h2_power),
+            (0, 0, 0)
+        );
+        assert!(parse_product_insertion("tau1(H^2)").is_err());
+        assert!(parse_product_insertion("tau1[H1]").is_err());
+        let cli = Cli::try_parse_from([
+            "gw-pn", "product", "--n", "1", "--m", "1", "--g", "0", "--d", "2", "--insert", "H1*H2",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Product(args) => assert_eq!((args.n, args.m, args.d), (1, 1, 2)),
+            _ => panic!("expected product subcommand"),
         }
     }
 

@@ -282,6 +282,28 @@ They return `1/8` and `1/2`.  The corresponding fiber-equivariant top terms
 should have those coefficients after the appropriate obstruction-weight power,
 but the full symbolic contractions are still part of the performance frontier.
 
+## `product`
+
+Computes `P^n x P^m` invariants by exact Novikov ray reconstruction: `--d` is
+the total degree `d1 + d2`, and the command reports every bidegree.  Values
+are non-equivariant invariants; bidegrees whose virtual dimension does not
+match the insertions are reported as dimension mismatches.
+
+Insertions are `tauK(CLASS)` with `CLASS` a `*`-product of `H1^a` and `H2^b`
+factors (or `1`); a bare class means `tau0`.
+
+```bash
+# the unique (1,1)-curve through three general points on P^1 x P^1
+cargo run --quiet -- product --n 1 --m 1 --g 0 --d 2 \
+  --insert 'tau0(H1*H2)' --insert 'tau0(H1*H2)' --insert 'tau0(H1*H2)'
+
+# ruling counts distinguish the two factors
+cargo run --quiet -- product --n 1 --m 1 --g 0 --d 1 --insert H1*H2 --insert H1 --insert H1
+```
+
+Optional `--weights-x`/`--weights-y` set the rational equivariant weights;
+the defaults are chosen so all fixed-point eigenvalue sums stay distinct.
+
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and

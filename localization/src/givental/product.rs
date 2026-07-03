@@ -600,21 +600,33 @@ pub fn reconstruct_bidegree_invariants(
     // filter them so the output is the list of non-equivariant numbers.
     // (For n != m the virtual dimension varies across the bidegrees of one
     // total degree, so this per-bidegree check cannot happen on a ray.)
-    let insertion_degree: usize = insertions
-        .iter()
-        .map(|insertion| insertion.descendant_power + insertion.h1_power + insertion.h2_power)
-        .sum();
     for (d2, value) in values.iter_mut().enumerate() {
-        let d1 = total_degree - d2;
-        let virtual_dimension = (1 - genus as isize) * ((n + m) as isize - 3)
-            + (n as isize + 1) * d1 as isize
-            + (m as isize + 1) * d2 as isize
-            + insertions.len() as isize;
-        if insertion_degree as isize != virtual_dimension {
+        if !bidegree_dimension_matches(n, m, genus, total_degree - d2, d2, insertions) {
             *value = Rational::zero();
         }
     }
     Ok(values)
+}
+
+/// Whether the insertions match the virtual dimension of genus-`genus`
+/// bidegree-`(d1, d2)` maps to `P^n x P^m`.
+pub fn bidegree_dimension_matches(
+    n: usize,
+    m: usize,
+    genus: usize,
+    d1: usize,
+    d2: usize,
+    insertions: &[ProductInsertion],
+) -> bool {
+    let insertion_degree: usize = insertions
+        .iter()
+        .map(|insertion| insertion.descendant_power + insertion.h1_power + insertion.h2_power)
+        .sum();
+    let virtual_dimension = (1 - genus as isize) * ((n + m) as isize - 3)
+        + (n as isize + 1) * d1 as isize
+        + (m as isize + 1) * d2 as isize
+        + insertions.len() as isize;
+    insertion_degree as isize == virtual_dimension
 }
 
 /// In-place Gaussian elimination over the rationals; `values` becomes the

@@ -56,7 +56,8 @@ pub mod target;
 pub use target::{GwTarget, ProjectiveTarget, TargetProvider};
 pub mod product;
 pub use product::{
-    reconstruct_bidegree_invariants, ProductInsertion, ProductProjectiveRay, ProductRayProvider,
+    bidegree_dimension_matches, reconstruct_bidegree_invariants, ProductInsertion,
+    ProductProjectiveRay, ProductRayProvider,
 };
 mod graph;
 pub use graph::*;
