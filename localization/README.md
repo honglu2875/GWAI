@@ -627,16 +627,25 @@ Three layers sit above it:
   (`GiventalGraphKernel::from_parts`) for experiments that bypass both
   recipes.
 
-Current `GwTarget` scope: one Novikov variable and divisor-generated rings
-with the divisor-power flat basis.  The first Picard-rank-two target,
-`P^n x P^m` (`givental::product`), works through exact Novikov ray
-specialization: `(q1, q2) = (t, b t)` is a ring homomorphism, so each ray runs
-on the unchanged single-variable engine, and `total_degree + 1` rays determine
-every bidegree exactly by a rational Vandermonde solve
-(`reconstruct_bidegree_invariants`).  Its calibration is validated against
-Behrend's product formula: `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise.
+The `GwTarget` interface itself covers one Novikov variable and
+divisor-generated rings; Picard-rank-two targets run on the same
+single-variable engine through exact Novikov ray specialization
+`(q1, q2) = (t, b t)` — a ring homomorphism, so each ray runs unchanged and
+`total_degree + 1` rays determine every bidegree by a rational Vandermonde
+solve.  Two rank-two targets ship:
+
+- `P^n x P^m` (`givental::product`), validated against Behrend's product
+  formula `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise; see the `product`
+  subcommand.
+- projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`
+  (`givental::bundle`) from their toric I-function, with a bidegree-graded
+  mirror transformation that keeps Birkhoff factorization single-variable
+  per ray, and a shifted grading that handles negative curve classes (the
+  exceptional section of a Hirzebruch surface); see the `bundle` subcommand
+  and [docs/lessons.md](docs/lessons.md) §§15–16.
+
 The twisted theories are equivalent in spirit to a second family of targets
-and will migrate onto the same interface once the I-function recipe is
+and will migrate onto the same interface once the I-function recipe is fully
 extracted.
 
 ## Performance Notes
@@ -655,11 +664,14 @@ under two seconds.
 
 - A native multi-parameter Novikov series layer, as an alternative to ray
   reconstruction for higher Picard rank (rays scale as one engine run per
-  reconstruction point; a native layer would share one run across all
-  bidegrees and support symbolic equivariant product weights).
-- Extract the I-function/mirror-map/Birkhoff recipe from the twisted module
-  so I-function-defined targets (toric complete intersections) register the
-  same way, and migrate the twisted theories onto the target interface.
+  reconstruction point and cannot carry symbolic equivariant weights; a
+  native layer would share one run across all bidegrees).
+- Relocate the H-Laurent / mirror-map / Birkhoff machinery from the twisted
+  module into `givental` (the recipe entry points are already the seam), and
+  migrate the twisted theories themselves onto the target interface.  With
+  the I-function recipe in place, further toric targets (complete
+  intersections, more general toric varieties) register the same way the
+  projective bundles do.
 - Route the twisted and series/master equivariant paths through the same
   factored kernel construction the ordinary equivariant path now uses.
 - Speed up high-genus stable-graph generation further: the remaining cost is

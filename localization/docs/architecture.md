@@ -63,6 +63,7 @@ Inside `src/givental/`:
 | `recipe.rs` | target-agnostic calibration recipes (see below) |
 | `target.rs` | `GwTarget`, `TargetProvider`, `ProjectiveTarget` |
 | `product.rs` | `P^n x P^m` by Novikov ray reconstruction |
+| `bundle.rs` | `P(O(a_1)+...+O(a_m))` over `P^n` from its toric I-function, bidegree-graded mirror + ray reconstruction |
 
 ## The engine
 
@@ -143,12 +144,24 @@ quantum differential equation).
 
 **I-function route.**  `descendant_s_from_i_function`: mirror map read off
 the `H z^{-1}` part, exponential gauge and re-expansion to J reduced by the
-classical ring relation, fundamental solution by repeated
-`z q d/dq + H`-cup, Birkhoff factorization, then the metric adjoint.  The
-cohomology-valued Laurent machinery it composes (`HCoeffLaurentSeries`, the
-mirror transforms, `birkhoff_factor.rs`) currently lives in the `twisted`
-module for historical reasons; the entry point is the target-agnostic seam
-and the physical relocation is mechanical follow-up.
+classical ring relation, then `descendant_s_from_j_function` (fundamental
+solution by repeated `z q d/dq + H`-cup, Birkhoff factorization, metric
+adjoint).  The J-function entry point is split out so multi-parameter
+targets can do the mirror transformation in bidegree-graded form before
+restricting to a ray, keeping Birkhoff single-variable per ray.  The
+cohomology-valued Laurent machinery all of this composes
+(`HCoeffLaurentSeries`, the mirror transforms, `birkhoff_factor.rs`)
+currently lives in the `twisted` module for historical reasons; the entry
+points are the target-agnostic seam and the physical relocation is
+mechanical follow-up.
+
+**Operator frame.**  `operator_lagrange_frame` builds a canonical frame from
+an explicit quantum multiplication operator (spectral projectors applied to
+the unit, eigenvalues by Newton on the Faddeev–LeVerrier characteristic
+polynomial, norms from the flat metric).  Unlike `divisor_lagrange_frame` it
+assumes neither companion form nor the residue pairing, so it serves targets
+whose multiplication matrix is honest in a constant basis but not cyclic in
+the naive sense — the projective-bundle path uses it.
 
 **Direct route.**  `GiventalGraphKernel::from_parts` accepts hand-supplied
 `R^{-1}` and translation data for experiments that bypass both recipes.
@@ -183,6 +196,25 @@ as a basis (lessons.md §1) — with quantum idempotents recovered from
 factor-idempotent fixed-point restrictions and metric norms from the
 Atiyah–Bott flat metric.  Validated against Behrend's product formula
 (`R_{P1 x P1} = R_{P1} (x) R_{P1}` entrywise).
+
+**Projective bundles** (`bundle.rs`).  `P(O(a_1) + ... + O(a_m))` over `P^n`
+from its toric I-function.  Picard rank two, and the first target with a
+nontrivial mirror map and a curve class that can be *negative* against a
+divisor (the exceptional section of a Hirzebruch surface).  The design that
+makes it tractable: twists are normalized to `min a_l = 0`, the shifted
+fiber degree `d2' = d2 + (max a) d1 >= 0` gives a nonnegative grading that
+covers the effective cone (non-effective classes vanish automatically), the
+whole ring is cyclic over the grading divisor `D = xi + (A+1)H` so everything
+runs in the constant classical `D`-power basis, and the mirror transformation
+happens in **bidegree-graded** form (finite per total degree) *before*
+restricting to flat-coordinate rays — so Birkhoff factorization stays a
+single-variable problem per ray and multi-Novikov Birkhoff never happens.
+Per ray: J -> S by `descendant_s_from_j_function`, quantum multiplication
+`A_q = A_cl + t d/dt S_1`, the frame by `operator_lagrange_frame`, R from
+flatness.  `reconstruct_bundle_invariants` runs `total_degree + 1` rays and a
+rational Vandermonde solve.  Validated against `P^1 x P^1` (zero twists) and
+Hirzebruch `F_1` classical integrals, line counts, and the exceptional and
+fiber curve invariants.  See lessons.md §§15–16.
 
 **Twisted theories** (`twisted.rs`).  Negative split-bundle twists over
 `P^n`, historically the crate's second theory and the origin of the
@@ -250,6 +282,16 @@ invariant-level test against whatever independent numbers exist.  If the
 target also has a hypergeometric I-function, feed it through
 `descendant_s_from_i_function` and assert the two S-matrices agree: that is
 the cheapest strong validation available.
+
+**A higher-Picard-rank target**: follow `product.rs`/`bundle.rs`.  Build the
+frame in a constant classical basis of a cyclic grading generator, compute
+any I-function mirror transformation in bidegree-graded form, then restrict
+to flat-coordinate rays `(t, b t)` and reconstruct bidegrees from
+`total + 1` rays by a rational Vandermonde solve.  This reuses the whole
+single-variable engine; the only per-target work is the geometry
+(fixed-point weights, the I-function or quantum ring, the insertion
+dictionary) and the choice of grading that makes the relevant curve classes
+nonnegative.
 
 **A new coefficient ring**: implement `Coeff` (plus the structural fast
 paths `is_structurally_zero/one` and the complexity hooks), and the entire

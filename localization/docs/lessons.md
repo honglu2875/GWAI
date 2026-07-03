@@ -275,3 +275,68 @@ give the cross-recipe oracle of Lesson 7 for free.
   fields of which one was read; callers were configuring behavior that did
   not exist.  An API that accepts and ignores input is worse than a smaller
   API.
+
+---
+
+## Part IV — Multi-parameter targets
+
+### 15. Grade first, restrict to rays second — Birkhoff stays one-dimensional
+
+Higher Picard rank means multiple Novikov variables, and the naive fear is
+multi-variable Birkhoff factorization (genuinely hard).  It never has to
+happen.  The mirror transformation — reading the mirror map off the
+I-function, gauging away the `z⁻¹` part, inverting the map, re-expanding J —
+is entirely a *graded* operation: work with coefficients indexed by the full
+multidegree `(d₁, d₂')`, finite in number per total degree, and every step
+(the multiplicative gauge, the map inversion by grading-complete fixed-point
+iteration, the recomposition) closes within that grading.  Only *after* J is
+in hand do you restrict to a rational ray `(t, b·t)` — and Birkhoff, which
+acts on a single Novikov direction, sees a one-variable series per ray.
+Reconstruction over `total+1` rays then recovers every multidegree exactly.
+The principle generalizes: *do the hard analytic step (Birkhoff) in the
+smallest space that still determines it, and do the bookkeeping (grading) in
+the large space where it is cheap.*
+
+Two supporting details that bit:
+
+- The two-variable mirror map is a pair of scalar bidegree series; inverting
+  it (`q_i = Q_i exp(−G_i(q(Q)))`) is grading-complete fixed-point
+  iteration, converging in `total_degree` steps because each step is exact
+  one grade higher.  No linear solve, no Newton — the grading does the work.
+- Each mirror-map exponent's `z⁻¹` part must lie in the span of
+  `{1, H, ξ'}` for degree reasons.  *Assert this* (exact solve of the
+  overdetermined system plus a residual check): a nonzero residual is not
+  round-off — it is a convention error somewhere upstream, caught
+  immediately instead of as a wrong number ten steps later.
+
+### 16. You do not need the effective cone — just a cone that covers it
+
+The honest obstruction to projective bundles is that the effective cone of
+curve classes in `P(E)` is not something we want to compute (it depends on
+the `a_l` in ways that get subtle).  We don't need it.  Non-effective
+classes contribute *zero* — computationally, not just morally: their
+I-function terms contain the full classical ring relation and vanish
+identically.  So it suffices to enumerate a *convex cone guaranteed to
+contain* the effective cone and let the zeros fall out.
+
+For `P(O(a_1) ⊕ … ⊕ O(a_m))` the mechanism is a coordinate shift.  The fiber
+degree `d₂ = ξ·β` can be negative (the exceptional section of a Hirzebruch
+surface has `d₂ = −1`), which a nonnegative Novikov grading cannot index.
+But `A = max a_l` bounds the negativity: every class with `d₂ < −A d₁` is
+non-effective, so the shifted degree `d₂' = d₂ + A d₁ ≥ 0` is a valid
+nonnegative grading covering the cone.  Two normalizations make this clean
+and are worth internalizing:
+
+- **`P(E) ≅ P(E ⊗ L)`**: twisting all summands by a line bundle changes
+  nothing, so normalize `min a_l = 0` up front.  Fewer cases, and the shift
+  `A` is then just `max a_l`.
+- Choosing the grading divisor `D = ξ + (A+1)H` (rather than `ξ` alone)
+  guarantees the classical eigenvalues `D|_{(i,j)}` are distinct at generic
+  weights, so the ring is cyclic over `D` and the entire single-generator
+  machinery applies to a rank-two Picard group.  The right cyclic generator
+  turns "two divisors" back into "one divisor" for every purpose except the
+  Novikov bookkeeping, which the grading already handles.
+
+The lesson is general to toric-ish targets: negative or awkward curve
+classes are a *grading* problem, not a *geometry* problem.  Find a shift and
+a cyclic generator; the vanishing takes care of the rest.
