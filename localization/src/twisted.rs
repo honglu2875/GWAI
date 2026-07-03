@@ -209,20 +209,20 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         out
     }
 
-    fn zero(max_h_power: usize) -> Self {
+    pub(crate) fn zero(max_h_power: usize) -> Self {
         Self {
             max_h_power,
             coeffs: vec![BTreeMap::new(); max_h_power + 1],
         }
     }
 
-    fn one(max_h_power: usize) -> Self {
+    pub(crate) fn one(max_h_power: usize) -> Self {
         let mut out = Self::zero(max_h_power);
         out.coeffs[0].insert(0, C::one());
         out
     }
 
-    fn coefficient(&self, h_power: usize, z_power: i32) -> C {
+    pub(crate) fn coefficient(&self, h_power: usize, z_power: i32) -> C {
         self.coeffs
             .get(h_power)
             .and_then(|terms| terms.get(&z_power))
@@ -230,15 +230,15 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
             .unwrap_or_else(C::zero)
     }
 
-    fn max_h_power(&self) -> usize {
+    pub(crate) fn max_h_power(&self) -> usize {
         self.max_h_power
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.coeffs.iter().all(BTreeMap::is_empty)
     }
 
-    fn add(&self, rhs: &Self) -> Self {
+    pub(crate) fn add(&self, rhs: &Self) -> Self {
         assert_eq!(self.max_h_power, rhs.max_h_power);
         let mut out = self.clone();
         for h_power in 0..=rhs.max_h_power {
@@ -249,7 +249,7 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         out
     }
 
-    fn scale(&self, scalar: C) -> Self {
+    pub(crate) fn scale(&self, scalar: C) -> Self {
         if scalar.is_zero() {
             return Self::zero(self.max_h_power);
         }
@@ -262,7 +262,7 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         out
     }
 
-    fn shift_z(&self, shift: i32) -> Self {
+    pub(crate) fn shift_z(&self, shift: i32) -> Self {
         let mut out = Self::zero(self.max_h_power);
         for h_power in 0..=self.max_h_power {
             for (z_power, coeff) in &self.coeffs[h_power] {
@@ -272,7 +272,7 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         out
     }
 
-    fn multiply_mod_relation(&self, rhs: &Self, h_power_relation: &[C]) -> Self {
+    pub(crate) fn multiply_mod_relation(&self, rhs: &Self, h_power_relation: &[C]) -> Self {
         assert_eq!(self.max_h_power, rhs.max_h_power);
         assert_eq!(h_power_relation.len(), self.max_h_power + 1);
         let basis_powers = h_basis_powers_mod_relation_coeff(self.max_h_power, h_power_relation);
@@ -349,7 +349,7 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         out
     }
 
-    fn add_term(&mut self, h_power: usize, z_power: i32, coeff: C) {
+    pub(crate) fn add_term(&mut self, h_power: usize, z_power: i32, coeff: C) {
         if coeff.is_zero() || h_power > self.max_h_power {
             return;
         }

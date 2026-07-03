@@ -54,6 +54,11 @@ pub mod recipe;
 pub use recipe::{calibration_from_canonical_frame, descendant_s_from_divisor_qde, CanonicalFrame};
 pub mod target;
 pub use target::{GwTarget, ProjectiveTarget, TargetProvider};
+pub mod bundle;
+pub use bundle::{
+    bundle_dimension_matches, reconstruct_bundle_invariants, BundleInsertion, BundleRayProvider,
+    ProjectiveBundleRay,
+};
 pub mod product;
 pub use product::{
     bidegree_dimension_matches, reconstruct_bidegree_invariants, ProductInsertion,
