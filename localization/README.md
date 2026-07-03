@@ -574,10 +574,16 @@ Three layers sit above it:
   recipes.
 
 Current `GwTarget` scope: one Novikov variable and divisor-generated rings
-with the divisor-power flat basis.  Higher Picard rank (e.g. `P^n x P^m`)
-requires a multi-parameter Novikov series layer first; the twisted theories
-are equivalent in spirit to a second family of targets and will migrate onto
-the same interface once the I-function recipe is extracted.
+with the divisor-power flat basis.  The first Picard-rank-two target,
+`P^n x P^m` (`givental::product`), works through exact Novikov ray
+specialization: `(q1, q2) = (t, b t)` is a ring homomorphism, so each ray runs
+on the unchanged single-variable engine, and `total_degree + 1` rays determine
+every bidegree exactly by a rational Vandermonde solve
+(`reconstruct_bidegree_invariants`).  Its calibration is validated against
+Behrend's product formula: `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise.
+The twisted theories are equivalent in spirit to a second family of targets
+and will migrate onto the same interface once the I-function recipe is
+extracted.
 
 ## Performance Notes
 
@@ -593,8 +599,10 @@ under two seconds.
 
 ## TODO
 
-- Multi-parameter Novikov series layer, unlocking Picard-rank >= 2 targets
-  (`P^n x P^m` first, cross-validated against the product formula).
+- A native multi-parameter Novikov series layer, as an alternative to ray
+  reconstruction for higher Picard rank (rays scale as one engine run per
+  reconstruction point; a native layer would share one run across all
+  bidegrees and support symbolic equivariant product weights).
 - Extract the I-function/mirror-map/Birkhoff recipe from the twisted module
   so I-function-defined targets (toric complete intersections) register the
   same way, and migrate the twisted theories onto the target interface.
