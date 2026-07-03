@@ -275,11 +275,38 @@ pub fn descendant_s_from_i_function<C: Coeff>(
             q_degree,
             classical_h_relation,
         );
+    descendant_s_from_j_function(
+        n,
+        &j_coefficients,
+        classical_h_relation,
+        flat_metric,
+        q_degree,
+        z_order,
+        calibration,
+    )
+}
+
+/// Descendant `S`-matrix from already-mirror-transformed `J`-coefficients:
+/// fundamental solution, Birkhoff factorization, metric adjoint.
+///
+/// Use this instead of [`descendant_s_from_i_function`] when the mirror
+/// transformation happened elsewhere — e.g. for multi-parameter targets whose
+/// mirror map is computed in bidegree-graded form before restricting to a
+/// Novikov ray.
+pub fn descendant_s_from_j_function<C: Coeff>(
+    n: usize,
+    j_coefficients: &[crate::twisted::HCoeffLaurentSeries<C>],
+    classical_h_relation: &[C],
+    flat_metric: &SeriesMatrix<C>,
+    q_degree: usize,
+    z_order: usize,
+    calibration: CalibrationId,
+) -> Result<SeriesSMatrix<C>, GwError> {
     let fundamental =
         crate::twisted::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
             n,
             q_degree,
-            &j_coefficients,
+            j_coefficients,
             classical_h_relation,
         );
     let birkhoff = crate::twisted::birkhoff_descendant_s_matrix_from_fundamental_coeff(
@@ -295,6 +322,210 @@ pub fn descendant_s_from_i_function<C: Coeff>(
     // from z^2 on, so getting this convention wrong is invisible in
     // low-order checks.
     crate::twisted::metric_adjoint_descendant_s_matrix_coeff(birkhoff, flat_metric)
+}
+
+/// Classical Lagrange transition for distinct rational eigenvalues: column
+/// `p` holds the coefficients of the idempotent `E_p(x)` in the power basis
+/// `1, x, x^2, ...`.
+pub(crate) fn classical_lagrange_transition(seeds: &[Rational]) -> Vec<Vec<Rational>> {
+    let size = seeds.len();
+    let mut transition = vec![vec![Rational::zero(); size]; size];
+    for point in 0..size {
+        let mut projector = vec![Rational::one()];
+        let mut denominator = Rational::one();
+        for other in 0..size {
+            if other == point {
+                continue;
+            }
+            let mut next = vec![Rational::zero(); projector.len() + 1];
+            for (power, coefficient) in projector.iter().enumerate() {
+                next[power] += -(seeds[other].clone()) * coefficient.clone();
+                next[power + 1] += coefficient.clone();
+            }
+            projector = next;
+            denominator = denominator * (seeds[point].clone() - seeds[other].clone());
+        }
+        for (power, coefficient) in projector.into_iter().enumerate() {
+            transition[power][point] = coefficient / denominator.clone();
+        }
+    }
+    transition
+}
+
+/// Inverse of a series matrix whose constant term is the identity, by the
+/// truncated Neumann series `I - N + N^2 - ...` for `N = M - I`.
+pub(crate) fn neumann_inverse(
+    matrix: &SeriesMatrix,
+    q_degree: usize,
+) -> Result<SeriesMatrix, GwError> {
+    let size = matrix.rows();
+    let identity = SeriesMatrix::identity(size, q_degree);
+    let nilpotent_part = matrix.sub(&identity);
+    let constant_term_vanishes = nilpotent_part.entries().iter().all(|row| {
+        row.iter().all(|series| {
+            series
+                .coeff(0)
+                .map(|constant| constant.is_zero())
+                .unwrap_or(true)
+        })
+    });
+    if !constant_term_vanishes {
+        return Err(GwError::AlgebraFailure(
+            "Neumann inversion requires identity constant term".to_string(),
+        ));
+    }
+    let mut inverse = identity.clone();
+    let mut power = identity;
+    for _ in 0..q_degree {
+        power = power.mul(&nilpotent_part).neg();
+        inverse = inverse.add(&power);
+    }
+    Ok(inverse)
+}
+
+/// In-place Gaussian elimination over the rationals; `values` becomes the
+/// solution vector.
+pub(crate) fn solve_rational_system(
+    matrix: &mut [Vec<Rational>],
+    values: &mut [Rational],
+) -> Result<(), GwError> {
+    let size = matrix.len();
+    for pivot in 0..size {
+        let row = (pivot..size)
+            .find(|&row| !matrix[row][pivot].is_zero())
+            .ok_or_else(|| GwError::AlgebraFailure("singular linear system".to_string()))?;
+        matrix.swap(pivot, row);
+        values.swap(pivot, row);
+        let inverse = Rational::one() / matrix[pivot][pivot].clone();
+        for col in pivot..size {
+            matrix[pivot][col] = matrix[pivot][col].clone() * inverse.clone();
+        }
+        values[pivot] = values[pivot].clone() * inverse;
+        for other in 0..size {
+            if other == pivot || matrix[other][pivot].is_zero() {
+                continue;
+            }
+            let factor = matrix[other][pivot].clone();
+            for col in pivot..size {
+                let term = matrix[pivot][col].clone() * factor.clone();
+                matrix[other][col] = matrix[other][col].clone() - term;
+            }
+            let term = values[pivot].clone() * factor;
+            values[other] = values[other].clone() - term;
+        }
+    }
+    Ok(())
+}
+
+/// Monic characteristic polynomial of a series matrix by Faddeev-LeVerrier,
+/// in ascending powers (constant first, leading `1` last).
+pub(crate) fn series_matrix_charpoly(matrix: &SeriesMatrix) -> Vec<QSeries> {
+    let size = matrix.rows();
+    let q_degree = matrix.max_degree();
+    let trace = |m: &SeriesMatrix| {
+        let mut total = QSeries::zero(q_degree);
+        for idx in 0..size {
+            total = total.add(m.entry(idx, idx));
+        }
+        total
+    };
+
+    // charpoly = x^size + c_1 x^{size-1} + ... + c_size.
+    let mut descending = vec![QSeries::one(q_degree)];
+    let mut auxiliary = SeriesMatrix::identity(size, q_degree);
+    for step in 1..=size {
+        let product = matrix.mul(&auxiliary);
+        let coefficient = trace(&product)
+            .scale(&(&RatFun::from_rational(-Rational::one()) / &RatFun::from(step)));
+        auxiliary = product.add(&scaled_identity(&coefficient, size, q_degree));
+        descending.push(coefficient);
+    }
+    descending.reverse();
+    descending
+}
+
+fn scaled_identity(scalar: &QSeries, size: usize, q_degree: usize) -> SeriesMatrix {
+    let mut entries = vec![vec![QSeries::zero(q_degree); size]; size];
+    for (idx, row) in entries.iter_mut().enumerate() {
+        row[idx] = scalar.clone();
+    }
+    SeriesMatrix::from_entries(entries)
+}
+
+/// Canonical frame from an explicit quantum multiplication operator.
+///
+/// Unlike [`divisor_lagrange_frame`], this makes no assumption about the flat
+/// basis beyond containing the unit at `unit_coordinates`: idempotents are the
+/// spectral projectors `prod_{q != p} (M - u_q)/(u_p - u_q)` of the operator
+/// applied to the unit element, eigenvalue series come from Newton iteration
+/// on the Faddeev-LeVerrier characteristic polynomial, and metric norms come
+/// from the supplied flat metric.  This is the frame builder for targets whose
+/// multiplication matrix is honest in a constant basis but not in companion
+/// form (multi-divisor rings presented through a cyclic generator).
+pub fn operator_lagrange_frame(
+    multiplication: &SeriesMatrix,
+    seeds: &[Rational],
+    unit_coordinates: &[RatFun],
+    flat_metric: &SeriesMatrix,
+) -> Result<CanonicalFrame, GwError> {
+    let size = multiplication.rows();
+    let q_degree = multiplication.max_degree();
+    let charpoly = series_matrix_charpoly(multiplication);
+    let roots = seeds
+        .iter()
+        .map(|seed| newton_root_series(&charpoly, &RatFun::from_rational(seed.clone()), q_degree))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut transition_columns = vec![vec![QSeries::zero(q_degree); size]; size];
+    for branch in 0..size {
+        // E_p(M) applied to the unit element.
+        let mut vector = unit_coordinates
+            .iter()
+            .map(|coordinate| QSeries::constant(coordinate.clone(), q_degree))
+            .collect::<Vec<_>>();
+        let mut denominator = QSeries::one(q_degree);
+        for other in 0..size {
+            if other == branch {
+                continue;
+            }
+            let mut next = vec![QSeries::zero(q_degree); size];
+            for (row, entry) in next.iter_mut().enumerate() {
+                let mut total = QSeries::zero(q_degree);
+                for col in 0..size {
+                    total = total.add(&multiplication.entry(row, col).mul(&vector[col]));
+                }
+                *entry = total.sub(&roots[other].mul(&vector[row]));
+            }
+            vector = next;
+            denominator = denominator.mul(&roots[branch].sub(&roots[other]));
+        }
+        let denominator_inv = denominator.inverse()?;
+        for (row, entry) in vector.into_iter().enumerate() {
+            transition_columns[row][branch] = entry.mul(&denominator_inv);
+        }
+    }
+    let transition_to_flat = SeriesMatrix::from_entries(transition_columns);
+    let flat_to_canonical = crate::twisted::invert_series_matrix_coeff(&transition_to_flat)?;
+
+    let canonical_metric = transition_to_flat
+        .transpose()
+        .mul(flat_metric)
+        .mul(&transition_to_flat);
+    let mut metric_norms = Vec::with_capacity(size);
+    let mut inverse_metric_norms = Vec::with_capacity(size);
+    for branch in 0..size {
+        let norm = canonical_metric.entry(branch, branch).clone();
+        inverse_metric_norms.push(norm.inverse()?);
+        metric_norms.push(norm);
+    }
+
+    Ok(CanonicalFrame {
+        roots,
+        transition_to_flat,
+        flat_to_canonical,
+        metric_norms,
+        inverse_metric_norms,
+    })
 }
 
 #[cfg(test)]

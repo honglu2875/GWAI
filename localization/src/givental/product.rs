@@ -140,29 +140,7 @@ impl ProductProjectiveRay {
     /// Classical Lagrange transition: column `p` holds the coefficients of
     /// the classical idempotent `E_p(D)` in the classical `D`-power basis.
     fn classical_transition(&self) -> Vec<Vec<Rational>> {
-        let size = self.size();
-        let seeds = self.classical_seeds();
-        let mut transition = vec![vec![Rational::zero(); size]; size];
-        for point in 0..size {
-            let mut projector = vec![Rational::one()];
-            let mut denominator = Rational::one();
-            for other in 0..size {
-                if other == point {
-                    continue;
-                }
-                let mut next = vec![Rational::zero(); projector.len() + 1];
-                for (power, coefficient) in projector.iter().enumerate() {
-                    next[power] += -(seeds[other].clone()) * coefficient.clone();
-                    next[power + 1] += coefficient.clone();
-                }
-                projector = next;
-                denominator = denominator * (seeds[point].clone() - seeds[other].clone());
-            }
-            for (power, coefficient) in projector.into_iter().enumerate() {
-                transition[power][point] = coefficient / denominator.clone();
-            }
-        }
-        transition
+        recipe::classical_lagrange_transition(&self.classical_seeds())
     }
 
     /// Quantum idempotents of the product expressed in the constant classical
@@ -248,7 +226,7 @@ impl ProductProjectiveRay {
             q_degree,
         );
         let flat_to_canonical =
-            neumann_inverse(&restriction_matrix, q_degree)?.mul(&classical_vandermonde);
+            recipe::neumann_inverse(&restriction_matrix, q_degree)?.mul(&classical_vandermonde);
 
         let mut roots = vec![QSeries::zero(q_degree); size];
         for i in 0..=self.n {
@@ -423,34 +401,6 @@ fn series_polynomial_from_roots(roots: &[QSeries], q_degree: usize) -> Vec<QSeri
     coefficients
 }
 
-/// Inverse of a series matrix whose constant term is the identity, by the
-/// truncated Neumann series `I - N + N^2 - ...` for `N = M - I`.
-fn neumann_inverse(matrix: &SeriesMatrix, q_degree: usize) -> Result<SeriesMatrix, GwError> {
-    let size = matrix.rows();
-    let identity = SeriesMatrix::identity(size, q_degree);
-    let nilpotent_part = matrix.sub(&identity);
-    let constant_term_vanishes = nilpotent_part.entries().iter().all(|row| {
-        row.iter().all(|series| {
-            series
-                .coeff(0)
-                .map(|constant| constant.is_zero())
-                .unwrap_or(true)
-        })
-    });
-    if !constant_term_vanishes {
-        return Err(GwError::AlgebraFailure(
-            "Neumann inversion requires identity constant term".to_string(),
-        ));
-    }
-    let mut inverse = identity.clone();
-    let mut power = identity;
-    for _ in 0..q_degree {
-        power = power.mul(&nilpotent_part).neg();
-        inverse = inverse.add(&power);
-    }
-    Ok(inverse)
-}
-
 /// Engine-facing provider for one ray of the product theory.
 #[derive(Debug, Clone)]
 pub struct ProductRayProvider {
@@ -593,7 +543,7 @@ pub fn reconstruct_bidegree_invariants(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    solve_rational_system(&mut matrix, &mut values)?;
+    recipe::solve_rational_system(&mut matrix, &mut values)?;
 
     // Equivariant invariants at dimension-mismatched bidegrees are nonzero
     // weight-dependent quantities whose non-equivariant limit vanishes;
@@ -627,42 +577,6 @@ pub fn bidegree_dimension_matches(
         + (m as isize + 1) * d2 as isize
         + insertions.len() as isize;
     insertion_degree as isize == virtual_dimension
-}
-
-/// In-place Gaussian elimination over the rationals; `values` becomes the
-/// solution vector.
-fn solve_rational_system(
-    matrix: &mut [Vec<Rational>],
-    values: &mut [Rational],
-) -> Result<(), GwError> {
-    let size = matrix.len();
-    for pivot in 0..size {
-        let row = (pivot..size)
-            .find(|&row| !matrix[row][pivot].is_zero())
-            .ok_or_else(|| {
-                GwError::AlgebraFailure("singular ray reconstruction system".to_string())
-            })?;
-        matrix.swap(pivot, row);
-        values.swap(pivot, row);
-        let inverse = Rational::one() / matrix[pivot][pivot].clone();
-        for col in pivot..size {
-            matrix[pivot][col] = matrix[pivot][col].clone() * inverse.clone();
-        }
-        values[pivot] = values[pivot].clone() * inverse;
-        for other in 0..size {
-            if other == pivot || matrix[other][pivot].is_zero() {
-                continue;
-            }
-            let factor = matrix[other][pivot].clone();
-            for col in pivot..size {
-                let term = matrix[pivot][col].clone() * factor.clone();
-                matrix[other][col] = matrix[other][col].clone() - term;
-            }
-            let term = values[pivot].clone() * factor;
-            values[other] = values[other].clone() - term;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
