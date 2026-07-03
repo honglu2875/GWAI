@@ -309,6 +309,29 @@ cargo run --quiet -- product --n 1 --m 1 --g 0 --d 1 --insert H1*H2 --insert H1 
 Optional `--weights-x`/`--weights-y` set the rational equivariant weights;
 the defaults are chosen so all fixed-point eigenvalue sums stay distinct.
 
+## `bundle`
+
+Computes invariants of a projective bundle `P(O(a_1) + ... + O(a_m))` over
+`P^n` from its toric I-function.  `--twists` are the `a_l` (any integers,
+normalized internally so `min a_l = 0`, since `P(E) = P(E ⊗ L)`).  `--d` is
+the *shifted* total degree `d1 + (d2 + (max a) d1)`, and the command reports
+every curve class `(d1, d2)` in that slice — `d2 = xi . beta` may be negative
+(the exceptional section of a Hirzebruch surface has `d2 < 0`).
+
+Insertions are `tauK(CLASS)` with `CLASS` a `*`-product of `H^p` and `xi^q`
+factors (or `1`); a bare class means `tau0`.
+
+```bash
+# F_1 = Bl_pt P^2 = P(O + O(1)) over P^1: classical int H xi = 1
+cargo run --quiet -- bundle --n 1 --twists 0,1 --g 0 --d 0 --insert H --insert xi --insert 1
+
+# the exceptional curve e = (1, -1): <xi, xi, xi>_e = -1
+cargo run --quiet -- bundle --n 1 --twists 0,1 --g 0 --d 1 --insert xi --insert xi --insert xi
+```
+
+Optional `--weights-base`/`--weights-fiber` set the rational equivariant
+weights; the defaults keep all grading eigenvalues distinct.
+
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and

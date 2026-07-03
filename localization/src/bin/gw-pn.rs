@@ -3,7 +3,8 @@ use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::givental::{
-    bidegree_dimension_matches, reconstruct_bidegree_invariants, ProductInsertion,
+    bidegree_dimension_matches, reconstruct_bidegree_invariants, reconstruct_bundle_invariants,
+    BundleInsertion, ProductInsertion,
 };
 use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
@@ -70,6 +71,8 @@ enum Commands {
     Series(SeriesArgs),
     /// P^n x P^m invariants by exact Novikov ray reconstruction
     Product(ProductArgs),
+    /// Projective bundle P(O(a_1)+...+O(a_m)) over P^n invariants
+    Bundle(BundleArgs),
     /// Run the built-in validation suite
     #[command(alias = "test")]
     Tests,
@@ -109,6 +112,43 @@ struct ProductArgs {
     /// Comma-separated integer equivariant weights for the second factor
     #[arg(long, allow_hyphen_values = true)]
     weights_y: Option<String>,
+}
+
+#[derive(Debug, Args)]
+#[command(after_help = "Examples:
+  gw-pn bundle --n 1 --twists 0,1 --g 0 --d 0 --insert H --insert xi --insert 1
+  gw-pn bundle --n 1 --twists 0,1 --g 0 --d 1 --insert xi --insert xi --insert xi
+
+The bundle is P(O(a_1)+...+O(a_m)) over P^n; --twists are the a_l (any
+integers, internally normalized so min a_l = 0 since P(E) = P(E tensor L)).
+Insertions are tauK(CLASS) with CLASS a *-product of H^p and xi^q factors
+(or 1); a bare CLASS means tau0.  --d is the SHIFTED total degree
+d1 + (d2 + (max a) d1); the command reports every curve class (d1, d2) in
+that slice, with d2 = xi . beta possibly negative.  Values are the
+non-equivariant invariants, reconstructed exactly from d + 1 Novikov rays.")]
+struct BundleArgs {
+    /// Dimension of the base P^n
+    #[arg(long)]
+    n: usize,
+    /// Comma-separated bundle twists a_1,...,a_m (integers)
+    #[arg(long, allow_hyphen_values = true)]
+    twists: String,
+    #[arg(long, visible_alias = "genus")]
+    g: usize,
+    /// Shifted total degree d1 + (d2 + (max a) d1)
+    #[arg(long, visible_alias = "degree")]
+    d: usize,
+    /// Insertion tauK(CLASS) with CLASS a *-product of H^p, xi^q; repeat for
+    /// multiple markings
+    #[arg(long)]
+    insert: Vec<String>,
+    /// Comma-separated integer equivariant weights for the base (n+1 values)
+    #[arg(long, allow_hyphen_values = true)]
+    weights_base: Option<String>,
+    /// Comma-separated integer equivariant weights for the fiber summands
+    /// (m values)
+    #[arg(long, allow_hyphen_values = true)]
+    weights_fiber: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -305,6 +345,7 @@ fn run(command: Commands) -> Result<(), GwError> {
         Commands::Resolvent(args) => run_resolvent(args),
         Commands::Series(args) => run_series(args),
         Commands::Product(args) => run_product(args),
+        Commands::Bundle(args) => run_bundle(args),
         Commands::Tests => run_tests(),
     }
 }
@@ -1142,6 +1183,134 @@ fn run_product(args: ProductArgs) -> Result<(), GwError> {
     Ok(())
 }
 
+fn run_bundle(args: BundleArgs) -> Result<(), GwError> {
+    let raw_twists = args
+        .twists
+        .split(',')
+        .map(|part| {
+            part.trim().parse::<i128>().map_err(|_| {
+                GwError::ParseError(format!("invalid twist `{part}` in `{}`", args.twists))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if raw_twists.is_empty() {
+        return Err(GwError::ParseError("--twists must be nonempty".to_string()));
+    }
+    // Normalize min a_l = 0: P(E) = P(E tensor L).
+    let minimum = *raw_twists.iter().min().expect("nonempty");
+    let twists = raw_twists
+        .iter()
+        .map(|value| (value - minimum) as usize)
+        .collect::<Vec<_>>();
+
+    let weights_base = match args.weights_base.as_deref() {
+        Some(raw) => parse_integer_weights(raw, args.n + 1)?,
+        None => (0..=args.n).map(|i| Rational::from(i + 1)).collect(),
+    };
+    // Fiber weight defaults must keep all grading eigenvalues distinct; a
+    // wide, twist-aware spacing suffices for small cases.
+    let weights_fiber = match args.weights_fiber.as_deref() {
+        Some(raw) => parse_integer_weights(raw, twists.len())?,
+        None => twists
+            .iter()
+            .enumerate()
+            .map(|(l, &a)| Rational::from((args.n + 3) * (l + 1) + a * (args.n + 1)))
+            .collect(),
+    };
+
+    let insertions = args
+        .insert
+        .iter()
+        .map(|raw| parse_bundle_insertion(raw))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let invariants = reconstruct_bundle_invariants(
+        args.n,
+        &twists,
+        &weights_base,
+        &weights_fiber,
+        args.g,
+        args.d,
+        &insertions,
+    )?;
+    if minimum != 0 {
+        println!(
+            "note: twists normalized to {twists:?} (subtracted min a_l = {minimum}); \
+             invariants are unchanged"
+        );
+    }
+    for (d1, d2, value) in &invariants {
+        if value.to_string() == "0"
+            && !gw_pn::givental::bundle_dimension_matches(
+                args.n,
+                &twists,
+                args.g,
+                *d1,
+                *d2,
+                &insertions,
+            )
+        {
+            println!("N[({d1},{d2})] = 0 (dimension mismatch)");
+        } else {
+            println!("N[({d1},{d2})] = {value}");
+        }
+    }
+    println!(
+        "note: reconstructed exactly from {} Novikov rays at rational equivariant weights",
+        args.d + 1
+    );
+    Ok(())
+}
+
+fn parse_bundle_insertion(raw: &str) -> Result<BundleInsertion, GwError> {
+    let invalid = || {
+        GwError::ParseError(format!(
+            "invalid bundle insertion `{raw}`: expected `tauK(CLASS)` or a bare `CLASS` \
+             (meaning tau0), with CLASS a `*`-product of `H^p` and `xi^q` factors or `1` — \
+             for example `tau1(H*xi^2)` or `xi`"
+        ))
+    };
+    let compact = raw
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>();
+    let (descendant_power, class_part) = match compact.find('(') {
+        Some(open) => {
+            let inner = compact.strip_suffix(')').ok_or_else(invalid)?;
+            let descendant_power = inner[..open]
+                .strip_prefix("tau")
+                .ok_or_else(invalid)?
+                .parse::<usize>()
+                .map_err(|_| invalid())?;
+            (descendant_power, inner[open + 1..].to_string())
+        }
+        None => {
+            if compact.starts_with("tau") {
+                return Err(invalid());
+            }
+            (0, compact.clone())
+        }
+    };
+
+    let mut h_power = 0usize;
+    let mut xi_power = 0usize;
+    for factor in class_part.split('*') {
+        if factor == "1" {
+            continue;
+        }
+        let (base, power) = match factor.split_once('^') {
+            Some((base, power)) => (base, power.parse::<usize>().map_err(|_| invalid())?),
+            None => (factor, 1),
+        };
+        match base {
+            "H" => h_power += power,
+            "xi" => xi_power += power,
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(BundleInsertion::new(descendant_power, h_power, xi_power))
+}
+
 fn parse_integer_weights(raw: &str, expected: usize) -> Result<Vec<Rational>, GwError> {
     let weights = raw
         .split(',')
@@ -1448,6 +1617,42 @@ mod tests {
         match cli.command {
             Commands::Compute(args) => assert_eq!(args.d, None),
             _ => panic!("expected compute subcommand"),
+        }
+    }
+
+    #[test]
+    fn bundle_insertions_parse() {
+        let insertion = parse_bundle_insertion("tau1(H*xi^2)").unwrap();
+        assert_eq!(
+            (
+                insertion.descendant_power,
+                insertion.h_power,
+                insertion.xi_power
+            ),
+            (1, 1, 2)
+        );
+        let bare = parse_bundle_insertion("xi").unwrap();
+        assert_eq!(
+            (bare.descendant_power, bare.h_power, bare.xi_power),
+            (0, 0, 1)
+        );
+        let unit = parse_bundle_insertion("1").unwrap();
+        assert_eq!(
+            (unit.descendant_power, unit.h_power, unit.xi_power),
+            (0, 0, 0)
+        );
+        assert!(parse_bundle_insertion("tau1(H1)").is_err());
+        assert!(parse_bundle_insertion("tau1[xi]").is_err());
+        let cli = Cli::try_parse_from([
+            "gw-pn", "bundle", "--n", "1", "--twists", "0,1", "--g", "0", "--d", "1", "--insert",
+            "xi",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Bundle(args) => {
+                assert_eq!((args.n, args.twists.as_str(), args.d), (1, "0,1", 1))
+            }
+            _ => panic!("expected bundle subcommand"),
         }
     }
 
