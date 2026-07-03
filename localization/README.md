@@ -587,10 +587,14 @@ Three layers sit above it:
 - **`givental::recipe`** holds the target-agnostic constructions: Newton
   root series and Lagrange frames from a quantum ring, the Dubrovin
   connection and `R`-flatness recursion with Bernoulli asymptotics derived
-  from fixed-point weight differences, and the descendant `S`-matrix from
-  the quantum differential equation.  The mirror-map/Birkhoff route used by
-  twisted theories is an alternative recipe for the same contract and still
-  lives in the `twisted` module.
+  from fixed-point weight differences, and two descendant `S`-matrix
+  recipes — `descendant_s_from_divisor_qde` (from a quantum ring) and
+  `descendant_s_from_i_function` (mirror map plus Birkhoff factorization of
+  a cohomology-valued hypergeometric series, in the engine's metric-adjoint
+  convention).  The two recipes cross-validate on untwisted `P^1`, where a
+  rank-zero twist makes both available for the same theory.  The H-Laurent
+  machinery the second recipe composes still lives in the `twisted` module;
+  relocating it is mechanical follow-up.
 - Providers may also supply calibrations directly
   (`GiventalGraphKernel::from_parts`) for experiments that bypass both
   recipes.

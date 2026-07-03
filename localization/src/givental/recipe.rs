@@ -235,3 +235,156 @@ pub fn divisor_lagrange_frame(
         inverse_metric_norms,
     })
 }
+
+/// Descendant `S`-matrix from an `I`-function, by mirror transformation and
+/// Birkhoff factorization.
+///
+/// This is the second calibration recipe, for targets whose natural datum is
+/// a cohomology-valued hypergeometric series rather than a quantum ring
+/// (toric complete intersections, twisted theories).  The steps are: read
+/// the mirror map off the `H z^{-1}` part of `I`, gauge it away and re-expand
+/// in the flat coordinate to obtain `J`, generate the fundamental solution by
+/// repeated applications of `z q d/dq + H`-cup (reduced by the classical ring
+/// relation), and Birkhoff-factor the resulting loop-group element; the
+/// negative factor's `z^{-k}` coefficients are the descendant `S`-matrix.
+///
+/// `classical_h_relation` expresses `H^{n+1}` in lower powers in the
+/// classical ring.  The `I`-coefficients are indexed by Novikov degree.
+///
+/// The cohomology-valued Laurent machinery this composes currently lives in
+/// the `twisted` module for historical reasons; relocating it here is
+/// mechanical follow-up, and this entry point is the target-agnostic seam.
+pub fn descendant_s_from_i_function<C: Coeff>(
+    n: usize,
+    i_coefficients: &[crate::twisted::HCoeffLaurentSeries<C>],
+    classical_h_relation: &[C],
+    flat_metric: &SeriesMatrix<C>,
+    q_degree: usize,
+    z_order: usize,
+    calibration: CalibrationId,
+) -> Result<SeriesSMatrix<C>, GwError> {
+    let mirror =
+        crate::twisted::mirror_map_coefficients_from_i_function_coeff(i_coefficients, q_degree);
+    let inverse_mirror = crate::series::invert_mirror_map(&mirror, q_degree);
+    let j_coefficients =
+        crate::twisted::mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff(
+            n,
+            i_coefficients,
+            &mirror,
+            &inverse_mirror,
+            q_degree,
+            classical_h_relation,
+        );
+    let fundamental =
+        crate::twisted::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
+            n,
+            q_degree,
+            &j_coefficients,
+            classical_h_relation,
+        );
+    let birkhoff = crate::twisted::birkhoff_descendant_s_matrix_from_fundamental_coeff(
+        n + 1,
+        q_degree,
+        z_order,
+        &fundamental,
+        calibration,
+    )?;
+    // The Birkhoff factor acts on vectors; the engine consumes the metric
+    // adjoint S^* = eta^{-1} S^T eta (the action on covector insertions).
+    // The symplectic condition makes the two agree through z^1 and diverge
+    // from z^2 on, so getting this convention wrong is invisible in
+    // low-order checks.
+    crate::twisted::metric_adjoint_descendant_s_matrix_coeff(birkhoff, flat_metric)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::twisted::{NegativeSplitBundleTwist, NegativeSplitLineHypergeometricModel};
+
+    #[test]
+    fn i_function_and_qde_recipes_agree_on_projective_space() {
+        // A rank-zero twist is untwisted P^1, so its hypergeometric
+        // I-function is the P^1 I-function and the mirror/Birkhoff recipe
+        // must reproduce the QDE-solved descendant S-matrix: the two
+        // calibration recipes cross-validate on the same target.
+        let q_degree = 2;
+        let z_order = 2;
+        let weights = [Rational::from(2), Rational::from(5)];
+        let ratfun_weights = weights
+            .iter()
+            .map(|weight| RatFun::from_rational(weight.clone()))
+            .collect::<Vec<_>>();
+        let twist = NegativeSplitBundleTwist::new(Vec::new()).unwrap();
+        let model = NegativeSplitLineHypergeometricModel::from_ratfun_weights(
+            1,
+            twist,
+            q_degree,
+            z_order,
+            ratfun_weights.clone(),
+            &[],
+        )
+        .unwrap();
+        let relation = crate::twisted::base_h_power_relation_coeff(1, &ratfun_weights).unwrap();
+        // Atiyah-Bott flat metric of P^1 in the H-power basis:
+        // G_{rs} = sum_i w_i^{r+s} / prod_{j != i} (w_i - w_j).
+        let metric_entry = |row: usize, col: usize| {
+            let mut total = Rational::zero();
+            for i in 0..2usize {
+                let mut euler = Rational::one();
+                for j in 0..2usize {
+                    if j != i {
+                        euler = euler * (weights[i].clone() - weights[j].clone());
+                    }
+                }
+                total += weights[i].pow_usize(row + col) / euler;
+            }
+            RatFun::from_rational(total)
+        };
+        let flat_metric = SeriesMatrix::constant(
+            (0..2)
+                .map(|row| (0..2).map(|col| metric_entry(row, col)).collect())
+                .collect(),
+            q_degree,
+        );
+        let s_from_i = descendant_s_from_i_function(
+            1,
+            &model.i_coefficients().unwrap(),
+            &relation,
+            &flat_metric,
+            q_degree,
+            z_order,
+            CalibrationId("test-i-function-recipe".to_string()),
+        )
+        .unwrap();
+        let s_from_qde =
+            projective_space_descendant_s_matrix_at_lambda_weights(1, q_degree, z_order, &weights)
+                .unwrap();
+
+        for order in 0..=z_order {
+            for row in 0..2 {
+                for col in 0..2 {
+                    for degree in 0..=q_degree {
+                        assert_eq!(
+                            s_from_i
+                                .coefficient(order)
+                                .unwrap()
+                                .entry(row, col)
+                                .coeff(degree)
+                                .unwrap()
+                                .as_rational(),
+                            s_from_qde
+                                .coefficient(order)
+                                .unwrap()
+                                .entry(row, col)
+                                .coeff(degree)
+                                .unwrap()
+                                .as_rational(),
+                            "S recipe mismatch at z^{order} ({row},{col}) q^{degree}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

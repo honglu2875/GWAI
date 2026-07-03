@@ -599,7 +599,10 @@ fn negative_split_equivariant_qrr_euler_factor_coeff<C: Coeff>(
     Ok(out)
 }
 
-fn base_h_power_relation_coeff<C: Coeff>(n: usize, base_weights: &[C]) -> Result<Vec<C>, GwError> {
+pub(crate) fn base_h_power_relation_coeff<C: Coeff>(
+    n: usize,
+    base_weights: &[C],
+) -> Result<Vec<C>, GwError> {
     if base_weights.len() != n + 1 {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",

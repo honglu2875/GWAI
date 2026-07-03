@@ -350,7 +350,7 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
         })
     }
 
-    fn i_coefficients(&self) -> Result<Vec<HCoeffLaurentSeries<C>>, GwError> {
+    pub(crate) fn i_coefficients(&self) -> Result<Vec<HCoeffLaurentSeries<C>>, GwError> {
         (0..=self.q_degree)
             .map(|degree| {
                 negative_split_equivariant_i_function_coefficient_coeff(
