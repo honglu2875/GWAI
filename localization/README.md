@@ -18,8 +18,10 @@ matches when possible (for example, `--max-descendants` reports
 `gw-pn <subcommand> --help` for the full flag list. Long flags also accept the
 spelled-out aliases (`--genus` for `--g`, `--degree` for `--d`, and so on).
 
-Non-obvious findings and design lessons from building this engine are
-collected in [docs/lessons.md](docs/lessons.md).
+A code-pointer map of the layers below is in
+[docs/architecture.md](docs/architecture.md); non-obvious findings and design
+lessons from building this engine are collected in
+[docs/lessons.md](docs/lessons.md).
 
 ## Quick Checks
 
