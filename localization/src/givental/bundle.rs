@@ -1085,6 +1085,179 @@ mod tests {
         );
     }
 
+    // ----- F_2 <-> P^1 x P^1 deformation cross-check (acceptance test) -----
+    //
+    // F_2 = P(O + O(2)) is deformation equivalent to P^1 x P^1, so every GW
+    // invariant matches under the identification below, and F_2 has a
+    // nontrivial mirror map while the product does not -- the ideal check of
+    // the full bundle pipeline against an independent one.  It is `#[ignore]`d
+    // because it does not pass yet: the F_2 side currently returns
+    // UnsupportedInvariant (Bug A, the non-Fano positive-z mirror map), and
+    // even once that is fixed the genus-1 cases exercise the R-matrix beyond
+    // first order (Bug B).  This is the acceptance test for both fixes; the
+    // derivation of the dictionary is in TEMP-bundle-issues.md, Appendix B.
+    //
+    // Dictionary: class (d1, d2) = (H.beta, xi.beta) on F_2 corresponds to
+    // P^1 x P^1 bidegree (d2 + d1, d1); cohomology H <-> H2, xi <-> H1 - H2.
+
+    fn small_binomial(n: usize, k: usize) -> i128 {
+        if k > n {
+            return 0;
+        }
+        let k = k.min(n - k);
+        let mut out = 1i128;
+        for step in 1..=k {
+            out = out * (n + 1 - step) as i128 / step as i128;
+        }
+        out
+    }
+
+    /// Expand an F_2 insertion tau_k(H^h xi^x) into P^1 x P^1 product
+    /// monomials under H -> H2, xi -> H1 - H2, truncated by H1^2 = H2^2 = 0.
+    fn f2_insertion_to_product_terms(
+        insertion: &BundleInsertion,
+    ) -> Vec<(Rational, crate::givental::ProductInsertion)> {
+        let mut terms = Vec::new();
+        for j in 0..=insertion.xi_power {
+            let a = j;
+            let b = insertion.h_power + insertion.xi_power - j;
+            if a >= 2 || b >= 2 {
+                continue; // vanishes on P^1 x P^1
+            }
+            let sign = if (insertion.xi_power - j).is_multiple_of(2) {
+                1
+            } else {
+                -1
+            };
+            let coefficient = Rational::from(small_binomial(insertion.xi_power, j) * sign);
+            terms.push((
+                coefficient,
+                crate::givental::ProductInsertion::new(insertion.descendant_power, a, b),
+            ));
+        }
+        terms
+    }
+
+    /// The F_2 invariant of class (d1, d2) computed on P^1 x P^1 through the
+    /// deformation identification: bidegree (d2 + d1, d1), insertions expanded
+    /// multilinearly and summed over the Cartesian product of terms.
+    fn product_side_of_f2(
+        genus: usize,
+        d1: usize,
+        d2: usize,
+        insertions: &[BundleInsertion],
+    ) -> Rational {
+        let product_total = d2 + 2 * d1;
+        let product_index = d1; // the H2 (second-factor) degree
+        let per_insertion = insertions
+            .iter()
+            .map(f2_insertion_to_product_terms)
+            .collect::<Vec<_>>();
+        let weights_x = vec![Rational::from(3), Rational::from(7)];
+        let weights_y = vec![Rational::from(13), Rational::from(29)];
+
+        let mut indices = vec![0usize; per_insertion.len()];
+        let mut total = Rational::zero();
+        loop {
+            let mut coefficient = Rational::one();
+            let mut monomials = Vec::with_capacity(per_insertion.len());
+            for (slot, &choice) in indices.iter().enumerate() {
+                let (term_coeff, monomial) = &per_insertion[slot][choice];
+                coefficient = coefficient * term_coeff.clone();
+                monomials.push(monomial.clone());
+            }
+            let invariants = crate::givental::reconstruct_bidegree_invariants(
+                1,
+                1,
+                &weights_x,
+                &weights_y,
+                genus,
+                product_total,
+                &monomials,
+            )
+            .unwrap();
+            total += coefficient * invariants[product_index].clone();
+
+            let mut slot = 0;
+            while slot < indices.len() {
+                indices[slot] += 1;
+                if indices[slot] < per_insertion[slot].len() {
+                    break;
+                }
+                indices[slot] = 0;
+                slot += 1;
+            }
+            if slot == indices.len() {
+                break;
+            }
+        }
+        total
+    }
+
+    /// The F_2 invariant of class (d1, d2) computed through the bundle
+    /// pipeline.  Bundle shifted total degree = d2 + (A+1) d1 with A = 2.
+    fn bundle_side_of_f2(
+        genus: usize,
+        d1: usize,
+        d2: usize,
+        insertions: &[BundleInsertion],
+    ) -> Rational {
+        let invariants = reconstruct_bundle_invariants(
+            1,
+            &[0, 2],
+            &base_weights(),
+            &fiber_weights(),
+            genus,
+            d2 + 3 * d1,
+            insertions,
+        )
+        .unwrap();
+        invariants
+            .into_iter()
+            .find(|(a, b, _)| *a == d1 && *b == d2 as isize)
+            .map(|(_, _, value)| value)
+            .expect("bundle class present in the shifted-degree slice")
+    }
+
+    #[test]
+    #[ignore = "acceptance test for the non-Fano (Bug A) and R-order (Bug B) fixes; \
+                fails today -- see TEMP-bundle-issues.md"]
+    fn f2_deformation_matches_p1xp1_pointwise() {
+        let point = BundleInsertion::new(0, 1, 1); // H xi is the F_2 point class
+        let xi = BundleInsertion::new(0, 0, 1); // maps to H1 - H2 (two terms)
+        let tau1_point = BundleInsertion::new(1, 1, 1);
+        let cases: Vec<(usize, usize, usize, Vec<BundleInsertion>)> = vec![
+            // genus 0, positive section B+ = (1,0) -> F_0 (1,1): <pt,pt,pt>.
+            (0, 1, 0, vec![point.clone(), point.clone(), point.clone()]),
+            // genus 0, 2f = (0,2) -> F_0 (2,0): <pt,pt,pt>.
+            (0, 0, 2, vec![point.clone(), point.clone(), point.clone()]),
+            // genus 1, fiber f = (0,1) -> F_0 (1,0): <pt,pt>.
+            (1, 0, 1, vec![point.clone(), point.clone()]),
+            // genus 1, fiber, single descendant marking: <tau_1(pt)>.
+            (1, 0, 1, vec![tau1_point.clone()]),
+            // genus 1, fiber, divisor + descendant: exercises the
+            // xi -> H1 - H2 multilinear expansion on the product side.
+            (1, 0, 1, vec![xi.clone(), tau1_point.clone()]),
+            // genus 1, 2f = (0,2) -> F_0 (2,0): <pt,pt,pt,pt>.
+            (
+                1,
+                0,
+                2,
+                vec![point.clone(), point.clone(), point.clone(), point.clone()],
+            ),
+        ];
+
+        for (genus, d1, d2, insertions) in cases {
+            let bundle = bundle_side_of_f2(genus, d1, d2, &insertions);
+            let product = product_side_of_f2(genus, d1, d2, &insertions);
+            assert_eq!(
+                bundle, product,
+                "F_2 vs P^1xP^1 mismatch at genus {genus}, class ({d1},{d2}): \
+                 bundle {bundle}, product {product}"
+            );
+        }
+    }
+
     #[test]
     fn i_function_vanishes_outside_the_shifted_cone_boundary() {
         // For F_1 (twists [0,1] over P^1), the grade (d1, d2') = (1, 0)
