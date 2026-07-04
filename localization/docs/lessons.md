@@ -340,3 +340,36 @@ and are worth internalizing:
 The lesson is general to toric-ish targets: negative or awkward curve
 classes are a *grading* problem, not a *geometry* problem.  Find a shift and
 a cyclic generator; the vanishing takes care of the rest.
+
+### 17. Non-Fano is where the mirror map stops being a change of variables
+
+The naive mirror transform — read the mirror map off the `1/z` divisor part,
+exponential-gauge it away, invert, re-expand — works for Fano targets and
+quietly fails for non-Fano ones.  The mechanism, made concrete on
+`F_2 = P(O ⊕ O(2))`:
+
+- `F_2` has an effective curve of *anticanonical degree zero*: the
+  `(-2)`-section `B_-`, with `c_1·B_- = 0`.  (Fano surfaces like `F_0`, `F_1`
+  have `c_1·β > 0` for every effective class.)
+- For such a class the I-function term `I_β(z)` starts at `z^{0}` and can carry
+  a **positive power of `z`** and a `z^0` part that is *not a multiple of the
+  unit*.  So `I ≠ 1 + O(1/z)`, and projecting it onto the J-slice is a genuine
+  Birkhoff (upper-triangular loop-group) step, not a divisor change of
+  variables.
+- The precise, cheap detector: the mirror-map exponent acquires a **nonzero
+  unit component** exactly for these classes.  For Fano targets it is
+  identically zero.  Guarding on it turns "silently wrong number" into a clean
+  "unsupported", which is the only acceptable failure mode for an exact
+  engine.
+
+Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
+`(t, b·t)` and full-vector debugging are worth building** — printing the raw
+I-function's `z`-graded coefficient vectors is what turned "wrong rational
+number" into "positive-`z` term at the `B_-` grade" in one look.  Second, and
+more embarrassing: **every passing test used the R-matrix only to first
+order.**  The genus-0, three-point curve counts that validated the Fano
+bundles all have moduli dimension zero (`R`-order 1), so the `R`-matrix beyond
+first order went entirely unexercised until a genus-1 four-point check caught
+a disagreement.  When a validation battery looks green, ask what *order* of
+each object it actually reaches — coverage of cases is not coverage of
+structure.

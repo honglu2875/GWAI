@@ -332,6 +332,14 @@ cargo run --quiet -- bundle --n 1 --twists 0,1 --g 0 --d 1 --insert xi --insert 
 Optional `--weights-base`/`--weights-fiber` set the rational equivariant
 weights; the defaults keep all grading eigenvalues distinct.
 
+Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
+`F_1`, and the like).  Non-Fano bundles (`max a_l >= 2`, e.g.
+`F_2 = P(O + O(2))`) are detected and reported as unsupported — their mirror
+map is not a divisor change of variables (see
+[docs/lessons.md](docs/lessons.md) §17).  Higher-genus output is not yet
+validated (the `R`-matrix beyond first order needs work) and should be treated
+as unverified.
+
 ## `formula`
 
 Prints a human-readable Givental graph formula skeleton for fixed genus and
