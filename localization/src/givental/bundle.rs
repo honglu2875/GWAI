@@ -31,6 +31,24 @@
 //! from `S_1`, the canonical frame from spectral projectors of that operator
 //! (`recipe::operator_lagrange_frame`), and the R-matrix from flatness with
 //! tangent-weight asymptotics.
+//!
+//! **Validated scope, and two frontiers.**  The genus-zero curve-counting
+//! invariants of Fano bundles (`F_0`, `F_1`, and the like) are validated: the
+//! classical integrals, the exceptional and fiber curve invariants, the line
+//! count, and the `P^1 x P^1` cross-check.  Two cases are *not* yet trusted:
+//!
+//! - **Non-Fano bundles** (`A >= 2`, e.g. `F_2 = P(O + O(2))`).  The effective
+//!   `(-A)`-section has anticanonical degree zero, so the I-function acquires
+//!   positive powers of `z` and a non-unit `z^0` part and the mirror map is no
+//!   longer a divisor change of variables.  The pipeline detects this exactly
+//!   (a nonzero unit component of the mirror exponent) and returns
+//!   [`GwError::UnsupportedInvariant`] rather than a wrong number.
+//! - **Higher `R`-order** (genus `>= 1`, or many markings).  Every validated
+//!   case exercises the `R`-matrix only through first order; a genus-1,
+//!   four-point `P^1 x P^1` check computed as `P(O + O)` disagrees with the
+//!   product engine, so the operator-frame `R` beyond first order is not yet
+//!   trusted.  These computations are not blocked — treat their output as
+//!   unverified pending a fix.
 
 use super::*;
 use crate::twisted::HLaurentSeries;
@@ -410,8 +428,27 @@ impl ProjectiveBundleRay {
             let target = (0..size)
                 .map(|row| exponent_part.coefficient(row, -1))
                 .collect::<Vec<_>>();
-            let (_, g_h, g_xi) =
+            let (g_unit, g_h, g_xi) =
                 decompose_in_degree_two_span(&unit_vector, &h_vector, &xi_prime_vector, &target)?;
+            // A nonzero unit component of the mirror exponent is the precise
+            // signature of the non-Fano case: an effective curve class of
+            // anticanonical degree zero (the (-A)-section for A >= 2) makes the
+            // I-function acquire positive powers of z and a non-unit z^0 part,
+            // so the mirror transformation is no longer a divisor change of
+            // variables plus a z^{-1} gauge.  Projecting that I-function onto
+            // the J-slice needs a full Birkhoff step that this pipeline does
+            // not yet implement, so refuse rather than return a wrong number.
+            // Fano bundles (F_0, F_1, and the like) have g_unit == 0 and are
+            // handled exactly.  See docs/lessons.md.
+            if !g_unit.is_zero() {
+                return Err(GwError::UnsupportedInvariant(
+                    "non-Fano projective bundle: the I-function has an effective \
+                     anticanonical-degree-zero class whose mirror map is not a pure \
+                     divisor change of variables; this case (e.g. F_2 = P(O + O(2))) \
+                     is not yet supported"
+                        .to_string(),
+                ));
+            }
             if !g_h.is_zero() {
                 mirror_h.insert(*grade, g_h);
             }
@@ -1019,6 +1056,33 @@ mod tests {
 
     fn fiber_weights() -> Vec<Rational> {
         vec![Rational::from(11), Rational::from(23)]
+    }
+
+    #[test]
+    fn f2_non_fano_is_currently_unsupported() {
+        // F_2 = P(O + O(2)) over P^1 is deformation equivalent to P^1 x P^1,
+        // the ideal higher-genus / nontrivial-mirror cross-check.  But F_2 is
+        // non-Fano: its effective (-2)-section has anticanonical degree zero,
+        // so the I-function acquires positive powers of z and a non-unit z^0
+        // part, and the mirror transformation is no longer a divisor change of
+        // variables.  The pipeline detects this (a nonzero unit component of
+        // the mirror exponent) and refuses rather than returning a wrong
+        // number.  Handling it needs the full Birkhoff projection of a
+        // positive-z I-function onto the J-slice; see docs/lessons.md.
+        let point = BundleInsertion::new(0, 1, 1);
+        let result = reconstruct_bundle_invariants(
+            1,
+            &[0, 2],
+            &base_weights(),
+            &fiber_weights(),
+            0,
+            3,
+            &[point.clone(), point.clone(), point],
+        );
+        assert!(
+            matches!(result, Err(GwError::UnsupportedInvariant(_))),
+            "expected F_2 to report non-Fano as unsupported, got {result:?}"
+        );
     }
 
     #[test]
