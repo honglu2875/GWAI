@@ -333,12 +333,11 @@ Optional `--weights-base`/`--weights-fiber` set the rational equivariant
 weights; the defaults keep all grading eigenvalues distinct.
 
 Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
-`F_1`, and the like).  Non-Fano bundles (`max a_l >= 2`, e.g.
-`F_2 = P(O + O(2))`) are detected and reported as unsupported — their mirror
-map is not a divisor change of variables (see
-[docs/lessons.md](docs/lessons.md) §17).  Higher-genus output is not yet
-validated (the `R`-matrix beyond first order needs work) and should be treated
-as unverified.
+`F_1`, and the like), the non-Fano `F_2 = P(O + O(2))` deformation dictionary
+against `P^1 x P^1`, and a zero-twist `P(O + O)` calibration check against
+the product engine through higher `R` order.  Non-Fano mirror projection is a
+ray-wise Birkhoff step, not just a divisor change of variables; see
+[docs/lessons.md](docs/lessons.md) §17.
 
 ## `formula`
 
@@ -646,11 +645,11 @@ solve.  Two rank-two targets ship:
   formula `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise; see the `product`
   subcommand.
 - projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`
-  (`givental::bundle`) from their toric I-function, with a bidegree-graded
-  mirror transformation that keeps Birkhoff factorization single-variable
-  per ray, and a shifted grading that handles negative curve classes (the
-  exceptional section of a Hirzebruch surface); see the `bundle` subcommand
-  and [docs/lessons.md](docs/lessons.md) §§15–16.
+  (`givental::bundle`) from their toric I-function, with ray-wise Birkhoff
+  projection that keeps factorization single-variable per ray, and a shifted
+  grading that handles negative curve classes (the exceptional section of a
+  Hirzebruch surface); see the `bundle` subcommand and
+  [docs/lessons.md](docs/lessons.md) §§15–17.
 
 The twisted theories are equivalent in spirit to a second family of targets
 and will migrate onto the same interface once the I-function recipe is fully

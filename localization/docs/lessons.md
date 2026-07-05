@@ -356,11 +356,16 @@ quietly fails for non-Fano ones.  The mechanism, made concrete on
   unit*.  So `I ≠ 1 + O(1/z)`, and projecting it onto the J-slice is a genuine
   Birkhoff (upper-triangular loop-group) step, not a divisor change of
   variables.
-- The precise, cheap detector: the mirror-map exponent acquires a **nonzero
-  unit component** exactly for these classes.  For Fano targets it is
-  identically zero.  Guarding on it turns "silently wrong number" into a clean
-  "unsupported", which is the only acceptable failure mode for an exact
-  engine.
+- The precise, cheap detector: the naive divisor-mirror exponent acquires a
+  **nonzero unit component** exactly for these classes.  For Fano targets it is
+  identically zero.  That detector was useful while the full projection was
+  missing, but it is not the fix.
+- The fix is to build the fundamental solution from the ray-restricted
+  I-function itself and run the ordinary matrix Birkhoff split there.  Its
+  positive factor performs the Coates-Givental projection to the small-J
+  calibration; its negative factor is the descendant S-matrix consumed by the
+  graph engine.  This is still one-variable after Novikov ray restriction, so
+  the rank-two bookkeeping does not require a multi-variable Birkhoff engine.
 
 Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
 `(t, b·t)` and full-vector debugging are worth building** — printing the raw
@@ -370,6 +375,9 @@ more embarrassing: **every passing test used the R-matrix only to first
 order.**  The genus-0, three-point curve counts that validated the Fano
 bundles all have moduli dimension zero (`R`-order 1), so the `R`-matrix beyond
 first order went entirely unexercised until a genus-1 four-point check caught
-a disagreement.  When a validation battery looks green, ask what *order* of
-each object it actually reaches — coverage of cases is not coverage of
-structure.
+a disagreement.  The root cause was a fiber sign in the bundle R-asymptotic
+constants: because `xi|_(i,j) = -c_ij`, the fiber difference for the
+R-asymptotics is `(-c_il) - (-c_ij) = c_ij - c_il`, opposite to the Euler
+factor used in the flat metric.  When a validation battery looks green, ask
+what *order* of each object it actually reaches — coverage of cases is not
+coverage of structure.

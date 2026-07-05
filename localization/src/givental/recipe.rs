@@ -302,11 +302,40 @@ pub fn descendant_s_from_j_function<C: Coeff>(
     z_order: usize,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix<C>, GwError> {
+    descendant_s_from_cone_point_function(
+        n,
+        j_coefficients,
+        classical_h_relation,
+        flat_metric,
+        q_degree,
+        z_order,
+        calibration,
+    )
+}
+
+/// Descendant `S`-matrix from a cohomology-valued point on Givental's cone:
+/// generate the fundamental solution, Birkhoff-factor it, and take the metric
+/// adjoint of the negative factor.
+///
+/// If the input is already on the small-J slice this is the usual J -> S
+/// construction.  If the input has a nontrivial polynomial/positive-z part
+/// (as for non-Fano toric bundles), the positive Birkhoff factor performs the
+/// projection to the small-J calibration while the negative factor still gives
+/// the descendant S-matrix.
+pub fn descendant_s_from_cone_point_function<C: Coeff>(
+    n: usize,
+    cone_point_coefficients: &[crate::twisted::HCoeffLaurentSeries<C>],
+    classical_h_relation: &[C],
+    flat_metric: &SeriesMatrix<C>,
+    q_degree: usize,
+    z_order: usize,
+    calibration: CalibrationId,
+) -> Result<SeriesSMatrix<C>, GwError> {
     let fundamental =
         crate::twisted::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
             n,
             q_degree,
-            j_coefficients,
+            cone_point_coefficients,
             classical_h_relation,
         );
     let birkhoff = crate::twisted::birkhoff_descendant_s_matrix_from_fundamental_coeff(

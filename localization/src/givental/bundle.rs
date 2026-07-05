@@ -1,6 +1,6 @@
 //! Projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`, via the toric
-//! I-function, a bidegree-graded mirror transformation, and exact Novikov
-//! ray reconstruction.
+//! I-function, ray-wise Birkhoff projection, and exact Novikov ray
+//! reconstruction.
 //!
 //! **Geometry.**  With `E = O(a_1) + ... + O(a_m)` (twists normalized so
 //! `min a_l = 0`, always possible since `P(E) = P(E ⊗ L)`), the cohomology is
@@ -21,34 +21,20 @@
 //!
 //! **Pipeline.**  The classical ring is cyclic over the grading divisor
 //! `D = xi + (A+1) H` at generic weights, so everything runs in the constant
-//! classical `D`-power basis via fixed-point restrictions.  The I-function
-//! and its mirror transformation are computed in bidegree-graded form
-//! (finite per total degree `d1 + d2'`), *then* restricted to flat-coordinate
-//! rays `(Q1, Q2') = (t, b t)` — so Birkhoff factorization stays a
-//! single-variable problem per ray, and `total + 1` rays reconstruct every
-//! bidegree exactly by a rational Vandermonde solve.  Per ray: J -> S by
-//! Birkhoff (`recipe::descendant_s_from_j_function`), quantum multiplication
-//! from `S_1`, the canonical frame from spectral projectors of that operator
-//! (`recipe::operator_lagrange_frame`), and the R-matrix from flatness with
-//! tangent-weight asymptotics.
+//! classical `D`-power basis via fixed-point restrictions.  The I-function is
+//! computed in bidegree-graded form (finite per total degree `d1 + d2'`),
+//! then restricted to flat-coordinate rays `(Q1, Q2') = (t, b t)`.  Per ray,
+//! the fundamental solution generated from this cone point is Birkhoff
+//! factored; the positive factor is the Coates-Givental projection onto the
+//! small-`J` calibration, so non-Fano positive powers of `z` are handled in
+//! the same path as Fano divisor mirror maps.  The negative factor gives `S`,
+//! `S_1` gives quantum multiplication by `D`, spectral projectors give the
+//! canonical frame, and flatness gives `R`.
 //!
-//! **Validated scope, and two frontiers.**  The genus-zero curve-counting
-//! invariants of Fano bundles (`F_0`, `F_1`, and the like) are validated: the
-//! classical integrals, the exceptional and fiber curve invariants, the line
-//! count, and the `P^1 x P^1` cross-check.  Two cases are *not* yet trusted:
-//!
-//! - **Non-Fano bundles** (`A >= 2`, e.g. `F_2 = P(O + O(2))`).  The effective
-//!   `(-A)`-section has anticanonical degree zero, so the I-function acquires
-//!   positive powers of `z` and a non-unit `z^0` part and the mirror map is no
-//!   longer a divisor change of variables.  The pipeline detects this exactly
-//!   (a nonzero unit component of the mirror exponent) and returns
-//!   [`GwError::UnsupportedInvariant`] rather than a wrong number.
-//! - **Higher `R`-order** (genus `>= 1`, or many markings).  Every validated
-//!   case exercises the `R`-matrix only through first order; a genus-1,
-//!   four-point `P^1 x P^1` check computed as `P(O + O)` disagrees with the
-//!   product engine, so the operator-frame `R` beyond first order is not yet
-//!   trusted.  These computations are not blocked — treat their output as
-//!   unverified pending a fix.
+//! **Validated scope.**  Regression tests cover Fano genus-zero bundle counts,
+//! `P(O + O) = P^1 x P^1` through higher `R` order, and the non-Fano
+//! `F_2 = P(O + O(2))` deformation dictionary against the independent product
+//! engine, including genus-one cases.
 
 use super::*;
 use crate::twisted::HLaurentSeries;
@@ -336,182 +322,41 @@ impl ProjectiveBundleRay {
         out
     }
 
-    /// Mirror-transformed J-coefficients in flat coordinates, bidegree
-    /// graded through total degree `k_max`.
-    fn j_container(
-        &self,
-        k_max: usize,
-        min_z: i32,
-    ) -> Result<BTreeMap<Grade, HLaurentSeries>, GwError> {
-        let size = self.size();
-        let relation = self.h_power_relation();
-        let mut i_container = BTreeMap::new();
+    /// Bidegree-graded `I`-coefficients through shifted total degree `k_max`.
+    fn i_container(&self, k_max: usize, min_z: i32) -> BTreeMap<Grade, HLaurentSeries> {
+        let mut container = BTreeMap::new();
         for d1 in 0..=k_max {
             for d2p in 0..=(k_max - d1) {
                 let coefficient = self.i_coefficient(d1, d2p, min_z);
                 if !coefficient.is_empty() {
-                    i_container.insert((d1, d2p), coefficient);
+                    container.insert((d1, d2p), coefficient);
                 }
             }
         }
-
-        // Multiplicative gauge stripping every z^{-1} part, graded by total
-        // degree (the bidegree analogue of the single-variable full-vector
-        // mirror gauge): after this, gauge * I = J at the un-transformed
-        // coordinates, and the divisor components of the exponents are the
-        // mirror map.
-        let mut exponent = BTreeMap::<Grade, HLaurentSeries>::new();
-        let mut gauge = BTreeMap::<Grade, HLaurentSeries>::new();
-        gauge.insert((0, 0), HLaurentSeries::one(size - 1));
-        for total in 1..=k_max {
-            for grade in grades_of_total(total, k_max) {
-                let mut known = HLaurentSeries::zero(size - 1);
-                for (split, exponent_part) in &exponent {
-                    if split.0 > grade.0 || split.1 > grade.1 {
-                        continue;
-                    }
-                    let remainder = (grade.0 - split.0, grade.1 - split.1);
-                    if let Some(gauge_part) = gauge.get(&remainder) {
-                        let weight = Rational::from(split.0 + split.1);
-                        known = known.add(
-                            &exponent_part
-                                .multiply_mod_relation(gauge_part, &relation)
-                                .scale(weight),
-                        );
-                    }
-                }
-                let mut gauge_grade = known.scale(Rational::one() / Rational::from(total));
-
-                let mut gauged = gauge_grade.clone();
-                for (split, gauge_part) in &gauge {
-                    if *split == (0usize, 0usize) || split.0 > grade.0 || split.1 > grade.1 {
-                        continue;
-                    }
-                    let remainder = (grade.0 - split.0, grade.1 - split.1);
-                    if let Some(i_part) = i_container.get(&remainder) {
-                        gauged = gauged.add(&gauge_part.multiply_mod_relation(i_part, &relation));
-                    }
-                }
-                if let Some(i_part) = i_container.get(&grade) {
-                    gauged = gauged.add(i_part);
-                }
-
-                let tau = crate::twisted::z_power_part_coeff(&gauged, -1);
-                let exponent_grade = tau.shift_z(-1).scale(-Rational::one());
-                gauge_grade = gauge_grade.add(&exponent_grade);
-                if !exponent_grade.is_empty() {
-                    exponent.insert(grade, exponent_grade);
-                }
-                if !gauge_grade.is_empty() {
-                    gauge.insert(grade, gauge_grade);
-                }
-            }
-        }
-        let gauged = bideg_h_mul(&gauge, &i_container, &relation, k_max);
-
-        // Read the mirror map: each exponent must lie in the span of
-        // {1, H, xi'} (degree reasons); the H and xi' components are the
-        // divisor-direction corrections for the two flat coordinates.
-        let unit_vector = self.insertion_class_vector(0, 0);
-        let h_vector = self.insertion_class_vector(1, 0);
-        let xi_prime_vector = {
-            let xi = self.insertion_class_vector(0, 1);
-            let shift = Rational::from(self.big_a() as i128);
-            xi.iter()
-                .zip(h_vector.iter())
-                .map(|(xi_c, h_c)| xi_c.clone() + shift.clone() * h_c.clone())
-                .collect::<Vec<_>>()
-        };
-        let mut mirror_h = BTreeMap::<Grade, Rational>::new();
-        let mut mirror_xi = BTreeMap::<Grade, Rational>::new();
-        for (grade, exponent_part) in &exponent {
-            let target = (0..size)
-                .map(|row| exponent_part.coefficient(row, -1))
-                .collect::<Vec<_>>();
-            let (g_unit, g_h, g_xi) =
-                decompose_in_degree_two_span(&unit_vector, &h_vector, &xi_prime_vector, &target)?;
-            // A nonzero unit component of the mirror exponent is the precise
-            // signature of the non-Fano case: an effective curve class of
-            // anticanonical degree zero (the (-A)-section for A >= 2) makes the
-            // I-function acquire positive powers of z and a non-unit z^0 part,
-            // so the mirror transformation is no longer a divisor change of
-            // variables plus a z^{-1} gauge.  Projecting that I-function onto
-            // the J-slice needs a full Birkhoff step that this pipeline does
-            // not yet implement, so refuse rather than return a wrong number.
-            // Fano bundles (F_0, F_1, and the like) have g_unit == 0 and are
-            // handled exactly.  See docs/lessons.md.
-            if !g_unit.is_zero() {
-                return Err(GwError::UnsupportedInvariant(
-                    "non-Fano projective bundle: the I-function has an effective \
-                     anticanonical-degree-zero class whose mirror map is not a pure \
-                     divisor change of variables; this case (e.g. F_2 = P(O + O(2))) \
-                     is not yet supported"
-                        .to_string(),
-                ));
-            }
-            if !g_h.is_zero() {
-                mirror_h.insert(*grade, g_h);
-            }
-            if !g_xi.is_zero() {
-                mirror_xi.insert(*grade, g_xi);
-            }
-        }
-
-        // Invert the two-variable mirror map on scalar bidegree series:
-        // u_i(Q) = q_i(Q)/Q_i = exp(-G_i(q(Q))), solved by grading-complete
-        // fixed-point iteration.
-        let mut u_h: BTreeMap<Grade, Rational> = BTreeMap::from([((0, 0), Rational::one())]);
-        let mut u_xi: BTreeMap<Grade, Rational> = BTreeMap::from([((0, 0), Rational::one())]);
-        for _ in 0..=k_max {
-            let ghat_h = substitute_scalar(&mirror_h, &u_h, &u_xi, k_max);
-            let ghat_xi = substitute_scalar(&mirror_xi, &u_h, &u_xi, k_max);
-            u_h = bideg_exp(&bideg_neg(&ghat_h), k_max);
-            u_xi = bideg_exp(&bideg_neg(&ghat_xi), k_max);
-        }
-
-        // Compose: J[(G)] = sum_g [u_h^{g_1} u_xi^{g_2}]_{G - g} gauged[g].
-        let u_h_powers = monomial_powers(&u_h, k_max);
-        let u_xi_powers = monomial_powers(&u_xi, k_max);
-        let mut j_container = BTreeMap::<Grade, HLaurentSeries>::new();
-        for (grade, gauged_part) in &gauged {
-            let weight = bideg_mul(&u_h_powers[grade.0], &u_xi_powers[grade.1], k_max);
-            for (offset, scalar) in &weight {
-                let target = (grade.0 + offset.0, grade.1 + offset.1);
-                if target.0 + target.1 > k_max {
-                    continue;
-                }
-                let term = gauged_part.scale(scalar.clone());
-                let entry = j_container
-                    .entry(target)
-                    .or_insert_with(|| HLaurentSeries::zero(size - 1));
-                *entry = entry.add(&term);
-            }
-        }
-        Ok(j_container)
+        container
     }
 
-    /// Ray restriction of the J-coefficients: `Q1 = t`, `Q2' = ray * t`.
-    fn j_ray(&self, k_max: usize, min_z: i32) -> Result<Vec<HLaurentSeries>, GwError> {
-        let j_container = self.j_container(k_max, min_z)?;
+    /// Ray restriction of the `I`-coefficients: `Q1 = t`, `Q2' = ray * t`.
+    ///
+    /// The resulting cone point is fed to the fundamental-solution Birkhoff
+    /// factorization.  That split is the Coates-Givental projection onto the
+    /// small-`J` calibration; in particular it handles the positive z-powers
+    /// that occur for non-Fano bundles.
+    fn i_ray(&self, k_max: usize, min_z: i32) -> Vec<HLaurentSeries> {
+        let i_container = self.i_container(k_max, min_z);
         let size = self.size();
         let mut out = vec![HLaurentSeries::zero(size - 1); k_max + 1];
-        for (grade, value) in &j_container {
+        for (grade, value) in &i_container {
             let total = grade.0 + grade.1;
             let scaled = value.scale(self.ray.pow_usize(grade.1));
             out[total] = out[total].add(&scaled);
         }
-        Ok(out)
+        out
     }
 }
 
 type Grade = (usize, usize);
 type ZLaurent = BTreeMap<i32, Rational>;
-
-fn grades_of_total(total: usize, k_max: usize) -> Vec<Grade> {
-    (0..=total.min(k_max))
-        .map(|d2p| (total - d2p, d2p))
-        .collect()
-}
 
 fn zl_one() -> ZLaurent {
     BTreeMap::from([(0, Rational::one())])
@@ -574,176 +419,6 @@ fn add_zl_term(series: &mut ZLaurent, z_power: i32, value: Rational, min_z: i32)
     }
 }
 
-fn bideg_neg(series: &BTreeMap<Grade, Rational>) -> BTreeMap<Grade, Rational> {
-    series
-        .iter()
-        .map(|(grade, value)| (*grade, -value.clone()))
-        .collect()
-}
-
-fn bideg_mul(
-    left: &BTreeMap<Grade, Rational>,
-    right: &BTreeMap<Grade, Rational>,
-    k_max: usize,
-) -> BTreeMap<Grade, Rational> {
-    let mut out = BTreeMap::new();
-    for (left_grade, left_value) in left {
-        for (right_grade, right_value) in right {
-            let grade = (left_grade.0 + right_grade.0, left_grade.1 + right_grade.1);
-            if grade.0 + grade.1 > k_max {
-                continue;
-            }
-            let next = out.get(&grade).cloned().unwrap_or_else(Rational::zero)
-                + left_value.clone() * right_value.clone();
-            if next.is_zero() {
-                out.remove(&grade);
-            } else {
-                out.insert(grade, next);
-            }
-        }
-    }
-    out
-}
-
-/// Graded exponential of a scalar bidegree series with no constant term.
-fn bideg_exp(series: &BTreeMap<Grade, Rational>, k_max: usize) -> BTreeMap<Grade, Rational> {
-    let mut out = BTreeMap::from([((0usize, 0usize), Rational::one())]);
-    for total in 1..=k_max {
-        for grade in grades_of_total(total, k_max) {
-            let mut value = Rational::zero();
-            for (split, series_value) in series {
-                if split.0 > grade.0 || split.1 > grade.1 || (split.0 == 0 && split.1 == 0) {
-                    continue;
-                }
-                let remainder = (grade.0 - split.0, grade.1 - split.1);
-                if let Some(out_value) = out.get(&remainder) {
-                    value += Rational::from(split.0 + split.1)
-                        * series_value.clone()
-                        * out_value.clone();
-                }
-            }
-            value = value / Rational::from(total);
-            if !value.is_zero() {
-                out.insert(grade, value);
-            }
-        }
-    }
-    out
-}
-
-/// Substitute `q_i = Q_i u_i(Q)` into a scalar bidegree series.
-fn substitute_scalar(
-    series: &BTreeMap<Grade, Rational>,
-    u_h: &BTreeMap<Grade, Rational>,
-    u_xi: &BTreeMap<Grade, Rational>,
-    k_max: usize,
-) -> BTreeMap<Grade, Rational> {
-    let u_h_powers = monomial_powers(u_h, k_max);
-    let u_xi_powers = monomial_powers(u_xi, k_max);
-    let mut out = BTreeMap::new();
-    for (grade, value) in series {
-        let weight = bideg_mul(&u_h_powers[grade.0], &u_xi_powers[grade.1], k_max);
-        for (offset, scalar) in &weight {
-            let target = (grade.0 + offset.0, grade.1 + offset.1);
-            if target.0 + target.1 > k_max {
-                continue;
-            }
-            let next = out.get(&target).cloned().unwrap_or_else(Rational::zero)
-                + value.clone() * scalar.clone();
-            if next.is_zero() {
-                out.remove(&target);
-            } else {
-                out.insert(target, next);
-            }
-        }
-    }
-    out
-}
-
-fn monomial_powers(
-    series: &BTreeMap<Grade, Rational>,
-    k_max: usize,
-) -> Vec<BTreeMap<Grade, Rational>> {
-    let mut powers = Vec::with_capacity(k_max + 1);
-    powers.push(BTreeMap::from([((0usize, 0usize), Rational::one())]));
-    for exponent in 1..=k_max {
-        let next = bideg_mul(&powers[exponent - 1], series, k_max);
-        powers.push(next);
-    }
-    powers
-}
-
-fn bideg_h_mul(
-    left: &BTreeMap<Grade, HLaurentSeries>,
-    right: &BTreeMap<Grade, HLaurentSeries>,
-    relation: &[Rational],
-    k_max: usize,
-) -> BTreeMap<Grade, HLaurentSeries> {
-    let mut out = BTreeMap::<Grade, HLaurentSeries>::new();
-    for (left_grade, left_value) in left {
-        for (right_grade, right_value) in right {
-            let grade = (left_grade.0 + right_grade.0, left_grade.1 + right_grade.1);
-            if grade.0 + grade.1 > k_max {
-                continue;
-            }
-            let term = left_value.multiply_mod_relation(right_value, relation);
-            match out.get_mut(&grade) {
-                Some(entry) => *entry = entry.add(&term),
-                None => {
-                    out.insert(grade, term);
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Exact decomposition of a vector in the span of `{unit, H, xi'}`.
-fn decompose_in_degree_two_span(
-    unit: &[Rational],
-    h: &[Rational],
-    xi_prime: &[Rational],
-    target: &[Rational],
-) -> Result<(Rational, Rational, Rational), GwError> {
-    // The three columns are linearly independent constants, so the normal
-    // equations have a unique exact solution; consistency of the
-    // overdetermined system is then verified coordinate by coordinate — the
-    // z^{-1} part of a homogeneous I-function exponent must have
-    // cohomological degree <= 2, so a nonzero residual means broken
-    // conventions rather than round-off.
-    let columns = [unit, h, xi_prime];
-    let mut gram = vec![vec![Rational::zero(); 3]; 3];
-    let mut rhs = vec![Rational::zero(); 3];
-    for a in 0..3 {
-        for b in 0..3 {
-            let mut total = Rational::zero();
-            for row in 0..target.len() {
-                total += columns[a][row].clone() * columns[b][row].clone();
-            }
-            gram[a][b] = total;
-        }
-        let mut total = Rational::zero();
-        for row in 0..target.len() {
-            total += columns[a][row].clone() * target[row].clone();
-        }
-        rhs[a] = total;
-    }
-    recipe::solve_rational_system(&mut gram, &mut rhs)?;
-
-    for row in 0..target.len() {
-        let reconstructed = unit[row].clone() * rhs[0].clone()
-            + h[row].clone() * rhs[1].clone()
-            + xi_prime[row].clone() * rhs[2].clone();
-        if reconstructed != target[row] {
-            return Err(GwError::AlgebraFailure(
-                "mirror exponent leaves the degree-two span; conventions are inconsistent"
-                    .to_string(),
-            ));
-        }
-    }
-    Ok((rhs[0].clone(), rhs[1].clone(), rhs[2].clone()))
-}
-
 fn rational_series_matrix_to_ratfun(matrix: &SeriesMatrix<Rational>) -> SeriesMatrix {
     SeriesMatrix::from_entries(
         matrix
@@ -787,10 +462,10 @@ impl ProjectiveBundleRay {
         }
 
         let min_z = self.min_z_power(q_degree, z_order);
-        let j_ray = self.j_ray(q_degree, min_z)?;
-        let descendant_s = recipe::descendant_s_from_j_function(
+        let i_ray = self.i_ray(q_degree, min_z);
+        let descendant_s = recipe::descendant_s_from_cone_point_function(
             self.size() - 1,
-            &j_ray,
+            &i_ray,
             &self.h_power_relation(),
             &self.flat_metric_series(q_degree),
             q_degree,
@@ -917,8 +592,11 @@ impl SemisimpleCohftProvider for BundleRayProvider {
                 }
                 for l in 0..self.target.rank() {
                     if l != j {
+                        // The fiber divisor is xi with restriction -c_ij, so
+                        // the R-asymptotic factor difference is
+                        // (-c_il) - (-c_ij), opposite to the Euler factor.
                         differences.push(RatFun::from_rational(
-                            self.target.fiber_weight(i, l) - self.target.fiber_weight(i, j),
+                            self.target.fiber_weight(i, j) - self.target.fiber_weight(i, l),
                         ));
                     }
                 }
@@ -931,7 +609,7 @@ impl SemisimpleCohftProvider for BundleRayProvider {
             &classical_diagonal,
             q_degree,
             r_order,
-            CalibrationId(format!("bundle-ray-j:{}", self.target.cache_key())),
+            CalibrationId(format!("bundle-ray-i-birkhoff:{}", self.target.cache_key())),
         )?;
         let kernel = Arc::new(GiventalGraphKernel::from_calibration(
             calibration,
@@ -1059,16 +737,12 @@ mod tests {
     }
 
     #[test]
-    fn f2_non_fano_is_currently_unsupported() {
-        // F_2 = P(O + O(2)) over P^1 is deformation equivalent to P^1 x P^1,
-        // the ideal higher-genus / nontrivial-mirror cross-check.  But F_2 is
-        // non-Fano: its effective (-2)-section has anticanonical degree zero,
-        // so the I-function acquires positive powers of z and a non-unit z^0
-        // part, and the mirror transformation is no longer a divisor change of
-        // variables.  The pipeline detects this (a nonzero unit component of
-        // the mirror exponent) and refuses rather than returning a wrong
-        // number.  Handling it needs the full Birkhoff projection of a
-        // positive-z I-function onto the J-slice; see docs/lessons.md.
+    fn f2_non_fano_positive_z_birkhoff_matches_product_genus_zero() {
+        // F_2 = P(O + O(2)) is non-Fano: its (-2)-section has anticanonical
+        // degree zero, so the I-function has positive z-powers and cannot be
+        // mirror-transformed by a divisor change alone.  The ray-wise
+        // fundamental-solution Birkhoff split is the required projection; the
+        // positive section B_+ = (1,0) deforms to bidegree (1,1) on P^1 x P^1.
         let point = BundleInsertion::new(0, 1, 1);
         let result = reconstruct_bundle_invariants(
             1,
@@ -1078,24 +752,29 @@ mod tests {
             0,
             3,
             &[point.clone(), point.clone(), point],
-        );
-        assert!(
-            matches!(result, Err(GwError::UnsupportedInvariant(_))),
-            "expected F_2 to report non-Fano as unsupported, got {result:?}"
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            vec![
+                (3, -6, Rational::zero()),
+                (2, -3, Rational::zero()),
+                (1, 0, Rational::one()),
+                (0, 3, Rational::zero()),
+            ]
         );
     }
 
     // ----- F_2 <-> P^1 x P^1 deformation cross-check (acceptance test) -----
     //
     // F_2 = P(O + O(2)) is deformation equivalent to P^1 x P^1, so every GW
-    // invariant matches under the identification below, and F_2 has a
-    // nontrivial mirror map while the product does not -- the ideal check of
-    // the full bundle pipeline against an independent one.  It is `#[ignore]`d
-    // because it does not pass yet: the F_2 side currently returns
-    // UnsupportedInvariant (Bug A, the non-Fano positive-z mirror map), and
-    // even once that is fixed the genus-1 cases exercise the R-matrix beyond
-    // first order (Bug B).  This is the acceptance test for both fixes; the
-    // derivation of the dictionary is in TEMP-bundle-issues.md, Appendix B.
+    // invariant matches under the identification below, and F_2 has positive-z
+    // I-function terms while the product does not -- the ideal check of the
+    // full bundle pipeline against an independent one.  It is `#[ignore]`d
+    // because the genus-1 cases are slow in debug builds; run it as the
+    // end-to-end acceptance test for the non-Fano Birkhoff projection and the
+    // higher-order R calibration.  The derivation of the dictionary is in
+    // TEMP-bundle-issues.md, Appendix B.
     //
     // Dictionary: class (d1, d2) = (H.beta, xi.beta) on F_2 corresponds to
     // P^1 x P^1 bidegree (d2 + d1, d1); cohomology H <-> H2, xi <-> H1 - H2.
@@ -1220,8 +899,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "acceptance test for the non-Fano (Bug A) and R-order (Bug B) fixes; \
-                fails today -- see TEMP-bundle-issues.md"]
+    #[ignore = "slow end-to-end non-Fano/higher-R acceptance test; see TEMP-bundle-issues.md"]
     fn f2_deformation_matches_p1xp1_pointwise() {
         let point = BundleInsertion::new(0, 1, 1); // H xi is the F_2 point class
         let xi = BundleInsertion::new(0, 0, 1); // maps to H1 - H2 (two terms)
@@ -1305,6 +983,52 @@ mod tests {
                 (1, 1, Rational::one()),
                 (0, 2, Rational::zero()),
             ]
+        );
+    }
+
+    #[test]
+    fn zero_twist_bundle_r_matrix_matches_product_to_higher_order() {
+        // In the zero-twist case xi restricts as -mu_j, so the matching
+        // product calibration uses second-factor weights -mu_j.  This compares
+        // the structural calibration directly, avoiding a slow genus-1 graph
+        // sum while still exercising the higher R orders that caught Bug B.
+        let q_degree = 2;
+        let r_order = 5;
+        let graph_dimension = 0;
+        let ray = Rational::from(2);
+        let bundle_target =
+            ProjectiveBundleRay::new(1, vec![0, 0], base_weights(), fiber_weights(), ray.clone())
+                .unwrap();
+        let product_target = crate::givental::ProductProjectiveRay::new(
+            1,
+            1,
+            base_weights(),
+            fiber_weights()
+                .into_iter()
+                .map(|weight| -weight)
+                .collect::<Vec<_>>(),
+            ray,
+        )
+        .unwrap();
+        let bundle = BundleRayProvider::new(bundle_target)
+            .graph_kernel(q_degree, r_order, graph_dimension)
+            .unwrap();
+        let product = crate::givental::ProductRayProvider::new(product_target)
+            .graph_kernel(q_degree, r_order, graph_dimension)
+            .unwrap();
+
+        assert_eq!(
+            bundle.calibration().r_matrix.coefficients(),
+            product.calibration().r_matrix.coefficients()
+        );
+        assert_eq!(bundle.calibration().psi, product.calibration().psi);
+        assert_eq!(
+            bundle.calibration().psi_inverse,
+            product.calibration().psi_inverse
+        );
+        assert_eq!(
+            bundle.calibration().connection,
+            product.calibration().connection
         );
     }
 
@@ -1463,38 +1187,36 @@ mod tests {
     }
 
     #[test]
-    fn zero_twists_have_a_trivial_mirror_map() {
-        // P(O + O) over P^1 is P^1 x P^1: I = J, so the mirror exponents
-        // read off inside j_container must vanish and J must equal I.
-        let target = ProjectiveBundleRay::new(
+    fn zero_twists_have_product_s_matrix() {
+        // P(O + O) over P^1 is P^1 x P^1.  Since xi restricts as -mu_j, the
+        // matching product ray uses second-factor weights -mu_j; the raw
+        // I-function Birkhoff path must reproduce the product S-matrix.
+        let q_degree = 2;
+        let z_order = 2;
+        let ray = Rational::one();
+        let bundle_target =
+            ProjectiveBundleRay::new(1, vec![0, 0], base_weights(), fiber_weights(), ray.clone())
+                .unwrap();
+        let product_target = crate::givental::ProductProjectiveRay::new(
             1,
-            vec![0, 0],
+            1,
             base_weights(),
-            fiber_weights(),
-            Rational::one(),
+            fiber_weights()
+                .into_iter()
+                .map(|weight| -weight)
+                .collect::<Vec<_>>(),
+            ray,
         )
         .unwrap();
-        let k_max = 2;
-        let min_z = target.min_z_power(k_max, 2);
-        let j_container = target.j_container(k_max, min_z).unwrap();
-        for d1 in 0..=k_max {
-            for d2p in 0..=(k_max - d1) {
-                let i_coefficient = target.i_coefficient(d1, d2p, min_z);
-                let j_coefficient = j_container.get(&(d1, d2p));
-                match j_coefficient {
-                    Some(j_coefficient) => {
-                        let difference = j_coefficient.add(&i_coefficient.scale(-Rational::one()));
-                        assert!(
-                            difference.is_empty(),
-                            "J != I at grade ({d1},{d2p}) for the untwisted bundle"
-                        );
-                    }
-                    None => assert!(
-                        i_coefficient.is_empty(),
-                        "missing J coefficient at ({d1},{d2p})"
-                    ),
-                }
-            }
-        }
+        let bundle_s = rational_s_matrix_to_ratfun(
+            &bundle_target
+                .descendant_s_rational(q_degree, z_order)
+                .unwrap(),
+        )
+        .unwrap();
+        let product_s = crate::givental::ProductRayProvider::new(product_target)
+            .descendant_s_matrix(q_degree, z_order)
+            .unwrap();
+        assert_eq!(bundle_s.coefficients(), product_s.coefficients());
     }
 }
