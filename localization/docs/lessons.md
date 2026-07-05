@@ -360,12 +360,14 @@ quietly fails for non-Fano ones.  The mechanism, made concrete on
   **nonzero unit component** exactly for these classes.  For Fano targets it is
   identically zero.  That detector was useful while the full projection was
   missing, but it is not the fix.
-- The fix is to build the fundamental solution from the ray-restricted
-  I-function itself and run the ordinary matrix Birkhoff split there.  Its
-  positive factor performs the Coates-Givental projection to the small-J
-  calibration; its negative factor is the descendant S-matrix consumed by the
-  graph engine.  This is still one-variable after Novikov ray restriction, so
-  the rank-two bookkeeping does not require a multi-variable Birkhoff engine.
+- A useful partial fix is to build the fundamental solution from the
+  ray-restricted I-function itself and run the ordinary matrix Birkhoff split
+  there.  Its positive factor removes the immediate positive-`z` obstruction,
+  and its negative factor is the descendant S-matrix consumed by the graph
+  engine.  This fixes the first `F_2` positive-section check, but it is not the
+  full non-Fano mirror solution: a higher genus-one class in the
+  negative-section direction still needs the remaining mirror-coordinate /
+  big-J projection data.
 
 Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
 `(t, b·t)` and full-vector debugging are worth building** — printing the raw

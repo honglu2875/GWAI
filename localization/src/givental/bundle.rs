@@ -937,6 +937,31 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "known remaining non-Fano mirror-coordinate issue in the negative-section direction"]
+    fn f2_negative_section_direction_genus_one_matches_p1xp1() {
+        // Class (d1,d2) = (2,-1) is 3f + 2B_- and deforms to product
+        // bidegree (1,2).  The product value for three tau_1(point)
+        // insertions is -1/4, but the current bundle path returns 0.
+        let tau1_point = BundleInsertion::new(1, 1, 1);
+        let invariants = reconstruct_bundle_invariants(
+            1,
+            &[0, 2],
+            &base_weights(),
+            &fiber_weights(),
+            1,
+            5,
+            &[tau1_point.clone(), tau1_point.clone(), tau1_point],
+        )
+        .unwrap();
+        let value = invariants
+            .into_iter()
+            .find(|(d1, d2, _)| *d1 == 2 && *d2 == -1)
+            .map(|(_, _, value)| value)
+            .expect("class (2,-1) present in shifted total degree 5");
+        assert_eq!(value, -Rational::new(1, 4));
+    }
+
+    #[test]
     fn i_function_vanishes_outside_the_shifted_cone_boundary() {
         // For F_1 (twists [0,1] over P^1), the grade (d1, d2') = (1, 0)
         // corresponds to d2 = -1: only the a=1 summand has D_l >= 0, so the

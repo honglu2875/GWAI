@@ -1,24 +1,36 @@
-# RESOLVED — Projective-bundle target issues
+# PARTIALLY RESOLVED — Projective-bundle target issues
 
 > Historical note: this file originally described two open bugs in
-> `src/givental/bundle.rs`.  Both are now fixed, but the note is kept for the
-> deformation dictionary and for future regression triage.
+> `src/givental/bundle.rs`.  The original higher-`R` sign bug is fixed, and
+> the first non-Fano positive-`z` checks pass, but a higher genus-one
+> negative-section-direction `F_2` check remains open.
 
 ## Summary
 
 The projective-bundle path now handles:
 
-- non-Fano positive-`z` I-functions, including `F_2 = P(O + O(2))`;
+- selected non-Fano positive-`z` I-function checks, including the
+  genus-zero `F_2 = P(O + O(2))` positive-section count;
 - higher-order bundle `R`-matrices, including the zero-twist
   `P(O + O) = P^1 x P^1` genus-one check that originally failed.
 
-The end-to-end acceptance test is:
+A remaining failing comparison is pinned by:
+
+```bash
+cargo test --lib f2_negative_section_direction_genus_one_matches_p1xp1 -- --ignored
+```
+
+It checks `F_2(d1,d2) = (2,-1)`, i.e. `3f + 2B_-`, against product bidegree
+`(1,2)` with three `tau_1(point)` insertions.  The product value is `-1/4`;
+the current bundle path returns `0`.
+
+The older end-to-end acceptance test still passes:
 
 ```bash
 cargo test --lib f2_deformation_matches_p1xp1_pointwise -- --ignored
 ```
 
-It is ignored only because it is slow in debug builds.
+but it does not cover this negative-`d2` genus-one class.
 
 ## Bug A: non-Fano mirror projection
 
@@ -46,7 +58,7 @@ the unit.  Therefore the mirror transform is not just:
 
 That divisor-only transform is insufficient once `I != 1 + O(1/z)`.
 
-### Fix
+### Partial Fix And Remaining Issue
 
 The bundle path now ray-restricts the raw bidegree-graded I-function and builds
 the fundamental solution from that cone point.  The existing matrix Birkhoff
@@ -59,10 +71,17 @@ factorization then supplies the actual Coates-Givental projection:
 This keeps Birkhoff one-variable because the rank-two Novikov variables are
 already specialized along a rational ray before factorization.
 
+This fixes the first `F_2` positive-section count, but it is not the full
+non-Fano mirror solution.  The class `(2,-1)` shows that higher terms in the
+negative-section direction still need the missing mirror-coordinate/big-J
+projection data, not just the raw cone-point Birkhoff split.
+
 Pinned by:
 
 - `f2_non_fano_positive_z_birkhoff_matches_product_genus_zero`;
-- the ignored slow acceptance test `f2_deformation_matches_p1xp1_pointwise`.
+- the ignored slow acceptance test `f2_deformation_matches_p1xp1_pointwise`;
+- the ignored failing marker
+  `f2_negative_section_direction_genus_one_matches_p1xp1`.
 
 ## Bug B: higher-order bundle R-matrix
 

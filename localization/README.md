@@ -333,11 +333,12 @@ Optional `--weights-base`/`--weights-fiber` set the rational equivariant
 weights; the defaults keep all grading eigenvalues distinct.
 
 Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
-`F_1`, and the like), the non-Fano `F_2 = P(O + O(2))` deformation dictionary
+`F_1`, and the like), selected non-Fano `F_2 = P(O + O(2))` deformation checks
 against `P^1 x P^1`, and a zero-twist `P(O + O)` calibration check against
-the product engine through higher `R` order.  Non-Fano mirror projection is a
-ray-wise Birkhoff step, not just a divisor change of variables; see
-[docs/lessons.md](docs/lessons.md) §17.
+the product engine through higher `R` order.  A higher genus-one `F_2` class
+in the negative-section direction is still open; see
+`f2_negative_section_direction_genus_one_matches_p1xp1` in
+`src/givental/bundle.rs`.
 
 ## `formula`
 
