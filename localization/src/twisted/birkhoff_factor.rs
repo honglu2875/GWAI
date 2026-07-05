@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 pub(crate) type CoeffMatrix<C> = Vec<Vec<C>>;
 pub(crate) type LaurentCoeffMatrix<C> = BTreeMap<i32, CoeffMatrix<C>>;
 pub(crate) type QDegreeLaurentFactor<C> = Vec<LaurentCoeffMatrix<C>>;
+pub(crate) type Bidegree = (usize, usize);
+pub(crate) type BidegreeLaurentFactor<C> = BTreeMap<Bidegree, LaurentCoeffMatrix<C>>;
 
 pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
     size: usize,
@@ -41,6 +43,129 @@ pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
     }
 
     Ok((positive, negative))
+}
+
+pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff>(
+    size: usize,
+    max_total_degree: usize,
+    matrix: &BidegreeLaurentFactor<C>,
+) -> Result<(BidegreeLaurentFactor<C>, BidegreeLaurentFactor<C>), GwError> {
+    // Same recursive split as the one-variable factorization, but over the
+    // completed bidegree Novikov ring.  Each nonzero bidegree only depends on
+    // products of strictly lower total degree, so the z-Laurent split remains
+    // an ordinary coefficientwise operation.
+    validate_bidegree_identity_at_zero(size, matrix)?;
+
+    let mut positive = BidegreeLaurentFactor::new();
+    let mut negative = BidegreeLaurentFactor::new();
+    positive
+        .entry((0, 0))
+        .or_default()
+        .insert(0, identity_coeff_matrix(size));
+    negative
+        .entry((0, 0))
+        .or_default()
+        .insert(0, identity_coeff_matrix(size));
+
+    for total in 1..=max_total_degree {
+        for first in 0..=total {
+            let grade = (first, total - first);
+            let mut raw = bidegree_slice(matrix, grade, size);
+            let known = multiply_laurent_matrix_bidegree_slices(&negative, &positive, grade, size);
+            subtract_laurent_matrix(&mut raw, &known);
+            for (z_power, coeff) in raw {
+                if coeff_matrix_is_zero(&coeff) {
+                    continue;
+                }
+                if z_power >= 0 {
+                    positive.entry(grade).or_default().insert(z_power, coeff);
+                } else {
+                    negative.entry(grade).or_default().insert(z_power, coeff);
+                }
+            }
+        }
+    }
+
+    Ok((positive, negative))
+}
+
+pub(crate) fn validate_bidegree_identity_at_zero<C: Coeff>(
+    size: usize,
+    matrix: &BidegreeLaurentFactor<C>,
+) -> Result<(), GwError> {
+    for (grade, laurent) in matrix {
+        for (z_power, coefficient) in laurent {
+            let expected = if *grade == (0, 0) && *z_power == 0 {
+                identity_coeff_matrix(size)
+            } else {
+                zero_coeff_matrix(size)
+            };
+            if *grade == (0, 0) && *z_power == 0 {
+                if coefficient != &expected {
+                    return Err(GwError::ConventionMismatch(
+                        "bidegree Birkhoff input must be identity at degree (0,0)".to_string(),
+                    ));
+                }
+            } else if *grade == (0, 0) && !coeff_matrix_is_zero(coefficient) {
+                return Err(GwError::ConventionMismatch(format!(
+                    "bidegree Birkhoff input must have no nonzero z^{z_power} term at degree (0,0)"
+                )));
+            }
+        }
+    }
+    if !matrix
+        .get(&(0, 0))
+        .and_then(|laurent| laurent.get(&0))
+        .is_some_and(|coefficient| coefficient == &identity_coeff_matrix(size))
+    {
+        return Err(GwError::ConventionMismatch(
+            "bidegree Birkhoff input is missing the identity at degree (0,0)".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn bidegree_slice<C: Coeff>(
+    matrix: &BidegreeLaurentFactor<C>,
+    grade: Bidegree,
+    size: usize,
+) -> LaurentCoeffMatrix<C> {
+    matrix.get(&grade).cloned().unwrap_or_else(|| {
+        let mut out = LaurentCoeffMatrix::new();
+        out.insert(0, zero_coeff_matrix(size));
+        out
+    })
+}
+
+pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
+    left: &BidegreeLaurentFactor<C>,
+    right: &BidegreeLaurentFactor<C>,
+    grade: Bidegree,
+    size: usize,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = BTreeMap::new();
+    for left_first in 0..=grade.0 {
+        for left_second in 0..=grade.1 {
+            let left_grade = (left_first, left_second);
+            if left_grade == (0, 0) || left_grade == grade {
+                continue;
+            }
+            let right_grade = (grade.0 - left_first, grade.1 - left_second);
+            let Some(left_laurent) = left.get(&left_grade) else {
+                continue;
+            };
+            let Some(right_laurent) = right.get(&right_grade) else {
+                continue;
+            };
+            for (left_z, left_matrix) in left_laurent {
+                for (right_z, right_matrix) in right_laurent {
+                    let product = multiply_coeff_matrix(left_matrix, right_matrix, size);
+                    add_matrix_to_laurent(&mut out, left_z + right_z, product);
+                }
+            }
+        }
+    }
+    out
 }
 
 pub(crate) fn validate_identity_at_q_zero<C: Coeff>(

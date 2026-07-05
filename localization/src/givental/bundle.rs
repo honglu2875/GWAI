@@ -1,5 +1,5 @@
 //! Projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`, via the toric
-//! I-function, ray-wise Birkhoff projection, and exact Novikov ray
+//! I-function, bidegree Birkhoff projection, and exact Novikov ray
 //! reconstruction.
 //!
 //! **Geometry.**  With `E = O(a_1) + ... + O(a_m)` (twists normalized so
@@ -22,22 +22,27 @@
 //! **Pipeline.**  The classical ring is cyclic over the grading divisor
 //! `D = xi + (A+1) H` at generic weights, so everything runs in the constant
 //! classical `D`-power basis via fixed-point restrictions.  The I-function is
-//! computed in bidegree-graded form (finite per total degree `d1 + d2'`),
-//! then restricted to flat-coordinate rays `(Q1, Q2') = (t, b t)`.  Per ray,
-//! the fundamental solution generated from this cone point is Birkhoff
-//! factored; the positive factor is the Coates-Givental projection onto the
-//! small-`J` calibration, so non-Fano positive powers of `z` are handled in
-//! the same path as Fano divisor mirror maps.  The negative factor gives `S`,
-//! `S_1` gives quantum multiplication by `D`, spectral projectors give the
-//! canonical frame, and flatness gives `R`.
+//! computed in bidegree-graded form (finite per total degree `d1 + d2'`) and
+//! differentiated by the grading divisor to form the raw fundamental solution.
+//! That fundamental solution is Birkhoff factored over the full bidegree
+//! Novikov ring; the positive factor is the formal cone projection, including
+//! higher positive-`z` corrections.  The negative factor's first column is the
+//! projected cone point; its bidegree `z^{-1}` divisor part gives the two
+//! mirror-coordinate series, which are gauged away and inverted before any ray
+//! specialization.  Only then is the flat cone point restricted to rays
+//! `(Q1, Q2') = (t, b t)` and regenerated into the fundamental solution used
+//! by the graph engine and exact Vandermonde recovery.  The raw fundamental
+//! solution gives quantum multiplication by `D`; its metric-adjoint gives the
+//! descendant insertion operator, and flatness gives `R`.
 //!
 //! **Validated scope.**  Regression tests cover Fano genus-zero bundle counts,
 //! `P(O + O) = P^1 x P^1` through higher `R` order, and the non-Fano
 //! `F_2 = P(O + O(2))` deformation dictionary against the independent product
-//! engine, including genus-one cases.
+//! engine, including genus-one cases, plus rank-three deformations to
+//! `P^1 x P^2` in negative shifted-fiber directions.
 
 use super::*;
-use crate::twisted::HLaurentSeries;
+use crate::twisted::{BidegreeLaurentFactor, HLaurentSeries, LaurentCoeffMatrix};
 use std::collections::BTreeMap;
 
 /// Insertion `tau_k(H^p xi^q)` on the bundle.
@@ -242,24 +247,41 @@ impl ProjectiveBundleRay {
         )
     }
 
+    fn rayless_cache_key(&self) -> String {
+        format!(
+            "p{}bundle[{:?};{};{}]",
+            self.n,
+            self.twists,
+            self.weights_base
+                .iter()
+                .map(Rational::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            self.weights_fiber
+                .iter()
+                .map(Rational::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    }
+
     /// Sufficient negative z-depth for the I-coefficients through total
     /// grade `k_max` and Birkhoff order `z_order`.
     fn min_z_power(&self, k_max: usize, z_order: usize) -> i32 {
-        let mut worst = 0usize;
-        for d1 in 0..=k_max {
-            for d2p in 0..=(k_max - d1) {
-                let d2 = d2p as isize - (self.big_a() * d1) as isize;
-                let mut depth = (self.n + 1) * d1;
-                for &a in &self.twists {
-                    let fiber_degree = d2 + (a * d1) as isize;
-                    if fiber_degree > 0 {
-                        depth += fiber_degree as usize;
-                    }
-                }
-                worst = worst.max(depth);
-            }
-        }
-        -((worst + z_order + 2) as i32)
+        let column_shift = self.size().saturating_sub(1);
+        let preview_min_z = -(column_shift as i32);
+        let preview_cone = self.i_container(k_max, preview_min_z);
+        let preview = self.fundamental_bidegree_matrix(k_max, &preview_cone);
+        let positive_window = max_nonnegative_z_power(&preview);
+
+        // In the graded Birkhoff recursion, a positive-factor term z^p can
+        // move an already-computed negative coefficient z^(-s-p) into z^-s.
+        // Along any dependency chain the total degree drops at least by one,
+        // so at total degree k_max this can happen at most k_max - 1 times.
+        // The final column shift accounts for repeated (z q d/dq + D)
+        // derivatives used to build the raw fundamental matrix from I.
+        let recursion_depth = z_order + k_max.saturating_sub(1) * positive_window;
+        -((recursion_depth + column_shift) as i32)
     }
 
     /// Scalar z-Laurent restriction of the `(d1, d2)` I-coefficient at the
@@ -336,27 +358,95 @@ impl ProjectiveBundleRay {
         container
     }
 
-    /// Ray restriction of the `I`-coefficients: `Q1 = t`, `Q2' = ray * t`.
-    ///
-    /// The resulting cone point is fed to the fundamental-solution Birkhoff
-    /// factorization.  That split is the Coates-Givental projection onto the
-    /// small-`J` calibration; in particular it handles the positive z-powers
-    /// that occur for non-Fano bundles.
-    fn i_ray(&self, k_max: usize, min_z: i32) -> Vec<HLaurentSeries> {
-        let i_container = self.i_container(k_max, min_z);
-        let size = self.size();
-        let mut out = vec![HLaurentSeries::zero(size - 1); k_max + 1];
-        for (grade, value) in &i_container {
-            let total = grade.0 + grade.1;
-            let scaled = value.scale(self.ray.pow_usize(grade.1));
-            out[total] = out[total].add(&scaled);
+    fn multiply_by_grading_divisor_mod_relation(
+        &self,
+        series: &HLaurentSeries,
+        relation: &[Rational],
+    ) -> HLaurentSeries {
+        let mut divisor = HLaurentSeries::zero(self.size() - 1);
+        divisor.add_term(1, 0, Rational::one());
+        series.multiply_mod_relation(&divisor, relation)
+    }
+
+    fn quantum_derivative_bidegree_series(
+        &self,
+        series: &BTreeMap<Grade, HLaurentSeries>,
+        relation: &[Rational],
+    ) -> BTreeMap<Grade, HLaurentSeries> {
+        let mut out = BTreeMap::new();
+        for (&grade, value) in series {
+            let mut derivative = self.multiply_by_grading_divisor_mod_relation(value, relation);
+            let total_degree = grade.0 + grade.1;
+            if total_degree > 0 {
+                derivative =
+                    derivative.add(&value.shift_z(1).scale(Rational::from(total_degree as i128)));
+            }
+            if !derivative.is_empty() {
+                out.insert(grade, derivative);
+            }
         }
         out
+    }
+
+    fn fundamental_bidegree_matrix(
+        &self,
+        q_degree: usize,
+        container: &BTreeMap<Grade, HLaurentSeries>,
+    ) -> BidegreeLaurentFactor<Rational> {
+        let relation = self.h_power_relation();
+        let mut columns = Vec::with_capacity(self.size());
+        let mut current = container.clone();
+        for _ in 0..self.size() {
+            columns.push(current.clone());
+            current = self.quantum_derivative_bidegree_series(&current, &relation);
+        }
+        h_laurent_bidegree_columns_to_laurent_matrix(self.size(), q_degree, &columns)
     }
 }
 
 type Grade = (usize, usize);
+type ScalarBidegreeSeries = BTreeMap<Grade, Rational>;
+type HLaurentBidegreeSeries = BTreeMap<Grade, HLaurentSeries>;
 type ZLaurent = BTreeMap<i32, Rational>;
+
+fn h_laurent_bidegree_columns_to_laurent_matrix(
+    size: usize,
+    max_total_degree: usize,
+    columns: &[BTreeMap<Grade, HLaurentSeries>],
+) -> BidegreeLaurentFactor<Rational> {
+    let mut by_grade = BidegreeLaurentFactor::new();
+    for (col, column_series) in columns.iter().enumerate() {
+        for (&grade, h_series) in column_series {
+            if grade.0 + grade.1 > max_total_degree {
+                continue;
+            }
+            for row in 0..size {
+                let Some(terms) = h_series.terms_at_h_power(row) else {
+                    continue;
+                };
+                for (z_power, coeff) in terms {
+                    let laurent = by_grade
+                        .entry(grade)
+                        .or_insert_with(LaurentCoeffMatrix::new);
+                    let matrix = laurent
+                        .entry(*z_power)
+                        .or_insert_with(|| vec![vec![Rational::zero(); size]; size]);
+                    matrix[row][col] += coeff.clone();
+                }
+            }
+        }
+    }
+    by_grade
+}
+
+fn max_nonnegative_z_power(matrix: &BidegreeLaurentFactor<Rational>) -> usize {
+    matrix
+        .values()
+        .flat_map(|laurent| laurent.keys().copied())
+        .filter(|z_power| *z_power >= 0)
+        .max()
+        .unwrap_or(0) as usize
+}
 
 fn zl_one() -> ZLaurent {
     BTreeMap::from([(0, Rational::one())])
@@ -443,12 +533,538 @@ fn rational_s_matrix_to_ratfun(matrix: &SeriesSMatrix<Rational>) -> Result<Serie
     )
 }
 
+fn bidegree_negative_factor_to_cone_point(
+    size: usize,
+    q_degree: usize,
+    negative: &BidegreeLaurentFactor<Rational>,
+) -> HLaurentBidegreeSeries {
+    let mut out = HLaurentBidegreeSeries::new();
+    for (&grade, laurent) in negative {
+        if grade.0 + grade.1 > q_degree {
+            continue;
+        }
+        let series = out
+            .entry(grade)
+            .or_insert_with(|| HLaurentSeries::zero(size - 1));
+        for (z_power, matrix) in laurent {
+            for (row, row_entries) in matrix.iter().enumerate().take(size) {
+                series.add_term(row, *z_power, row_entries[0].clone());
+            }
+        }
+    }
+    out
+}
+
+fn scalar_bidegree_one() -> ScalarBidegreeSeries {
+    BTreeMap::from([((0, 0), Rational::one())])
+}
+
+fn scalar_bidegree_variable(index: usize) -> ScalarBidegreeSeries {
+    let grade = if index == 0 { (1, 0) } else { (0, 1) };
+    BTreeMap::from([(grade, Rational::one())])
+}
+
+fn scalar_bidegree_add_term(
+    series: &mut ScalarBidegreeSeries,
+    grade: Grade,
+    value: Rational,
+    max_total_degree: usize,
+) {
+    if grade.0 + grade.1 > max_total_degree || value.is_zero() {
+        return;
+    }
+    let next = series.get(&grade).cloned().unwrap_or_else(Rational::zero) + value;
+    if next.is_zero() {
+        series.remove(&grade);
+    } else {
+        series.insert(grade, next);
+    }
+}
+
+fn scalar_bidegree_neg(series: &ScalarBidegreeSeries) -> ScalarBidegreeSeries {
+    series
+        .iter()
+        .map(|(&grade, value)| (grade, -value.clone()))
+        .collect()
+}
+
+fn scalar_bidegree_mul(
+    left: &ScalarBidegreeSeries,
+    right: &ScalarBidegreeSeries,
+    max_total_degree: usize,
+) -> ScalarBidegreeSeries {
+    let mut out = ScalarBidegreeSeries::new();
+    for (&left_grade, left_value) in left {
+        for (&right_grade, right_value) in right {
+            let grade = (left_grade.0 + right_grade.0, left_grade.1 + right_grade.1);
+            scalar_bidegree_add_term(
+                &mut out,
+                grade,
+                left_value.clone() * right_value.clone(),
+                max_total_degree,
+            );
+        }
+    }
+    out
+}
+
+fn scalar_bidegree_exp(
+    series: &ScalarBidegreeSeries,
+    max_total_degree: usize,
+) -> ScalarBidegreeSeries {
+    let mut out = scalar_bidegree_one();
+    let mut power = scalar_bidegree_one();
+    let mut factorial = Rational::one();
+    for order in 1..=max_total_degree {
+        power = scalar_bidegree_mul(&power, series, max_total_degree);
+        factorial = factorial * Rational::from(order);
+        for (&grade, value) in &power {
+            scalar_bidegree_add_term(
+                &mut out,
+                grade,
+                value.clone() / factorial.clone(),
+                max_total_degree,
+            );
+        }
+    }
+    out
+}
+
+fn scalar_bidegree_powers(
+    series: &ScalarBidegreeSeries,
+    max_power: usize,
+    max_total_degree: usize,
+) -> Vec<ScalarBidegreeSeries> {
+    let mut powers = Vec::with_capacity(max_power + 1);
+    powers.push(scalar_bidegree_one());
+    for power in 1..=max_power {
+        let next = scalar_bidegree_mul(&powers[power - 1], series, max_total_degree);
+        powers.push(next);
+    }
+    powers
+}
+
+fn scalar_bidegree_compose(
+    series: &ScalarBidegreeSeries,
+    input_first: &ScalarBidegreeSeries,
+    input_second: &ScalarBidegreeSeries,
+    max_total_degree: usize,
+) -> ScalarBidegreeSeries {
+    let first_powers = scalar_bidegree_powers(input_first, max_total_degree, max_total_degree);
+    let second_powers = scalar_bidegree_powers(input_second, max_total_degree, max_total_degree);
+    let mut out = ScalarBidegreeSeries::new();
+    for (&grade, coefficient) in series {
+        if grade.0 + grade.1 > max_total_degree {
+            continue;
+        }
+        let monomial = scalar_bidegree_mul(
+            &first_powers[grade.0],
+            &second_powers[grade.1],
+            max_total_degree,
+        );
+        for (&out_grade, value) in &monomial {
+            scalar_bidegree_add_term(
+                &mut out,
+                out_grade,
+                coefficient.clone() * value.clone(),
+                max_total_degree,
+            );
+        }
+    }
+    out
+}
+
+fn invert_bidegree_mirror_map(
+    mirror_first: &ScalarBidegreeSeries,
+    mirror_second: &ScalarBidegreeSeries,
+    max_total_degree: usize,
+) -> (ScalarBidegreeSeries, ScalarBidegreeSeries) {
+    let variable_first = scalar_bidegree_variable(0);
+    let variable_second = scalar_bidegree_variable(1);
+    let mut inverse_first = variable_first.clone();
+    let mut inverse_second = variable_second.clone();
+    for _ in 0..max_total_degree {
+        let composed_first = scalar_bidegree_compose(
+            mirror_first,
+            &inverse_first,
+            &inverse_second,
+            max_total_degree,
+        );
+        let composed_second = scalar_bidegree_compose(
+            mirror_second,
+            &inverse_first,
+            &inverse_second,
+            max_total_degree,
+        );
+        inverse_first = scalar_bidegree_mul(
+            &variable_first,
+            &scalar_bidegree_exp(&scalar_bidegree_neg(&composed_first), max_total_degree),
+            max_total_degree,
+        );
+        inverse_second = scalar_bidegree_mul(
+            &variable_second,
+            &scalar_bidegree_exp(&scalar_bidegree_neg(&composed_second), max_total_degree),
+            max_total_degree,
+        );
+    }
+    (inverse_first, inverse_second)
+}
+
+fn h_bidegree_add_term(
+    series: &mut HLaurentBidegreeSeries,
+    grade: Grade,
+    value: HLaurentSeries,
+    max_total_degree: usize,
+) {
+    if grade.0 + grade.1 > max_total_degree || value.is_empty() {
+        return;
+    }
+    let next = series
+        .get(&grade)
+        .cloned()
+        .unwrap_or_else(|| HLaurentSeries::zero(value.max_h_power()))
+        .add(&value);
+    if next.is_empty() {
+        series.remove(&grade);
+    } else {
+        series.insert(grade, next);
+    }
+}
+
+fn h_bidegree_mul(
+    left: &HLaurentBidegreeSeries,
+    right: &HLaurentBidegreeSeries,
+    relation: &[Rational],
+    max_h_power: usize,
+    max_total_degree: usize,
+) -> HLaurentBidegreeSeries {
+    let mut out = HLaurentBidegreeSeries::new();
+    for (&left_grade, left_value) in left {
+        for (&right_grade, right_value) in right {
+            let grade = (left_grade.0 + right_grade.0, left_grade.1 + right_grade.1);
+            if grade.0 + grade.1 > max_total_degree {
+                continue;
+            }
+            let product = left_value.multiply_mod_relation(right_value, relation);
+            h_bidegree_add_term(&mut out, grade, product, max_total_degree);
+        }
+    }
+    if out.is_empty() && max_total_degree == 0 {
+        out.insert((0, 0), HLaurentSeries::zero(max_h_power));
+    }
+    out
+}
+
+fn h_bidegree_exp(
+    series: &HLaurentBidegreeSeries,
+    relation: &[Rational],
+    max_h_power: usize,
+    max_total_degree: usize,
+) -> HLaurentBidegreeSeries {
+    let mut one = HLaurentSeries::zero(max_h_power);
+    one.add_term(0, 0, Rational::one());
+    let mut out = BTreeMap::from([((0, 0), one.clone())]);
+    let mut power = BTreeMap::from([((0, 0), one)]);
+    let mut factorial = Rational::one();
+    for order in 1..=max_total_degree {
+        power = h_bidegree_mul(&power, series, relation, max_h_power, max_total_degree);
+        factorial = factorial * Rational::from(order);
+        for (&grade, value) in &power {
+            h_bidegree_add_term(
+                &mut out,
+                grade,
+                value.scale(Rational::one() / factorial.clone()),
+                max_total_degree,
+            );
+        }
+    }
+    out
+}
+
+fn h_bidegree_compose(
+    series: &HLaurentBidegreeSeries,
+    input_first: &ScalarBidegreeSeries,
+    input_second: &ScalarBidegreeSeries,
+    max_total_degree: usize,
+) -> HLaurentBidegreeSeries {
+    let first_powers = scalar_bidegree_powers(input_first, max_total_degree, max_total_degree);
+    let second_powers = scalar_bidegree_powers(input_second, max_total_degree, max_total_degree);
+    let mut out = HLaurentBidegreeSeries::new();
+    for (&grade, h_value) in series {
+        if grade.0 + grade.1 > max_total_degree {
+            continue;
+        }
+        let monomial = scalar_bidegree_mul(
+            &first_powers[grade.0],
+            &second_powers[grade.1],
+            max_total_degree,
+        );
+        for (&out_grade, coefficient) in &monomial {
+            h_bidegree_add_term(
+                &mut out,
+                out_grade,
+                h_value.scale(coefficient.clone()),
+                max_total_degree,
+            );
+        }
+    }
+    out
+}
+
+fn h_bidegree_to_ray_coefficients(
+    series: &HLaurentBidegreeSeries,
+    q_degree: usize,
+    ray: &Rational,
+    max_h_power: usize,
+) -> Vec<HLaurentSeries> {
+    let mut out = vec![HLaurentSeries::zero(max_h_power); q_degree + 1];
+    for (&grade, value) in series {
+        let total = grade.0 + grade.1;
+        if total > q_degree {
+            continue;
+        }
+        out[total] = out[total].add(&value.scale(ray.pow_usize(grade.1)));
+    }
+    out
+}
+
 impl ProjectiveBundleRay {
+    fn shifted_fiber_divisor_vector(&self) -> Vec<Rational> {
+        let h = self.insertion_class_vector(1, 0);
+        let xi = self.insertion_class_vector(0, 1);
+        let shift = Rational::from(self.big_a() as i128);
+        xi.into_iter()
+            .zip(h)
+            .map(|(xi_coeff, h_coeff)| xi_coeff + shift.clone() * h_coeff)
+            .collect()
+    }
+
+    fn solve_unit_divisor_coordinates(
+        &self,
+        vector: &[Rational],
+    ) -> Result<(Rational, Rational, Rational), GwError> {
+        let size = self.size();
+        let mut unit = vec![Rational::zero(); size];
+        unit[0] = Rational::one();
+        let h = self.insertion_class_vector(1, 0);
+        let shifted_fiber = self.shifted_fiber_divisor_vector();
+
+        let mut candidates = Vec::with_capacity(size.saturating_sub(1));
+        for power in 1..size {
+            let mut basis = vec![Rational::zero(); size];
+            basis[power] = Rational::one();
+            candidates.push(basis);
+        }
+
+        let needed = size.saturating_sub(3);
+        let masks = 1usize << candidates.len();
+        for mask in 0..masks {
+            if mask.count_ones() as usize != needed {
+                continue;
+            }
+            let mut columns = vec![unit.clone(), h.clone(), shifted_fiber.clone()];
+            for (idx, candidate) in candidates.iter().enumerate() {
+                if (mask & (1usize << idx)) != 0 {
+                    columns.push(candidate.clone());
+                }
+            }
+            let mut matrix = (0..size)
+                .map(|row| {
+                    columns
+                        .iter()
+                        .map(|column| column[row].clone())
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
+            let mut values = vector.to_vec();
+            if recipe::solve_rational_system(&mut matrix, &mut values).is_ok() {
+                return Ok((values[0].clone(), values[1].clone(), values[2].clone()));
+            }
+        }
+
+        Err(GwError::ConventionMismatch(
+            "could not extract bundle bidegree divisor mirror coordinates".to_string(),
+        ))
+    }
+
+    fn bidegree_mirror_maps_from_cone_point(
+        &self,
+        cone_point: &HLaurentBidegreeSeries,
+        q_degree: usize,
+    ) -> Result<(ScalarBidegreeSeries, ScalarBidegreeSeries), GwError> {
+        let mut mirror_first = ScalarBidegreeSeries::new();
+        let mut mirror_second = ScalarBidegreeSeries::new();
+        for (&grade, series) in cone_point {
+            if grade == (0, 0) || grade.0 + grade.1 > q_degree {
+                continue;
+            }
+            let mut vector = vec![Rational::zero(); self.size()];
+            for (row, value) in vector.iter_mut().enumerate().take(self.size()) {
+                if let Some(terms) = series.terms_at_h_power(row) {
+                    if let Some(coefficient) = terms.get(&-1) {
+                        *value = coefficient.clone();
+                    }
+                }
+            }
+            if vector.iter().all(Rational::is_zero) {
+                continue;
+            }
+            let (_, h_coordinate, shifted_fiber_coordinate) =
+                self.solve_unit_divisor_coordinates(&vector)?;
+            scalar_bidegree_add_term(&mut mirror_first, grade, h_coordinate, q_degree);
+            scalar_bidegree_add_term(
+                &mut mirror_second,
+                grade,
+                shifted_fiber_coordinate,
+                q_degree,
+            );
+        }
+        Ok((mirror_first, mirror_second))
+    }
+
+    fn bidegree_mirror_gauge(
+        &self,
+        mirror_first: &ScalarBidegreeSeries,
+        mirror_second: &ScalarBidegreeSeries,
+        q_degree: usize,
+    ) -> HLaurentBidegreeSeries {
+        let h = self.insertion_class_vector(1, 0);
+        let shifted_fiber = self.shifted_fiber_divisor_vector();
+        let mut exponent = HLaurentBidegreeSeries::new();
+        for (&grade, coefficient) in mirror_first {
+            let series = exponent
+                .entry(grade)
+                .or_insert_with(|| HLaurentSeries::zero(self.size() - 1));
+            for (row, h_coefficient) in h.iter().enumerate() {
+                series.add_term(row, -1, -(coefficient.clone() * h_coefficient.clone()));
+            }
+        }
+        for (&grade, coefficient) in mirror_second {
+            let series = exponent
+                .entry(grade)
+                .or_insert_with(|| HLaurentSeries::zero(self.size() - 1));
+            for (row, fiber_coefficient) in shifted_fiber.iter().enumerate() {
+                series.add_term(row, -1, -(coefficient.clone() * fiber_coefficient.clone()));
+            }
+        }
+        h_bidegree_exp(
+            &exponent,
+            &self.h_power_relation(),
+            self.size() - 1,
+            q_degree,
+        )
+    }
+
+    fn flat_bidegree_cone_point(
+        &self,
+        cone_point: &HLaurentBidegreeSeries,
+        q_degree: usize,
+    ) -> Result<HLaurentBidegreeSeries, GwError> {
+        let (mirror_first, mirror_second) =
+            self.bidegree_mirror_maps_from_cone_point(cone_point, q_degree)?;
+        let gauge = self.bidegree_mirror_gauge(&mirror_first, &mirror_second, q_degree);
+        let gauged = h_bidegree_mul(
+            &gauge,
+            cone_point,
+            &self.h_power_relation(),
+            self.size() - 1,
+            q_degree,
+        );
+        let (inverse_first, inverse_second) =
+            invert_bidegree_mirror_map(&mirror_first, &mirror_second, q_degree);
+        Ok(h_bidegree_compose(
+            &gauged,
+            &inverse_first,
+            &inverse_second,
+            q_degree,
+        ))
+    }
+
+    fn flat_bidegree_ray_cone_point(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<Vec<HLaurentSeries>, GwError> {
+        let flat_cone_point = self.normalized_flat_bidegree_cone_point(q_degree, z_order)?;
+        Ok(h_bidegree_to_ray_coefficients(
+            &flat_cone_point,
+            q_degree,
+            &self.ray,
+            self.size() - 1,
+        ))
+    }
+
+    fn normalized_flat_bidegree_cone_point(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<HLaurentBidegreeSeries, GwError> {
+        static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), HLaurentBidegreeSeries>>> =
+            OnceLock::new();
+        let key = (self.rayless_cache_key(), q_degree, z_order);
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(cone_point) = cache.lock().unwrap().get(&key).cloned() {
+            return Ok(cone_point);
+        }
+
+        let negative = self.normalized_bidegree_negative_factor(q_degree, z_order)?;
+        let cone_point = bidegree_negative_factor_to_cone_point(self.size(), q_degree, &negative);
+        let flat_cone_point = self.flat_bidegree_cone_point(&cone_point, q_degree)?;
+        cache.lock().unwrap().insert(key, flat_cone_point.clone());
+        Ok(flat_cone_point)
+    }
+
+    fn fundamental_s_from_ray_cone_point(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+        cone_point: &[HLaurentSeries],
+        calibration: CalibrationId,
+    ) -> Result<SeriesSMatrix<Rational>, GwError> {
+        let fundamental =
+            crate::twisted::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
+                self.size() - 1,
+                q_degree,
+                cone_point,
+                &self.h_power_relation(),
+            );
+        crate::twisted::birkhoff_descendant_s_matrix_from_fundamental_coeff(
+            self.size(),
+            q_degree,
+            z_order,
+            &fundamental,
+            calibration,
+        )
+    }
+
+    fn normalized_bidegree_negative_factor(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<BidegreeLaurentFactor<Rational>, GwError> {
+        static CACHE: OnceLock<
+            Mutex<HashMap<(String, usize, usize), BidegreeLaurentFactor<Rational>>>,
+        > = OnceLock::new();
+        let key = (self.rayless_cache_key(), q_degree, z_order);
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(negative) = cache.lock().unwrap().get(&key).cloned() {
+            return Ok(negative);
+        }
+
+        let min_z = self.min_z_power(q_degree, z_order);
+        let cone_point = self.i_container(q_degree, min_z);
+        let fundamental = self.fundamental_bidegree_matrix(q_degree, &cone_point);
+        let (_, negative) =
+            crate::twisted::birkhoff_factor_by_bidegree(self.size(), q_degree, &fundamental)?;
+        cache.lock().unwrap().insert(key, negative.clone());
+        Ok(negative)
+    }
+
     fn flat_metric_series(&self, q_degree: usize) -> SeriesMatrix<Rational> {
         SeriesMatrix::constant(self.flat_metric(), q_degree)
     }
 
-    fn descendant_s_rational(
+    fn fundamental_s_rational(
         &self,
         q_degree: usize,
         z_order: usize,
@@ -461,19 +1077,27 @@ impl ProjectiveBundleRay {
             return Ok(descendant_s);
         }
 
-        let min_z = self.min_z_power(q_degree, z_order);
-        let i_ray = self.i_ray(q_degree, min_z);
-        let descendant_s = recipe::descendant_s_from_cone_point_function(
-            self.size() - 1,
-            &i_ray,
-            &self.h_power_relation(),
-            &self.flat_metric_series(q_degree),
+        let cone_point = self.flat_bidegree_ray_cone_point(q_degree, z_order)?;
+        let fundamental_s = self.fundamental_s_from_ray_cone_point(
             q_degree,
             z_order,
-            CalibrationId(format!("bundle-ray-birkhoff:{}", self.cache_key())),
+            &cone_point,
+            CalibrationId(format!("bundle-bidegree-flat:{}", self.cache_key())),
         )?;
-        cache.lock().unwrap().insert(key, descendant_s.clone());
-        Ok(descendant_s)
+        cache.lock().unwrap().insert(key, fundamental_s.clone());
+        Ok(fundamental_s)
+    }
+
+    fn descendant_s_rational(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<Rational>, GwError> {
+        let fundamental_s = self.fundamental_s_rational(q_degree, z_order)?;
+        crate::twisted::metric_adjoint_descendant_s_matrix_coeff(
+            fundamental_s,
+            &self.flat_metric_series(q_degree),
+        )
     }
 
     /// Classical multiplication by the grading divisor in the `D`-power
@@ -552,13 +1176,13 @@ impl SemisimpleCohftProvider for BundleRayProvider {
             return Ok(kernel);
         }
 
-        // Quantum multiplication by the grading divisor from the descendant
+        // Quantum multiplication by the grading divisor from the fundamental
         // S-matrix: the z^0 part of the quantum differential equation gives
         // A_q = A_cl + t d/dt S_1.
-        let descendant_s = self.target.descendant_s_rational(q_degree, 1)?;
-        let s_one = descendant_s.coefficient(1).ok_or_else(|| {
+        let fundamental_s = self.target.fundamental_s_rational(q_degree, 1)?;
+        let s_one = fundamental_s.coefficient(1).ok_or_else(|| {
             GwError::ConventionMismatch(
-                "bundle kernel needs the descendant S-matrix through z^{-1}".to_string(),
+                "bundle kernel needs the fundamental S-matrix through z^{-1}".to_string(),
             )
         })?;
         let quantum_multiplication = self
@@ -740,7 +1364,7 @@ mod tests {
     fn f2_non_fano_positive_z_birkhoff_matches_product_genus_zero() {
         // F_2 = P(O + O(2)) is non-Fano: its (-2)-section has anticanonical
         // degree zero, so the I-function has positive z-powers and cannot be
-        // mirror-transformed by a divisor change alone.  The ray-wise
+        // mirror-transformed by a divisor change alone.  The bidegree
         // fundamental-solution Birkhoff split is the required projection; the
         // positive section B_+ = (1,0) deforms to bidegree (1,1) on P^1 x P^1.
         let point = BundleInsertion::new(0, 1, 1);
@@ -773,8 +1397,7 @@ mod tests {
     // full bundle pipeline against an independent one.  It is `#[ignore]`d
     // because the genus-1 cases are slow in debug builds; run it as the
     // end-to-end acceptance test for the non-Fano Birkhoff projection and the
-    // higher-order R calibration.  The derivation of the dictionary is in
-    // TEMP-bundle-issues.md, Appendix B.
+    // higher-order R calibration.
     //
     // Dictionary: class (d1, d2) = (H.beta, xi.beta) on F_2 corresponds to
     // P^1 x P^1 bidegree (d2 + d1, d1); cohomology H <-> H2, xi <-> H1 - H2.
@@ -826,7 +1449,22 @@ mod tests {
         d2: usize,
         insertions: &[BundleInsertion],
     ) -> Rational {
-        let product_total = d2 + 2 * d1;
+        product_side_of_f2_signed(genus, d1, d2 as isize, insertions)
+    }
+
+    /// Signed-`d2` version of [`product_side_of_f2`], needed for the
+    /// negative-section direction.
+    fn product_side_of_f2_signed(
+        genus: usize,
+        d1: usize,
+        d2: isize,
+        insertions: &[BundleInsertion],
+    ) -> Rational {
+        let product_first = d2 + d1 as isize;
+        if product_first < 0 {
+            return Rational::zero();
+        }
+        let product_total = product_first as usize + d1;
         let product_index = d1; // the H2 (second-factor) degree
         let per_insertion = insertions
             .iter()
@@ -881,25 +1519,39 @@ mod tests {
         d2: usize,
         insertions: &[BundleInsertion],
     ) -> Rational {
+        bundle_side_of_f2_signed(genus, d1, d2 as isize, insertions)
+    }
+
+    fn bundle_side_of_f2_signed(
+        genus: usize,
+        d1: usize,
+        d2: isize,
+        insertions: &[BundleInsertion],
+    ) -> Rational {
+        let shifted_total = d2 + 3 * d1 as isize;
+        assert!(
+            shifted_total >= 0,
+            "F_2 shifted total degree must be nonnegative"
+        );
         let invariants = reconstruct_bundle_invariants(
             1,
             &[0, 2],
             &base_weights(),
             &fiber_weights(),
             genus,
-            d2 + 3 * d1,
+            shifted_total as usize,
             insertions,
         )
         .unwrap();
         invariants
             .into_iter()
-            .find(|(a, b, _)| *a == d1 && *b == d2 as isize)
+            .find(|(a, b, _)| *a == d1 && *b == d2)
             .map(|(_, _, value)| value)
             .expect("bundle class present in the shifted-degree slice")
     }
 
     #[test]
-    #[ignore = "slow end-to-end non-Fano/higher-R acceptance test; see TEMP-bundle-issues.md"]
+    #[ignore = "slow end-to-end non-Fano/higher-R acceptance test"]
     fn f2_deformation_matches_p1xp1_pointwise() {
         let point = BundleInsertion::new(0, 1, 1); // H xi is the F_2 point class
         let xi = BundleInsertion::new(0, 0, 1); // maps to H1 - H2 (two terms)
@@ -937,11 +1589,131 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known remaining non-Fano mirror-coordinate issue in the negative-section direction"]
+    fn f4_middle_deformation_class_matches_p1xp1_ruling() {
+        // P(O(2) + O(-2)) normalizes to P(O(4) + O).  Under the deformation
+        // to P^1 x P^1, y = xi + 2H is the second product divisor, so the
+        // product ruling <pt,H,H> = 1 corresponds to class (1,-2) and
+        // insertions <H xi,H,H> on the bundle.
+        let point = BundleInsertion::new(0, 1, 1);
+        let h = BundleInsertion::new(0, 1, 0);
+        let invariants = reconstruct_bundle_invariants(
+            1,
+            &[4, 0],
+            &base_weights(),
+            &fiber_weights(),
+            0,
+            3,
+            &[point, h.clone(), h],
+        )
+        .unwrap();
+        let value = invariants
+            .into_iter()
+            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -2)
+            .map(|(_, _, value)| value)
+            .expect("F_4 middle deformation class present in shifted slice");
+        assert_eq!(value, Rational::one());
+    }
+
+    #[test]
+    fn rank3_negative_direction_matches_p1xp2_base_ruling() {
+        // P(O(1) + O + O(-1)) normalizes to P(O(2) + O(1) + O).  Under
+        // deformation to P^1 x P^2, y = xi + H is the product hyperplane on
+        // P^2, so the product ruling <pt,H,H> = 1 corresponds to class
+        // (1,-1) and insertions <H xi^2,H,H> on the bundle.
+        let point = BundleInsertion::new(0, 1, 2);
+        let h = BundleInsertion::new(0, 1, 0);
+        let invariants = reconstruct_bundle_invariants(
+            1,
+            &[2, 1, 0],
+            &[Rational::from(1), Rational::from(2)],
+            &[Rational::from(0), Rational::from(10), Rational::from(30)],
+            0,
+            2,
+            &[point, h.clone(), h],
+        )
+        .unwrap();
+        let value = invariants
+            .into_iter()
+            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -1)
+            .map(|(_, _, value)| value)
+            .expect("rank-3 negative class present in shifted slice");
+        assert_eq!(value, Rational::one());
+    }
+
+    #[test]
+    #[ignore = "slow rank-3 deformation acceptance test"]
+    fn rank3_harder_negative_direction_matches_p1xp2_base_ruling() {
+        // P(O(2) + O(1) + O(-3)) normalizes to P(O(5) + O(4) + O).  The
+        // product hyperplane is y = xi + 3H, hence the same product ruling is
+        // the bundle class (1,-3) with insertions <H xi^2,H,H>.
+        let point = BundleInsertion::new(0, 1, 2);
+        let h = BundleInsertion::new(0, 1, 0);
+        let invariants = reconstruct_bundle_invariants(
+            1,
+            &[5, 4, 0],
+            &[Rational::from(1), Rational::from(2)],
+            &[Rational::from(0), Rational::from(10), Rational::from(30)],
+            0,
+            3,
+            &[point, h.clone(), h],
+        )
+        .unwrap();
+        let value = invariants
+            .into_iter()
+            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -3)
+            .map(|(_, _, value)| value)
+            .expect("rank-3 harder negative class present in shifted slice");
+        assert_eq!(value, Rational::one());
+    }
+
+    #[test]
+    #[ignore = "slow harder F_2 negative-section spot checks"]
+    fn f2_negative_section_harder_spot_checks_match_p1xp1() {
+        let point = BundleInsertion::new(0, 1, 1);
+        let xi = BundleInsertion::new(0, 0, 1);
+        let tau1_point = BundleInsertion::new(1, 1, 1);
+        let tau2_point = BundleInsertion::new(2, 1, 1);
+
+        let cases = vec![
+            (
+                "g0 class (2,-1), descendant through three points",
+                0,
+                2,
+                -1,
+                vec![tau2_point.clone(), point.clone(), point.clone()],
+            ),
+            (
+                "g0 class (2,-1), xi expansion plus descendant",
+                0,
+                2,
+                -1,
+                vec![tau2_point.clone(), point.clone(), point.clone(), xi],
+            ),
+            (
+                "g1 class (2,-1), mixed descendants",
+                1,
+                2,
+                -1,
+                vec![tau2_point, tau1_point, point],
+            ),
+        ];
+
+        for (label, genus, d1, d2, insertions) in cases {
+            let bundle = bundle_side_of_f2_signed(genus, d1, d2, &insertions);
+            let product = product_side_of_f2_signed(genus, d1, d2, &insertions);
+            assert_eq!(
+                bundle, product,
+                "{label}: bundle {bundle}, product {product}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "slow fixed non-Fano negative-section acceptance test"]
     fn f2_negative_section_direction_genus_one_matches_p1xp1() {
         // Class (d1,d2) = (2,-1) is 3f + 2B_- and deforms to product
-        // bidegree (1,2).  The product value for three tau_1(point)
-        // insertions is -1/4, but the current bundle path returns 0.
+        // bidegree (1,2).  This was the first case requiring the bidegree
+        // Birkhoff projection before ray restriction.
         let tau1_point = BundleInsertion::new(1, 1, 1);
         let invariants = reconstruct_bundle_invariants(
             1,
@@ -989,7 +1761,7 @@ mod tests {
     fn zero_twist_bundle_reproduces_product_invariants() {
         // P(O + O) over P^1 is P^1 x P^1; the unique (1,1)-curve through
         // three general points must reappear through the full bundle
-        // pipeline (I-function, mirror stage, Birkhoff, operator frame).
+        // pipeline (I-function, bidegree Birkhoff, operator frame).
         let point = BundleInsertion::new(0, 1, 1);
         let invariants = reconstruct_bundle_invariants(
             1,

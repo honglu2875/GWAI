@@ -333,12 +333,11 @@ Optional `--weights-base`/`--weights-fiber` set the rational equivariant
 weights; the defaults keep all grading eigenvalues distinct.
 
 Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
-`F_1`, and the like), selected non-Fano `F_2 = P(O + O(2))` deformation checks
-against `P^1 x P^1`, and a zero-twist `P(O + O)` calibration check against
-the product engine through higher `R` order.  A higher genus-one `F_2` class
-in the negative-section direction is still open; see
-`f2_negative_section_direction_genus_one_matches_p1xp1` in
-`src/givental/bundle.rs`.
+`F_1`, and the like), non-Fano Hirzebruch deformation checks against
+`P^1 x P^1` including `F_2` genus-one and `F_4 = P(O(2)+O(-2))` middle-class
+cases, rank-three negative-direction checks against `P^1 x P^2`, and a
+zero-twist `P(O + O)` calibration check against the product engine through
+higher `R` order.
 
 ## `formula`
 
@@ -646,10 +645,11 @@ solve.  Two rank-two targets ship:
   formula `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise; see the `product`
   subcommand.
 - projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`
-  (`givental::bundle`) from their toric I-function, with ray-wise Birkhoff
-  projection that keeps factorization single-variable per ray, and a shifted
-  grading that handles negative curve classes (the exceptional section of a
-  Hirzebruch surface); see the `bundle` subcommand and
+  (`givental::bundle`) from their toric I-function, with bidegree Birkhoff
+  projection plus bidegree mirror-coordinate correction before ray
+  reconstruction, and a shifted grading that handles negative curve classes
+  (the exceptional section of a Hirzebruch surface); see the `bundle`
+  subcommand and
   [docs/lessons.md](docs/lessons.md) §§15–17.
 
 The twisted theories are equivalent in spirit to a second family of targets

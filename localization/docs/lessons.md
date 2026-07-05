@@ -280,34 +280,26 @@ give the cross-recipe oracle of Lesson 7 for free.
 
 ## Part IV — Multi-parameter targets
 
-### 15. Grade first, restrict to rays second — Birkhoff stays one-dimensional
+### 15. Grade first, restrict to rays second — Birkhoff before specialization
 
 Higher Picard rank means multiple Novikov variables, and the naive fear is
-multi-variable Birkhoff factorization (genuinely hard).  It never has to
-happen.  The mirror transformation — reading the mirror map off the
-I-function, gauging away the `z⁻¹` part, inverting the map, re-expanding J —
-is entirely a *graded* operation: work with coefficients indexed by the full
-multidegree `(d₁, d₂')`, finite in number per total degree, and every step
-(the multiplicative gauge, the map inversion by grading-complete fixed-point
-iteration, the recomposition) closes within that grading.  Only *after* J is
-in hand do you restrict to a rational ray `(t, b·t)` — and Birkhoff, which
-acts on a single Novikov direction, sees a one-variable series per ray.
-Reconstruction over `total+1` rays then recovers every multidegree exactly.
-The principle generalizes: *do the hard analytic step (Birkhoff) in the
-smallest space that still determines it, and do the bookkeeping (grading) in
-the large space where it is cheap.*
+multi-variable Birkhoff factorization.  The right simplification is not to
+avoid it by restricting to rays too early; it is to use the grading.  Work
+with coefficients indexed by the full multidegree `(d₁, d₂')`, finite in
+number per total degree.  In total degree `k`, the Birkhoff recursion only
+uses products of lower total degree, so the split is an exact finite
+coefficientwise Laurent operation, not an analytic infinite-dimensional
+problem.
 
-Two supporting details that bit:
-
-- The two-variable mirror map is a pair of scalar bidegree series; inverting
-  it (`q_i = Q_i exp(−G_i(q(Q)))`) is grading-complete fixed-point
-  iteration, converging in `total_degree` steps because each step is exact
-  one grade higher.  No linear solve, no Newton — the grading does the work.
-- Each mirror-map exponent's `z⁻¹` part must lie in the span of
-  `{1, H, ξ'}` for degree reasons.  *Assert this* (exact solve of the
-  overdetermined system plus a residual check): a nonzero residual is not
-  round-off — it is a convention error somewhere upstream, caught
-  immediately instead of as a wrong number ten steps later.
+After the raw bidegree fundamental solution is factored, keep working in the
+same bidegree grading long enough to recover flat Novikov coordinates: take
+the projected cone point from the negative factor, read the divisor
+mirror-coordinate series, gauge them away, and invert the bidegree mirror map.
+Only the resulting flat cone point should be restricted to rational rays
+`(t, b·t)` for graph evaluation.  Reconstruction over `total+1` rays then
+recovers every multidegree exactly.  The principle generalizes: *do the
+loop-group projection and coordinate correction before throwing away Novikov
+directions; use rays only as an exact coefficient-recovery device.*
 
 ### 16. You do not need the effective cone — just a cone that covers it
 
@@ -360,14 +352,23 @@ quietly fails for non-Fano ones.  The mechanism, made concrete on
   **nonzero unit component** exactly for these classes.  For Fano targets it is
   identically zero.  That detector was useful while the full projection was
   missing, but it is not the fix.
-- A useful partial fix is to build the fundamental solution from the
-  ray-restricted I-function itself and run the ordinary matrix Birkhoff split
-  there.  Its positive factor removes the immediate positive-`z` obstruction,
-  and its negative factor is the descendant S-matrix consumed by the graph
-  engine.  This fixes the first `F_2` positive-section check, but it is not the
-  full non-Fano mirror solution: a higher genus-one class in the
-  negative-section direction still needs the remaining mirror-coordinate /
-  big-J projection data.
+- The fix is to keep the bidegree Novikov grading through the Birkhoff stage:
+  build the raw bidegree fundamental frame from the I-function and factor it
+  directly over the finite bidegree Novikov ring.  The positive factor is the
+  full cone projection, including mirror-coordinate and higher positive-`z`
+  corrections.  A prior exponential "full-vector mirror gauge" is not
+  equivalent; it passes `F_2` but fails already for `P(O(2) ⊕ O(-2))`.
+  The negative factor's first column is still not ready for graph evaluation:
+  the two divisor mirror-coordinate series must be extracted and inverted in
+  bidegree before restricting to rays.  This is what fixes the higher
+  `F_2` negative-section descendants.
+- Truncating the Laurent tail is part of the math, not an implementation
+  detail.  Once the positive factor has a term `z^p`, the recursive split can
+  pull a lower-degree negative coefficient `z^{-s-p}` back into `z^{-s}`.
+  The safe window is determined by the actual nonnegative `z` support of the
+  raw bidegree fundamental frame and the maximum length of a lower-degree
+  dependency chain.  A fixed local margin passed rank two and failed the
+  rank-three deformation `P(O(2) ⊕ O(1) ⊕ O(-3)) ~ P^1 x P^2`.
 
 Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
 `(t, b·t)` and full-vector debugging are worth building** — printing the raw

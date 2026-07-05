@@ -63,7 +63,7 @@ Inside `src/givental/`:
 | `recipe.rs` | target-agnostic calibration recipes (see below) |
 | `target.rs` | `GwTarget`, `TargetProvider`, `ProjectiveTarget` |
 | `product.rs` | `P^n x P^m` by Novikov ray reconstruction |
-| `bundle.rs` | `P(O(a_1)+...+O(a_m))` over `P^n` from its toric I-function, bidegree-graded mirror + ray reconstruction |
+| `bundle.rs` | `P(O(a_1)+...+O(a_m))` over `P^n` from its toric I-function, bidegree Birkhoff + ray reconstruction |
 
 ## The engine
 
@@ -146,10 +146,13 @@ quantum differential equation).
 the `H z^{-1}` part, exponential gauge and re-expansion to J reduced by the
 classical ring relation, then `descendant_s_from_j_function` (fundamental
 solution by repeated `z q d/dq + H`-cup, Birkhoff factorization, metric
-adjoint).  The J-function entry point is split out so multi-parameter
-targets can do the mirror transformation in bidegree-graded form before
-restricting to a ray, keeping Birkhoff single-variable per ray.  The
-cohomology-valued Laurent machinery all of this composes
+adjoint).  For multi-parameter projective bundles, `bundle.rs` instead
+builds the raw bidegree fundamental solution and Birkhoff-factors it before
+ray restriction; this lets the positive factor carry the full cone
+projection.  The projected bidegree cone point is then put in flat Novikov
+coordinates by extracting the two divisor mirror-coordinate series, gauging
+them away, and inverting the bidegree mirror map before any ray
+specialization.  The cohomology-valued Laurent machinery all of this composes
 (`HCoeffLaurentSeries`, the mirror transforms, `birkhoff_factor.rs`)
 currently lives in the `twisted` module for historical reasons; the entry
 points are the target-agnostic seam and the physical relocation is
@@ -204,17 +207,19 @@ divisor (the exceptional section of a Hirzebruch surface).  The design that
 makes it tractable: twists are normalized to `min a_l = 0`, the shifted
 fiber degree `d2' = d2 + (max a) d1 >= 0` gives a nonnegative grading that
 covers the effective cone (non-effective classes vanish automatically), the
-whole ring is cyclic over the grading divisor `D = xi + (A+1)H` so everything
-runs in the constant classical `D`-power basis, and the mirror transformation
-happens in **bidegree-graded** form (finite per total degree) *before*
-restricting to flat-coordinate rays — so Birkhoff factorization stays a
-single-variable problem per ray and multi-Novikov Birkhoff never happens.
-Per ray: J -> S by `descendant_s_from_j_function`, quantum multiplication
-`A_q = A_cl + t d/dt S_1`, the frame by `operator_lagrange_frame`, R from
-flatness.  `reconstruct_bundle_invariants` runs `total_degree + 1` rays and a
-rational Vandermonde solve.  Validated against `P^1 x P^1` (zero twists) and
-Hirzebruch `F_1` classical integrals, line counts, and the exceptional and
-fiber curve invariants.  See lessons.md §§15–16.
+whole ring is cyclic over the grading divisor `D = xi + (A+1)H`, and the raw
+fundamental solution is Birkhoff-factored over the finite bidegree Novikov
+ring before any ray restriction.  Its projected first column is
+mirror-corrected in the bidegree Novikov ring, then restricted to rays and
+regenerated into a one-variable fundamental solution.  Per ray, this
+fundamental solution gives quantum multiplication
+`A_q = A_cl + t d/dt S_1`; its metric-adjoint gives the descendant insertion
+operator, the frame comes from `operator_lagrange_frame`, and R from
+flatness.  `reconstruct_bundle_invariants` runs `total_degree + 1` rays and
+a rational Vandermonde solve.  Validated against `P^1 x P^1` zero twists and
+Hirzebruch deformation checks including non-Fano `F_2` and `F_4` cases, plus
+rank-three negative-direction deformations to `P^1 x P^2`.  See lessons.md
+§§15–17.
 
 **Twisted theories** (`twisted.rs`).  Negative split-bundle twists over
 `P^n`, historically the crate's second theory and the origin of the
@@ -284,14 +289,13 @@ target also has a hypergeometric I-function, feed it through
 the cheapest strong validation available.
 
 **A higher-Picard-rank target**: follow `product.rs`/`bundle.rs`.  Build the
-frame in a constant classical basis of a cyclic grading generator, compute
-any I-function mirror transformation in bidegree-graded form, then restrict
-to flat-coordinate rays `(t, b t)` and reconstruct bidegrees from
-`total + 1` rays by a rational Vandermonde solve.  This reuses the whole
-single-variable engine; the only per-target work is the geometry
-(fixed-point weights, the I-function or quantum ring, the insertion
-dictionary) and the choice of grading that makes the relevant curve classes
-nonnegative.
+frame in a constant classical basis of a cyclic grading generator, keep the
+Novikov multigrading through the quantum-ring or Birkhoff construction, then
+restrict to flat-coordinate rays `(t, b t)` and reconstruct bidegrees from
+`total + 1` rays by a rational Vandermonde solve.  This reuses the graph
+engine; the per-target work is the geometry (fixed-point weights, the
+I-function or quantum ring, the insertion dictionary) and the choice of
+grading that makes the relevant curve classes nonnegative.
 
 **A new coefficient ring**: implement `Coeff` (plus the structural fast
 paths `is_structurally_zero/one` and the complexity hooks), and the entire

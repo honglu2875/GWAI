@@ -234,6 +234,10 @@ impl<C: Coeff> HCoeffLaurentSeries<C> {
         self.max_h_power
     }
 
+    pub(crate) fn terms_at_h_power(&self, h_power: usize) -> Option<&BTreeMap<i32, C>> {
+        self.coeffs.get(h_power)
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.coeffs.iter().all(BTreeMap::is_empty)
     }
