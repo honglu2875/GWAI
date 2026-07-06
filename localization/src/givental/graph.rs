@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::factored::FactoredRatFun;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     match compute_by_givental_graphs(req) {
@@ -1981,20 +1982,38 @@ where
             initial_vertex_cache,
         )]
     } else {
-        let chunk_size = graphs.len().div_ceil(worker_count);
+        let next_graph = AtomicUsize::new(0);
         thread::scope(|scope| {
             let mut handles = Vec::new();
-            for chunk in graphs.chunks(chunk_size) {
+            for _ in 0..worker_count {
+                let next_graph = &next_graph;
                 let local_vertex_cache = initial_vertex_cache.clone();
                 handles.push(scope.spawn(move || {
-                    evaluate_scalar_graph_chunk(
-                        chunk,
-                        leg_options,
-                        kernel,
-                        q_degree,
-                        graph_dimension,
-                        local_vertex_cache,
-                    )
+                    let mut total = QSeries::<C>::zero(q_degree);
+                    let mut profile = GraphEvalProfile::new();
+                    let mut vertex_cache = local_vertex_cache;
+                    loop {
+                        let graph_index = next_graph.fetch_add(1, Ordering::Relaxed);
+                        if graph_index >= graphs.len() {
+                            break;
+                        }
+                        let result = evaluate_scalar_graph_chunk(
+                            &graphs[graph_index..graph_index + 1],
+                            leg_options,
+                            kernel,
+                            q_degree,
+                            graph_dimension,
+                            vertex_cache,
+                        );
+                        total = total.add(&result.total);
+                        profile.absorb_graph_counts(&result.profile);
+                        vertex_cache = result.vertex_cache;
+                    }
+                    ScalarGraphChunkResult {
+                        total,
+                        profile,
+                        vertex_cache,
+                    }
                 }));
             }
             handles
@@ -2540,21 +2559,40 @@ where
             initial_vertex_cache,
         )]
     } else {
-        let chunk_size = graphs.len().div_ceil(worker_count);
+        let next_graph = AtomicUsize::new(0);
         thread::scope(|scope| {
             let mut handles = Vec::new();
-            for chunk in graphs.chunks(chunk_size) {
+            for _ in 0..worker_count {
+                let next_graph = &next_graph;
                 let local_vertex_cache = initial_vertex_cache.clone();
                 handles.push(scope.spawn(move || {
-                    evaluate_external_graph_chunk(
-                        chunk,
-                        markings,
-                        colors,
-                        kernel,
-                        q_degree,
-                        graph_dimension,
-                        local_vertex_cache,
-                    )
+                    let mut total =
+                        ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
+                    let mut profile = GraphEvalProfile::new();
+                    let mut vertex_cache = local_vertex_cache;
+                    loop {
+                        let graph_index = next_graph.fetch_add(1, Ordering::Relaxed);
+                        if graph_index >= graphs.len() {
+                            break;
+                        }
+                        let result = evaluate_external_graph_chunk(
+                            &graphs[graph_index..graph_index + 1],
+                            markings,
+                            colors,
+                            kernel,
+                            q_degree,
+                            graph_dimension,
+                            vertex_cache,
+                        );
+                        total.add_assign(&result.total);
+                        profile.absorb_graph_counts(&result.profile);
+                        vertex_cache = result.vertex_cache;
+                    }
+                    ExternalGraphChunkResult {
+                        total,
+                        profile,
+                        vertex_cache,
+                    }
                 }));
             }
             handles
@@ -2661,20 +2699,38 @@ where
             initial_vertex_cache,
         )]
     } else {
-        let chunk_size = graphs.len().div_ceil(worker_count);
+        let next_graph = AtomicUsize::new(0);
         thread::scope(|scope| {
             let mut handles = Vec::new();
-            for chunk in graphs.chunks(chunk_size) {
+            for _ in 0..worker_count {
+                let next_graph = &next_graph;
                 let local_vertex_cache = initial_vertex_cache.clone();
                 handles.push(scope.spawn(move || {
-                    evaluate_restricted_external_graph_chunk(
-                        chunk,
-                        template,
-                        kernel,
-                        q_degree,
-                        graph_dimension,
-                        local_vertex_cache,
-                    )
+                    let mut total = template.zero_like();
+                    let mut profile = GraphEvalProfile::new();
+                    let mut vertex_cache = local_vertex_cache;
+                    loop {
+                        let graph_index = next_graph.fetch_add(1, Ordering::Relaxed);
+                        if graph_index >= graphs.len() {
+                            break;
+                        }
+                        let result = evaluate_restricted_external_graph_chunk(
+                            &graphs[graph_index..graph_index + 1],
+                            template,
+                            kernel,
+                            q_degree,
+                            graph_dimension,
+                            vertex_cache,
+                        );
+                        total.add_assign(&result.total);
+                        profile.absorb_graph_counts(&result.profile);
+                        vertex_cache = result.vertex_cache;
+                    }
+                    RestrictedExternalGraphChunkResult {
+                        total,
+                        profile,
+                        vertex_cache,
+                    }
                 }));
             }
             handles
