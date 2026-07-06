@@ -387,6 +387,10 @@ pub(crate) fn add_product_matrix_to_laurent<C: Coeff>(
     right: &CoeffMatrix<C>,
     size: usize,
 ) {
+    let existing = target.remove(&z_power);
+    let had_existing = existing.is_some();
+    let mut entry = existing.unwrap_or_else(|| zero_coeff_matrix::<C>(size));
+    let mut touched = false;
     for row in 0..size {
         for mid in 0..size {
             if left[row][mid].is_structurally_zero() {
@@ -400,12 +404,13 @@ pub(crate) fn add_product_matrix_to_laurent<C: Coeff>(
                 if term.is_zero() {
                     continue;
                 }
-                let entry = target
-                    .entry(z_power)
-                    .or_insert_with(|| zero_coeff_matrix::<C>(size));
                 entry[row][col] = entry[row][col].add(&term);
+                touched = true;
             }
         }
+    }
+    if (had_existing || touched) && !coeff_matrix_is_zero(&entry) {
+        target.insert(z_power, entry);
     }
 }
 
