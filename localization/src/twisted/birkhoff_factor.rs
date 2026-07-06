@@ -45,6 +45,7 @@ pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
     Ok((positive, negative))
 }
 
+#[cfg(test)]
 pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff>(
     size: usize,
     max_total_degree: usize,
@@ -89,6 +90,58 @@ pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff>(
     Ok((positive, negative))
 }
 
+pub(crate) fn birkhoff_negative_factor_by_bidegree_with_z_bounds<C: Coeff>(
+    size: usize,
+    max_total_degree: usize,
+    matrix: &BidegreeLaurentFactor<C>,
+    positive_z_windows: &BTreeMap<Bidegree, usize>,
+    negative_z_depths: &BTreeMap<Bidegree, usize>,
+) -> Result<BidegreeLaurentFactor<C>, GwError> {
+    validate_bidegree_identity_at_zero(size, matrix)?;
+
+    let mut positive = BidegreeLaurentFactor::new();
+    let mut negative = BidegreeLaurentFactor::new();
+    positive
+        .entry((0, 0))
+        .or_default()
+        .insert(0, identity_coeff_matrix(size));
+    negative
+        .entry((0, 0))
+        .or_default()
+        .insert(0, identity_coeff_matrix(size));
+
+    for total in 1..=max_total_degree {
+        for first in 0..=total {
+            let grade = (first, total - first);
+            let min_z = -i32::try_from(negative_z_depths.get(&grade).copied().unwrap_or(0))
+                .map_err(|_| {
+                    GwError::AlgebraFailure("negative z-depth does not fit in i32".to_string())
+                })?;
+            let max_z = i32::try_from(positive_z_windows.get(&grade).copied().unwrap_or(0))
+                .map_err(|_| {
+                    GwError::AlgebraFailure("positive z-window does not fit in i32".to_string())
+                })?;
+            let mut raw = bidegree_slice_z_window(matrix, grade, size, min_z, max_z);
+            let known = multiply_laurent_matrix_bidegree_slices_z_window(
+                &negative, &positive, grade, size, min_z, max_z,
+            );
+            subtract_laurent_matrix(&mut raw, &known);
+            for (z_power, coeff) in raw {
+                if coeff_matrix_is_zero(&coeff) {
+                    continue;
+                }
+                if z_power >= 0 {
+                    positive.entry(grade).or_default().insert(z_power, coeff);
+                } else {
+                    negative.entry(grade).or_default().insert(z_power, coeff);
+                }
+            }
+        }
+    }
+
+    Ok(negative)
+}
+
 pub(crate) fn validate_bidegree_identity_at_zero<C: Coeff>(
     size: usize,
     matrix: &BidegreeLaurentFactor<C>,
@@ -125,6 +178,7 @@ pub(crate) fn validate_bidegree_identity_at_zero<C: Coeff>(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn bidegree_slice<C: Coeff>(
     matrix: &BidegreeLaurentFactor<C>,
     grade: Bidegree,
@@ -137,11 +191,44 @@ pub(crate) fn bidegree_slice<C: Coeff>(
     })
 }
 
+pub(crate) fn bidegree_slice_z_window<C: Coeff>(
+    matrix: &BidegreeLaurentFactor<C>,
+    grade: Bidegree,
+    size: usize,
+    min_z: i32,
+    max_z: i32,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = LaurentCoeffMatrix::new();
+    if let Some(laurent) = matrix.get(&grade) {
+        for (&z_power, coeff) in laurent.range(min_z..=max_z) {
+            if !coeff_matrix_is_zero(coeff) {
+                out.insert(z_power, coeff.clone());
+            }
+        }
+    }
+    if out.is_empty() {
+        out.insert(0, zero_coeff_matrix(size));
+    }
+    out
+}
+
+#[cfg(test)]
 pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
     left: &BidegreeLaurentFactor<C>,
     right: &BidegreeLaurentFactor<C>,
     grade: Bidegree,
     size: usize,
+) -> LaurentCoeffMatrix<C> {
+    multiply_laurent_matrix_bidegree_slices_z_window(left, right, grade, size, i32::MIN, i32::MAX)
+}
+
+pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff>(
+    left: &BidegreeLaurentFactor<C>,
+    right: &BidegreeLaurentFactor<C>,
+    grade: Bidegree,
+    size: usize,
+    min_z: i32,
+    max_z: i32,
 ) -> LaurentCoeffMatrix<C> {
     let mut out = BTreeMap::new();
     for left_first in 0..=grade.0 {
@@ -159,9 +246,13 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
             };
             for (left_z, left_matrix) in left_laurent {
                 for (right_z, right_matrix) in right_laurent {
+                    let z_power = left_z + right_z;
+                    if z_power < min_z || z_power > max_z {
+                        continue;
+                    }
                     add_product_matrix_to_laurent(
                         &mut out,
-                        left_z + right_z,
+                        z_power,
                         left_matrix,
                         right_matrix,
                         size,

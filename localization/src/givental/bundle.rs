@@ -266,16 +266,20 @@ impl ProjectiveBundleRay {
         )
     }
 
-    /// Sufficient negative z-depth for the I-coefficients through total
-    /// grade `k_max` and Birkhoff order `z_order`.
-    fn min_z_power(&self, k_max: usize, z_order: usize) -> i32 {
+    fn bidegree_birkhoff_bounds(&self, k_max: usize, z_order: usize) -> BidegreeBirkhoffBounds {
         let column_shift = self.size().saturating_sub(1);
         let preview_min_z = -(column_shift as i32);
         let preview_cone = self.i_container(k_max, preview_min_z);
         let preview = self.fundamental_bidegree_matrix(k_max, &preview_cone);
         let raw_positive_windows = max_nonnegative_z_power_by_grade(&preview);
         let positive_windows = positive_factor_z_windows(k_max, &raw_positive_windows);
-        let dependency_depth = bidegree_recursion_extra_depth(k_max, &positive_windows);
+        let base_depth = z_order + column_shift;
+        let negative_depths = bidegree_negative_depths(k_max, base_depth, &positive_windows);
+        let max_depth = negative_depths
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(base_depth);
 
         // In the graded Birkhoff recursion, a positive-factor term z^p can
         // move an already-computed negative coefficient z^(-s-p) into z^-s.
@@ -284,8 +288,18 @@ impl ProjectiveBundleRay {
         // total-degree drop.  The final column shift accounts for repeated
         // (z q d/dq + D) derivatives used to build the raw fundamental matrix
         // from I.
-        let recursion_depth = z_order + dependency_depth;
-        -((recursion_depth + column_shift) as i32)
+        BidegreeBirkhoffBounds {
+            min_z: -(max_depth as i32),
+            positive_z_windows: positive_windows,
+            negative_z_depths: negative_depths,
+        }
+    }
+
+    /// Sufficient negative z-depth for the I-coefficients through total
+    /// grade `k_max` and Birkhoff order `z_order`.
+    #[cfg(test)]
+    fn min_z_power(&self, k_max: usize, z_order: usize) -> i32 {
+        self.bidegree_birkhoff_bounds(k_max, z_order).min_z
     }
 
     /// Scalar z-Laurent restriction of the `(d1, d2)` I-coefficient at the
@@ -413,6 +427,12 @@ type ScalarBidegreeSeries = BTreeMap<Grade, Rational>;
 type HLaurentBidegreeSeries = BTreeMap<Grade, HLaurentSeries>;
 type ZLaurent = BTreeMap<i32, Rational>;
 
+struct BidegreeBirkhoffBounds {
+    min_z: i32,
+    positive_z_windows: BTreeMap<Grade, usize>,
+    negative_z_depths: BTreeMap<Grade, usize>,
+}
+
 fn h_laurent_bidegree_columns_to_laurent_matrix(
     size: usize,
     max_total_degree: usize,
@@ -486,16 +506,22 @@ fn positive_factor_z_windows(
     windows
 }
 
-fn bidegree_recursion_extra_depth(
+fn bidegree_negative_depths(
     max_total_degree: usize,
+    base_depth: usize,
     positive_windows: &BTreeMap<Grade, usize>,
-) -> usize {
-    let mut extra_depths: BTreeMap<Grade, usize> = BTreeMap::new();
-    let mut max_extra_depth = 0usize;
+) -> BTreeMap<Grade, usize> {
+    let mut depths: BTreeMap<Grade, usize> = BTreeMap::new();
     for total in 1..=max_total_degree {
         for first in 0..=total {
+            depths.insert((first, total - first), base_depth);
+        }
+    }
+
+    for total in (1..=max_total_degree).rev() {
+        for first in 0..=total {
             let grade = (first, total - first);
-            let mut extra_depth = 0usize;
+            let target_depth = depths.get(&grade).copied().unwrap_or(base_depth);
             for left_first in 0..=grade.0 {
                 for left_second in 0..=grade.1 {
                     let left_grade = (left_first, left_second);
@@ -503,16 +529,17 @@ fn bidegree_recursion_extra_depth(
                         continue;
                     }
                     let right_grade = (grade.0 - left_first, grade.1 - left_second);
-                    let left_extra = extra_depths.get(&left_grade).copied().unwrap_or(0);
                     let right_window = positive_windows.get(&right_grade).copied().unwrap_or(0);
-                    extra_depth = extra_depth.max(left_extra + right_window);
+                    let needed_depth = target_depth + right_window;
+                    depths
+                        .entry(left_grade)
+                        .and_modify(|depth| *depth = (*depth).max(needed_depth))
+                        .or_insert(needed_depth);
                 }
             }
-            max_extra_depth = max_extra_depth.max(extra_depth);
-            extra_depths.insert(grade, extra_depth);
         }
     }
-    max_extra_depth
+    depths
 }
 
 fn zl_one() -> ZLaurent {
@@ -1282,18 +1309,18 @@ impl ProjectiveBundleRay {
         }
 
         let min_z_started = Instant::now();
-        let min_z = self.min_z_power(q_degree, z_order);
+        let bounds = self.bidegree_birkhoff_bounds(q_degree, z_order);
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_min_z={:.3}s q_degree={} z_order={} min_z={}",
                 min_z_started.elapsed().as_secs_f64(),
                 q_degree,
                 z_order,
-                min_z
+                bounds.min_z
             );
         }
         let i_started = Instant::now();
-        let cone_point = self.i_container(q_degree, min_z);
+        let cone_point = self.i_container(q_degree, bounds.min_z);
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_i_container={:.3}s grades={} q_degree={} z_order={}",
@@ -1315,8 +1342,13 @@ impl ProjectiveBundleRay {
             );
         }
         let birkhoff_started = Instant::now();
-        let (_, negative) =
-            crate::twisted::birkhoff_factor_by_bidegree(self.size(), q_degree, &fundamental)?;
+        let negative = crate::twisted::birkhoff_negative_factor_by_bidegree_with_z_bounds(
+            self.size(),
+            q_degree,
+            &fundamental,
+            &bounds.positive_z_windows,
+            &bounds.negative_z_depths,
+        )?;
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_bidegree_birkhoff={:.3}s total={:.3}s q_degree={} z_order={}",
@@ -1939,6 +1971,57 @@ mod tests {
                 (0, 3, Rational::zero()),
             ]
         );
+    }
+
+    #[test]
+    fn bounded_bidegree_birkhoff_matches_full_factorization_window() {
+        let target = ProjectiveBundleRay::new(
+            1,
+            vec![5, 4, 0],
+            vec![Rational::from(1), Rational::from(2)],
+            vec![Rational::from(0), Rational::from(10), Rational::from(30)],
+            Rational::one(),
+        )
+        .unwrap();
+        let q_degree = 2;
+        let z_order = 1;
+        let bounds = target.bidegree_birkhoff_bounds(q_degree, z_order);
+        let cone_point = target.i_container(q_degree, bounds.min_z);
+        let fundamental = target.fundamental_bidegree_matrix(q_degree, &cone_point);
+        let (_, full_negative) =
+            crate::twisted::birkhoff_factor_by_bidegree(target.size(), q_degree, &fundamental)
+                .unwrap();
+        let bounded_negative = crate::twisted::birkhoff_negative_factor_by_bidegree_with_z_bounds(
+            target.size(),
+            q_degree,
+            &fundamental,
+            &bounds.positive_z_windows,
+            &bounds.negative_z_depths,
+        )
+        .unwrap();
+
+        let matrix_at = |factor: &BidegreeLaurentFactor<Rational>, grade: Grade, z_power: i32| {
+            factor
+                .get(&grade)
+                .and_then(|laurent| laurent.get(&z_power))
+                .cloned()
+                .unwrap_or_else(|| crate::twisted::zero_coeff_matrix(target.size()))
+        };
+        for total in 1..=q_degree {
+            for first in 0..=total {
+                let grade = (first, total - first);
+                let depth = bounds.negative_z_depths.get(&grade).copied().unwrap_or(0);
+                for z_power in -(depth as i32)..0 {
+                    assert_eq!(
+                        matrix_at(&bounded_negative, grade, z_power),
+                        matrix_at(&full_negative, grade, z_power),
+                        "bounded bidegree factorization mismatch at grade {:?}, z^{}",
+                        grade,
+                        z_power
+                    );
+                }
+            }
+        }
     }
 
     // ----- F_2 <-> P^1 x P^1 deformation cross-check (acceptance test) -----
