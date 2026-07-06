@@ -66,7 +66,9 @@ pub(crate) struct GraphEvalProfile {
     started: Instant,
     calibration_elapsed: Duration,
     option_elapsed: Duration,
+    stable_graph_elapsed: Duration,
     graph_elapsed: Duration,
+    prepared_stable_graphs: usize,
     stable_graphs: usize,
     colorings: usize,
     recursion_calls: usize,
@@ -85,7 +87,9 @@ impl GraphEvalProfile {
             started: Instant::now(),
             calibration_elapsed: Duration::ZERO,
             option_elapsed: Duration::ZERO,
+            stable_graph_elapsed: Duration::ZERO,
             graph_elapsed: Duration::ZERO,
+            prepared_stable_graphs: 0,
             stable_graphs: 0,
             colorings: 0,
             recursion_calls: 0,
@@ -110,6 +114,12 @@ impl GraphEvalProfile {
         }
     }
 
+    fn add_stable_graph_elapsed(&mut self, elapsed: Duration) {
+        if self.enabled {
+            self.stable_graph_elapsed += elapsed;
+        }
+    }
+
     fn add_graph_elapsed(&mut self, elapsed: Duration) {
         if self.enabled {
             self.graph_elapsed += elapsed;
@@ -121,11 +131,13 @@ impl GraphEvalProfile {
             return;
         }
         eprintln!(
-            "GW_PROFILE total={:.3}s calibration={:.3}s options={:.3}s graphs={:.3}s stable_graphs={} colorings={} recursion_calls={} leaves={} vertex_cache_hits={} vertex_cache_misses={} translation_terms={} leg_options={} edge_options={}",
+            "GW_PROFILE total={:.3}s calibration={:.3}s options={:.3}s stable_graph_generation={:.3}s graphs={:.3}s prepared_stable_graphs={} stable_graphs={} colorings={} recursion_calls={} leaves={} vertex_cache_hits={} vertex_cache_misses={} translation_terms={} leg_options={} edge_options={}",
             self.started.elapsed().as_secs_f64(),
             self.calibration_elapsed.as_secs_f64(),
             self.option_elapsed.as_secs_f64(),
+            self.stable_graph_elapsed.as_secs_f64(),
             self.graph_elapsed.as_secs_f64(),
+            self.prepared_stable_graphs,
             self.stable_graphs,
             self.colorings,
             self.recursion_calls,
@@ -501,14 +513,14 @@ pub fn projective_graph_bounded_potential_coefficients(
     let colors = provider.colors();
     let graph_dimension = 3 * genus + markings - 3;
     let graph_kernel = provider.graph_kernel(degree_max, graph_dimension + 1, graph_dimension)?;
-    let graphs = prepared_stable_graphs(genus, markings, colors);
+    let mut profile = GraphEvalProfile::new();
+    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile);
     let prepared = graphs.get(graph_index).ok_or_else(|| {
         GwError::UnsupportedInvariant(format!(
             "stable graph index {graph_index} is out of range for (g,m)=({genus},{markings})"
         ))
     })?;
 
-    let mut profile = GraphEvalProfile::new();
     profile.stable_graphs = 1;
     profile.edge_options = graph_kernel
         .edge_options
@@ -652,7 +664,8 @@ where
         );
     }
 
-    let graphs = prepared_stable_graphs(genus, insertions.len(), provider.colors());
+    let graphs =
+        profiled_prepared_stable_graphs(genus, insertions.len(), provider.colors(), &mut profile);
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -805,7 +818,12 @@ where
         .sum();
     profile.add_option_elapsed(options_started.elapsed());
 
-    let graphs = prepared_stable_graphs(genus, insertions.len(), provider.coeff_colors());
+    let graphs = profiled_prepared_stable_graphs(
+        genus,
+        insertions.len(),
+        provider.coeff_colors(),
+        &mut profile,
+    );
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -1246,8 +1264,13 @@ where
         req.degree,
         &tasks,
     );
-    let graphs = prepared_stable_graphs(req.genus, req.markings, provider.coeff_colors());
     let mut profile = GraphEvalProfile::new();
+    let graphs = profiled_prepared_stable_graphs(
+        req.genus,
+        req.markings,
+        provider.coeff_colors(),
+        &mut profile,
+    );
     profile.stable_graphs = graphs.len();
     profile.edge_options = graph_kernel
         .edge_options
@@ -1638,8 +1661,9 @@ where
             q_degree,
             tasks,
         );
-        let graphs = prepared_stable_graphs(self.genus, markings, self.colors());
         let mut profile = GraphEvalProfile::new();
+        let graphs =
+            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile);
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
             .edge_options
@@ -1732,8 +1756,9 @@ where
     fn build_external_leg_kernel(&self, markings: usize) -> Result<ExternalLegKernel, GwError> {
         let graph_dimension = self.graph_dimension(markings);
         let graph_kernel = self.graph_kernel_for_markings(markings)?;
-        let graphs = prepared_stable_graphs(self.genus, markings, self.colors());
         let mut profile = GraphEvalProfile::new();
+        let graphs =
+            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile);
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
             .edge_options
@@ -4221,6 +4246,30 @@ pub(crate) fn prepared_stable_graphs(
         .collect::<Vec<_>>();
     let graphs = Arc::new(graphs);
     cache.lock().unwrap().insert(key, graphs.clone());
+    graphs
+}
+
+fn profiled_prepared_stable_graphs(
+    genus: usize,
+    markings: usize,
+    colors: usize,
+    profile: &mut GraphEvalProfile,
+) -> Arc<Vec<PreparedStableGraph>> {
+    let started = Instant::now();
+    let graphs = prepared_stable_graphs(genus, markings, colors);
+    let elapsed = started.elapsed();
+    profile.add_stable_graph_elapsed(elapsed);
+    profile.prepared_stable_graphs = graphs.len();
+    if profile.enabled {
+        eprintln!(
+            "GW_PROFILE stable_graph_generation={:.3}s genus={} markings={} colors={} prepared_stable_graphs={}",
+            elapsed.as_secs_f64(),
+            genus,
+            markings,
+            colors,
+            graphs.len()
+        );
+    }
     graphs
 }
 
