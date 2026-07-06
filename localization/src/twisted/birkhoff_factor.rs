@@ -258,7 +258,7 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff + Send +
     }
     let worker_count = birkhoff_product_worker_count(products.len());
     if crate::env_flag("GW_PROFILE_BIRKHOFF") {
-        println!(
+        eprintln!(
             "GW_PROFILE birkhoff_bidegree_products={} workers={} grade=({},{}) z_window=[{},{}]",
             products.len(),
             worker_count,
