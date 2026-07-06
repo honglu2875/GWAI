@@ -43,6 +43,7 @@
 
 use super::*;
 use crate::twisted::{BidegreeLaurentFactor, HLaurentSeries, LaurentCoeffMatrix};
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
@@ -595,11 +596,16 @@ fn add_zl_term(series: &mut ZLaurent, z_power: i32, value: Rational, min_z: i32)
     if z_power < min_z || value.is_zero() {
         return;
     }
-    let next = series.get(&z_power).cloned().unwrap_or_else(Rational::zero) + value;
-    if next.is_zero() {
-        series.remove(&z_power);
-    } else {
-        series.insert(z_power, next);
+    match series.entry(z_power) {
+        Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+        Entry::Occupied(mut entry) => {
+            *entry.get_mut() += value;
+            if entry.get().is_zero() {
+                entry.remove();
+            }
+        }
     }
 }
 
@@ -667,11 +673,16 @@ fn scalar_bidegree_add_term(
     if grade.0 + grade.1 > max_total_degree || value.is_zero() {
         return;
     }
-    let next = series.get(&grade).cloned().unwrap_or_else(Rational::zero) + value;
-    if next.is_zero() {
-        series.remove(&grade);
-    } else {
-        series.insert(grade, next);
+    match series.entry(grade) {
+        Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+        Entry::Occupied(mut entry) => {
+            *entry.get_mut() += value;
+            if entry.get().is_zero() {
+                entry.remove();
+            }
+        }
     }
 }
 

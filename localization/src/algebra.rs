@@ -1,4 +1,5 @@
 use std::cmp::Ordering;
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
@@ -567,16 +568,16 @@ impl SparsePoly {
         if coeff.is_zero() {
             return;
         }
-        let new_coeff = self
-            .terms
-            .get(&monomial)
-            .cloned()
-            .unwrap_or_else(Rational::zero)
-            + coeff;
-        if new_coeff.is_zero() {
-            self.terms.remove(&monomial);
-        } else {
-            self.terms.insert(monomial, new_coeff);
+        match self.terms.entry(monomial) {
+            Entry::Vacant(entry) => {
+                entry.insert(coeff);
+            }
+            Entry::Occupied(mut entry) => {
+                *entry.get_mut() += coeff;
+                if entry.get().is_zero() {
+                    entry.remove();
+                }
+            }
         }
     }
 
@@ -620,11 +621,16 @@ impl SparsePoly {
                 )));
             };
             let term = coeff.clone() * monomial_coeff;
-            let next = out.get(&degree).cloned().unwrap_or_else(Rational::zero) + term;
-            if next.is_zero() {
-                out.remove(&degree);
-            } else {
-                out.insert(degree, next);
+            match out.entry(degree) {
+                Entry::Vacant(entry) => {
+                    entry.insert(term);
+                }
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() += term;
+                    if entry.get().is_zero() {
+                        entry.remove();
+                    }
+                }
             }
         }
         Ok(out)
@@ -649,11 +655,18 @@ impl SparsePoly {
                 num: residual_poly,
                 den: SparsePoly::one(),
             };
-            let next = out.get(&degree).cloned().unwrap_or_else(RatFun::zero) + term;
-            if next.is_zero() {
-                out.remove(&degree);
-            } else {
-                out.insert(degree, next);
+            match out.entry(degree) {
+                Entry::Vacant(entry) => {
+                    entry.insert(term);
+                }
+                Entry::Occupied(mut entry) => {
+                    let next = <RatFun as Coeff>::add(entry.get(), &term);
+                    if next.is_zero() {
+                        entry.remove();
+                    } else {
+                        *entry.get_mut() = next;
+                    }
+                }
             }
         }
         Ok(out)
@@ -795,16 +808,16 @@ impl LaurentSeries {
     pub fn add(&self, rhs: &Self) -> Self {
         let mut out = self.clone();
         for (order, coeff) in &rhs.coeffs {
-            let next = out
-                .coeffs
-                .get(order)
-                .cloned()
-                .unwrap_or_else(Rational::zero)
-                + coeff.clone();
-            if next.is_zero() {
-                out.coeffs.remove(order);
-            } else {
-                out.coeffs.insert(*order, next);
+            match out.coeffs.entry(*order) {
+                Entry::Vacant(entry) => {
+                    entry.insert(coeff.clone());
+                }
+                Entry::Occupied(mut entry) => {
+                    *entry.get_mut() += coeff.clone();
+                    if entry.get().is_zero() {
+                        entry.remove();
+                    }
+                }
             }
         }
         out
