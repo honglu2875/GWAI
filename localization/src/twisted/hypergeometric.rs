@@ -74,11 +74,14 @@ impl NegativeSplitQrrModel {
     }
 
     pub fn mirror_transformed_j_coefficients(&self) -> Vec<HLaurentSeries> {
+        let i_coefficients = self.i_coefficients();
+        let mirror = mirror_map_coefficients_from_i_function(&i_coefficients, self.q_degree);
+        let inverse_mirror = invert_mirror_map(&mirror, self.q_degree);
         mirror_transformed_j_coefficients_from_i_function(
             self.n,
-            &self.i_coefficients(),
-            &self.mirror_map_coefficients(),
-            &self.inverse_mirror_map_coefficients(),
+            &i_coefficients,
+            &mirror,
+            &inverse_mirror,
             self.q_degree,
         )
     }
@@ -152,11 +155,14 @@ impl NegativeSplitHypergeometricModel {
 
     pub fn mirror_transformed_j_coefficients(&self) -> Vec<HLaurentSeries> {
         // J(q) = exp(-H t(q)/z) I(Q(q)), with Q(q) the inverse mirror map.
+        let i_coefficients = self.i_coefficients();
+        let mirror = mirror_map_coefficients_from_i_function(&i_coefficients, self.q_degree);
+        let inverse_mirror = invert_mirror_map(&mirror, self.q_degree);
         mirror_transformed_j_coefficients_from_i_function(
             self.n,
-            &self.i_coefficients(),
-            &self.mirror_map_coefficients(),
-            &self.inverse_mirror_map_coefficients(),
+            &i_coefficients,
+            &mirror,
+            &inverse_mirror,
             self.q_degree,
         )
     }
@@ -258,12 +264,15 @@ impl NegativeSplitEquivariantHypergeometricModel {
 
     pub fn mirror_transformed_j_coefficients(&self) -> Result<Vec<HLaurentSeries>, GwError> {
         let h_power_relation = base_h_power_relation(self.n, &self.base_weights)?;
+        let i_coefficients = self.i_coefficients()?;
+        let mirror = mirror_map_coefficients_from_i_function(&i_coefficients, self.q_degree);
+        let inverse_mirror = invert_mirror_map(&mirror, self.q_degree);
         Ok(
             mirror_transformed_j_coefficients_from_i_function_mod_relation(
                 self.n,
-                &self.i_coefficients()?,
-                &self.mirror_map_coefficients()?,
-                &self.inverse_mirror_map_coefficients()?,
+                &i_coefficients,
+                &mirror,
+                &inverse_mirror,
                 self.q_degree,
                 &h_power_relation,
             ),
@@ -365,28 +374,17 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
             .collect()
     }
 
-    fn mirror_map_coefficients(&self) -> Result<Vec<C>, GwError> {
-        Ok(mirror_map_coefficients_from_i_function_coeff(
-            &self.i_coefficients()?,
-            self.q_degree,
-        ))
-    }
-
-    fn inverse_mirror_map_coefficients(&self) -> Result<Vec<C>, GwError> {
-        Ok(invert_mirror_map(
-            &self.mirror_map_coefficients()?,
-            self.q_degree,
-        ))
-    }
-
     fn mirror_transformed_j_coefficients(&self) -> Result<Vec<HCoeffLaurentSeries<C>>, GwError> {
         let h_power_relation = base_h_power_relation_coeff(self.n, &self.base_weights)?;
+        let i_coefficients = self.i_coefficients()?;
+        let mirror = mirror_map_coefficients_from_i_function_coeff(&i_coefficients, self.q_degree);
+        let inverse_mirror = invert_mirror_map(&mirror, self.q_degree);
         Ok(
             mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff(
                 self.n,
-                &self.i_coefficients()?,
-                &self.mirror_map_coefficients()?,
-                &self.inverse_mirror_map_coefficients()?,
+                &i_coefficients,
+                &mirror,
+                &inverse_mirror,
                 self.q_degree,
                 &h_power_relation,
             ),
