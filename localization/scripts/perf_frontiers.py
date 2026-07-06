@@ -536,11 +536,20 @@ def main() -> int:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    graph_cache_dir = out_dir / "graph-cache"
+    graph_cache_dir.mkdir(parents=True, exist_ok=True)
     rows = []
 
     for index, case in enumerate(selected, start=1):
         print(f"[{index}/{len(selected)}] {case.group}/{case.name}", flush=True)
-        row = run_case(binary, case, args.timeout, args.frontier_seconds, args.repeat)
+        row = run_case(
+            binary,
+            case,
+            args.timeout,
+            args.frontier_seconds,
+            args.repeat,
+            graph_cache_dir,
+        )
         attach_baseline(row, baseline_rows.get(case.name), args.regression_percent)
         rows.append(row)
         status = row["status"]
@@ -656,10 +665,12 @@ def run_case(
     timeout: float,
     frontier_seconds: float,
     repeat: int,
+    graph_cache_dir: Path,
 ) -> dict[str, object]:
     cmd = [str(binary), *case.cmd]
     env = os.environ.copy()
     env.pop("GW_PROFILE", None)
+    env.setdefault("GWAI_GRAPH_CACHE_DIR", str(graph_cache_dir))
     samples = []
     statuses = []
     stdout = ""

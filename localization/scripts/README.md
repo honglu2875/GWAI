@@ -36,5 +36,8 @@ workloads for the ordinary Givental, twisted, product, bundle, formula,
 resolvent, series, and psi paths.  It treats roughly one minute as the
 execution frontier, applies a per-case timeout, and writes timestamped plus
 `latest.*` Markdown, CSV, and JSONL results under `target/perf-frontiers/`.
+Unless `GWAI_GRAPH_CACHE_DIR` is already set, the harness also stores stable
+graph tables under `target/perf-frontiers/graph-cache/` so repeated tuning runs
+do not accidentally benchmark an unwritable home-cache path.
 Use `--save-baseline` before an optimization pass and `--baseline PATH` after
 it to get percentage deltas; use `--repeat N` for noisy rows.

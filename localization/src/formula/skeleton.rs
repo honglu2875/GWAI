@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
+use std::time::Instant;
 
 use crate::error::GwError;
 use crate::graphs::{stable_graphs, StableEdge, StableGraph};
@@ -151,7 +152,21 @@ struct TikzPoint {
 
 pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton, GwError> {
     request.validate()?;
-    let graphs = stable_graphs(request.genus, request.markings)
+    let profile_enabled = crate::env_flag("GW_PROFILE");
+    let stable_started = Instant::now();
+    let stable_graphs = stable_graphs(request.genus, request.markings);
+    if profile_enabled {
+        eprintln!(
+            "GW_PROFILE formula_stable_graphs={:.3}s genus={} markings={} graphs={}",
+            stable_started.elapsed().as_secs_f64(),
+            request.genus,
+            request.markings,
+            stable_graphs.len()
+        );
+    }
+
+    let skeleton_started = Instant::now();
+    let graphs = stable_graphs
         .into_iter()
         .enumerate()
         .map(|(index, graph)| {
@@ -178,6 +193,12 @@ pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton
             }
         })
         .collect();
+    if profile_enabled {
+        eprintln!(
+            "GW_PROFILE formula_skeleton_wrap={:.3}s",
+            skeleton_started.elapsed().as_secs_f64()
+        );
+    }
     Ok(FormulaSkeleton { request, graphs })
 }
 
