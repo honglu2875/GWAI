@@ -13,6 +13,7 @@ pub(crate) type QDegreeLaurentFactor<C> = Vec<LaurentCoeffMatrix<C>>;
 pub(crate) type Bidegree = (usize, usize);
 pub(crate) type BidegreeLaurentFactor<C> = BTreeMap<Bidegree, LaurentCoeffMatrix<C>>;
 
+#[cfg(test)]
 pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
     size: usize,
     q_degree: usize,
@@ -44,6 +45,44 @@ pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
     }
 
     Ok((positive, negative))
+}
+
+pub(crate) fn birkhoff_negative_factor_by_q_degree_with_z_bounds<C: Coeff>(
+    size: usize,
+    q_degree: usize,
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+    positive_z_windows: &BTreeMap<usize, usize>,
+    negative_z_depths: &BTreeMap<usize, usize>,
+) -> Result<QDegreeLaurentFactor<C>, GwError> {
+    validate_identity_at_q_zero(size, matrix)?;
+    let mut positive = vec![BTreeMap::new(); q_degree + 1];
+    let mut negative = vec![BTreeMap::new(); q_degree + 1];
+    positive[0].insert(0, identity_coeff_matrix(size));
+    negative[0].insert(0, identity_coeff_matrix(size));
+
+    for degree in 1..=q_degree {
+        let min_z = -i32::try_from(negative_z_depths.get(&degree).copied().unwrap_or(0))
+            .map_err(|_| GwError::AlgebraFailure("negative z-depth does not fit in i32".into()))?;
+        let max_z = i32::try_from(positive_z_windows.get(&degree).copied().unwrap_or(0))
+            .map_err(|_| GwError::AlgebraFailure("positive z-window does not fit in i32".into()))?;
+        let mut raw = q_degree_slice_z_window(matrix, degree, size, min_z, max_z);
+        let known = multiply_laurent_matrix_q_slices_z_window(
+            &negative, &positive, degree, size, min_z, max_z,
+        );
+        subtract_laurent_matrix(&mut raw, &known);
+        for (z_power, coeff) in raw {
+            if coeff_matrix_is_zero(&coeff) {
+                continue;
+            }
+            if z_power >= 0 {
+                positive[degree].insert(z_power, coeff);
+            } else {
+                negative[degree].insert(z_power, coeff);
+            }
+        }
+    }
+
+    Ok(negative)
 }
 
 #[cfg(test)]
@@ -360,6 +399,7 @@ pub(crate) fn validate_identity_at_q_zero<C: Coeff>(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn q_degree_slice<C: Coeff>(
     matrix: &BTreeMap<i32, SeriesMatrix<C>>,
     degree: usize,
@@ -367,6 +407,26 @@ pub(crate) fn q_degree_slice<C: Coeff>(
 ) -> LaurentCoeffMatrix<C> {
     let mut out = BTreeMap::new();
     for (z_power, coefficient) in matrix {
+        let q_coeff = matrix_q_coefficient(coefficient, degree);
+        if !coeff_matrix_is_zero(&q_coeff) {
+            out.insert(*z_power, q_coeff);
+        }
+    }
+    if out.is_empty() {
+        out.insert(0, zero_coeff_matrix(size));
+    }
+    out
+}
+
+pub(crate) fn q_degree_slice_z_window<C: Coeff>(
+    matrix: &BTreeMap<i32, SeriesMatrix<C>>,
+    degree: usize,
+    size: usize,
+    min_z: i32,
+    max_z: i32,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = BTreeMap::new();
+    for (z_power, coefficient) in matrix.range(min_z..=max_z) {
         let q_coeff = matrix_q_coefficient(coefficient, degree);
         if !coeff_matrix_is_zero(&q_coeff) {
             out.insert(*z_power, q_coeff);
@@ -393,6 +453,7 @@ pub(crate) fn matrix_q_coefficient<C: Coeff>(
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) fn multiply_laurent_matrix_q_slices<C: Coeff>(
     left: &[LaurentCoeffMatrix<C>],
     right: &[LaurentCoeffMatrix<C>],
@@ -410,6 +471,29 @@ pub(crate) fn multiply_laurent_matrix_q_slices<C: Coeff>(
                     right_matrix,
                     size,
                 );
+            }
+        }
+    }
+    out
+}
+
+pub(crate) fn multiply_laurent_matrix_q_slices_z_window<C: Coeff>(
+    left: &[LaurentCoeffMatrix<C>],
+    right: &[LaurentCoeffMatrix<C>],
+    degree: usize,
+    size: usize,
+    min_z: i32,
+    max_z: i32,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = BTreeMap::new();
+    for split in 1..degree {
+        for (left_z, left_matrix) in &left[split] {
+            for (right_z, right_matrix) in &right[degree - split] {
+                let z_power = left_z + right_z;
+                if z_power < min_z || z_power > max_z {
+                    continue;
+                }
+                add_product_matrix_to_laurent(&mut out, z_power, left_matrix, right_matrix, size);
             }
         }
     }

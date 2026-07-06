@@ -1293,6 +1293,66 @@ fn generic_birkhoff_split_preserves_factored_coefficients() {
 }
 
 #[test]
+fn bounded_q_birkhoff_matches_full_factorization_window() {
+    let q_degree = 3;
+    let z_order = 1;
+    let scalar_matrix = |coeffs: Vec<Rational>| {
+        SeriesMatrix::from_entries(vec![vec![QSeries::from_coeffs(coeffs)]])
+    };
+
+    let mut fundamental = BTreeMap::new();
+    fundamental.insert(
+        0,
+        scalar_matrix(vec![
+            Rational::one(),
+            Rational::zero(),
+            Rational::zero(),
+            Rational::zero(),
+        ]),
+    );
+    fundamental.insert(
+        2,
+        scalar_matrix(vec![
+            Rational::zero(),
+            Rational::from(3),
+            Rational::from(5),
+            Rational::zero(),
+        ]),
+    );
+    fundamental.insert(
+        -3,
+        scalar_matrix(vec![
+            Rational::zero(),
+            Rational::from(7),
+            Rational::zero(),
+            Rational::from(11),
+        ]),
+    );
+    fundamental.insert(
+        -1,
+        scalar_matrix(vec![
+            Rational::zero(),
+            Rational::zero(),
+            Rational::from(13),
+            Rational::from(17),
+        ]),
+    );
+
+    let (_, full_negative) = birkhoff_factor_by_q_degree(1, q_degree, &fundamental).unwrap();
+    let full_coefficients = negative_factor_to_s_coefficients(1, q_degree, z_order, &full_negative);
+    let bounded = birkhoff_descendant_s_matrix_from_fundamental_coeff(
+        1,
+        q_degree,
+        z_order,
+        &fundamental,
+        CalibrationId("bounded-q-test".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(bounded.coefficients(), full_coefficients.as_slice());
+}
+
+#[test]
 fn packed_resolvent_matches_invariant_wise_local_p2() {
     let req = crate::resolvent::ResolventRequest {
         target_n: 2,

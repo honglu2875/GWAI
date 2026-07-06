@@ -167,12 +167,91 @@ pub(crate) fn birkhoff_descendant_s_matrix_from_fundamental_coeff<C: Coeff>(
     fundamental: &BTreeMap<i32, SeriesMatrix<C>>,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix<C>, GwError> {
+    if z_order == 0 {
+        return SeriesSMatrix::from_coefficients(
+            size,
+            q_degree,
+            0,
+            vec![SeriesMatrix::identity(size, q_degree)],
+            calibration,
+        );
+    }
     // Birkhoff factorization splits the Laurent fundamental solution into
     // S(z^{-1})^{-1} * P(z).  We keep the negative factor and convert its
     // z^{-k} terms into the descendant S-matrix coefficients.
-    let (_, s_factor) = birkhoff_factor_by_q_degree(size, q_degree, fundamental)?;
+    let raw_positive_windows = max_nonnegative_z_power_by_q_degree(fundamental, q_degree);
+    let positive_windows = positive_factor_q_z_windows(q_degree, &raw_positive_windows);
+    let negative_depths = q_negative_z_depths(q_degree, z_order, &positive_windows);
+    let s_factor = birkhoff_negative_factor_by_q_degree_with_z_bounds(
+        size,
+        q_degree,
+        fundamental,
+        &positive_windows,
+        &negative_depths,
+    )?;
     let coefficients = negative_factor_to_s_coefficients(size, q_degree, z_order, &s_factor);
     SeriesSMatrix::from_coefficients(size, q_degree, z_order, coefficients, calibration)
+}
+
+fn max_nonnegative_z_power_by_q_degree<C: Coeff>(
+    fundamental: &BTreeMap<i32, SeriesMatrix<C>>,
+    q_degree: usize,
+) -> BTreeMap<usize, usize> {
+    let mut out = BTreeMap::new();
+    for degree in 1..=q_degree {
+        if let Some(max_z) = fundamental
+            .iter()
+            .filter(|(z_power, _)| **z_power >= 0)
+            .filter_map(|(z_power, matrix)| {
+                let coefficient = matrix_q_coefficient(matrix, degree);
+                (!coeff_matrix_is_zero(&coefficient)).then_some(*z_power as usize)
+            })
+            .max()
+        {
+            out.insert(degree, max_z);
+        }
+    }
+    out
+}
+
+fn positive_factor_q_z_windows(
+    q_degree: usize,
+    raw_windows: &BTreeMap<usize, usize>,
+) -> BTreeMap<usize, usize> {
+    let mut windows: BTreeMap<usize, usize> = BTreeMap::new();
+    for degree in 1..=q_degree {
+        let mut window = raw_windows.get(&degree).copied().unwrap_or(0);
+        for split in 1..degree {
+            if let Some(right_window) = windows.get(&(degree - split)).copied() {
+                window = window.max(right_window.saturating_sub(1));
+            }
+        }
+        windows.insert(degree, window);
+    }
+    windows
+}
+
+fn q_negative_z_depths(
+    q_degree: usize,
+    base_depth: usize,
+    positive_windows: &BTreeMap<usize, usize>,
+) -> BTreeMap<usize, usize> {
+    let mut depths = (1..=q_degree)
+        .map(|degree| (degree, base_depth))
+        .collect::<BTreeMap<_, _>>();
+    for degree in (1..=q_degree).rev() {
+        let target_depth = depths.get(&degree).copied().unwrap_or(base_depth);
+        for split in 1..degree {
+            let right_degree = degree - split;
+            let right_window = positive_windows.get(&right_degree).copied().unwrap_or(0);
+            let needed_depth = target_depth + right_window;
+            depths
+                .entry(split)
+                .and_modify(|depth| *depth = (*depth).max(needed_depth))
+                .or_insert(needed_depth);
+        }
+    }
+    depths
 }
 
 pub(crate) fn exp_minus_h_mirror_over_z_coefficients(
