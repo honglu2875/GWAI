@@ -7,7 +7,9 @@
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::thread;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StableVertex {
@@ -417,14 +419,58 @@ pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
     // cache them independently of target, degree, and insertions — in memory
     // for this process, and on disk for expensive tables so high-genus runs
     // pay generation once per machine rather than once per invocation.
-    static CACHE: OnceLock<Mutex<BTreeMap<(usize, usize), Vec<StableGraph>>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-    if let Some(graphs) = cache.lock().unwrap().get(&(genus, legs)).cloned() {
-        return graphs;
+    static CACHE: OnceLock<StableGraphCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(StableGraphCache::new);
+    cache.get_or_generate(genus, legs)
+}
+
+struct StableGraphCache {
+    entries: Mutex<BTreeMap<(usize, usize), StableGraphCacheEntry>>,
+    ready: Condvar,
+}
+
+#[derive(Clone)]
+enum StableGraphCacheEntry {
+    Ready(Vec<StableGraph>),
+    Generating,
+}
+
+impl StableGraphCache {
+    fn new() -> Self {
+        Self {
+            entries: Mutex::new(BTreeMap::new()),
+            ready: Condvar::new(),
+        }
     }
 
+    fn get_or_generate(&self, genus: usize, legs: usize) -> Vec<StableGraph> {
+        let key = (genus, legs);
+        let mut entries = self.entries.lock().unwrap();
+        loop {
+            match entries.get(&key) {
+                Some(StableGraphCacheEntry::Ready(graphs)) => return graphs.clone(),
+                Some(StableGraphCacheEntry::Generating) => {
+                    entries = self.ready.wait(entries).unwrap();
+                }
+                None => {
+                    entries.insert(key, StableGraphCacheEntry::Generating);
+                    break;
+                }
+            }
+        }
+        drop(entries);
+
+        let graphs = generate_or_load_stable_graphs(genus, legs);
+
+        let mut entries = self.entries.lock().unwrap();
+        entries.insert(key, StableGraphCacheEntry::Ready(graphs.clone()));
+        self.ready.notify_all();
+        graphs
+    }
+}
+
+fn generate_or_load_stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
     if let Some(graphs) = load_stable_graphs_from_disk(genus, legs) {
-        cache.lock().unwrap().insert((genus, legs), graphs.clone());
         return graphs;
     }
 
@@ -445,7 +491,6 @@ pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
     if started.elapsed() >= DISK_CACHE_MIN_GENERATION_TIME {
         store_stable_graphs_to_disk(genus, legs, &graphs);
     }
-    cache.lock().unwrap().insert((genus, legs), graphs.clone());
     graphs
 }
 
@@ -619,78 +664,51 @@ pub fn stable_graphs_with_bounds(
     // skeleton, and canonical skeletons of isomorphic multigraphs are equal as
     // multisets, so every isomorphism class survives exactly once without any
     // per-decoration canonical form.
-    let mut out = Vec::new();
-
+    let mut tasks = Vec::new();
     for vertex_count in 1..=bounds.max_vertices.max(1) {
-        let pair_types = edge_pair_types(vertex_count);
-        let leg_assignments = labelled_leg_assignments(legs, vertex_count);
         let min_edges = vertex_count - 1;
         let max_edges = genus + vertex_count - 1;
         for edge_count in min_edges..=max_edges {
-            let h1 = edge_count + 1 - vertex_count;
-            let genus_sum = genus - h1;
-            for_each_connected_edge_multiset(vertex_count, &pair_types, edge_count, &mut |edges| {
-                // Computed lazily: multisets whose valences admit no stable
-                // decoration never pay for a canonicality sweep.
-                let mut quotient_cache: Option<SkeletonQuotient> = None;
-
-                let mut edge_valence = vec![0usize; vertex_count];
-                for edge in edges {
-                    edge_valence[edge.a] += 1;
-                    edge_valence[edge.b] += 1;
-                }
-                for leg_assignment in &leg_assignments {
-                    let mut valence = edge_valence.clone();
-                    for &vertex in leg_assignment {
-                        valence[vertex] += 1;
-                    }
-                    // Stability 2g_v + val_v > 2 gives a per-vertex genus
-                    // minimum; distributing only the remaining genus over the
-                    // vertices enumerates exactly the stable assignments.
-                    let genus_minimums = valence
-                        .iter()
-                        .map(|&val| match val {
-                            0 => 2,
-                            1 | 2 => 1,
-                            _ => 0,
-                        })
-                        .collect::<Vec<_>>();
-                    let required = genus_minimums.iter().sum::<usize>();
-                    if required > genus_sum {
-                        continue;
-                    }
-                    for extra in compositions(genus_sum - required, vertex_count) {
-                        let quotient = quotient_cache
-                            .get_or_insert_with(|| skeleton_quotient(vertex_count, edges));
-                        let automorphisms = match quotient {
-                            SkeletonQuotient::Canonical(automorphisms) => automorphisms,
-                            // A relabelled isomorph of a canonical multiset
-                            // elsewhere in the enumeration: skip it entirely.
-                            SkeletonQuotient::NotCanonical => return,
-                        };
-                        let genera = genus_minimums
-                            .iter()
-                            .zip(extra.iter())
-                            .map(|(&minimum, &extra_genus)| minimum + extra_genus)
-                            .collect::<Vec<_>>();
-                        if !decoration_is_orbit_minimal(automorphisms, &genera, leg_assignment) {
-                            continue;
-                        }
-                        let graph = StableGraph {
-                            vertices: genera
-                                .into_iter()
-                                .map(|genus| StableVertex { genus })
-                                .collect(),
-                            edges: edges.to_vec(),
-                            legs: leg_assignment.clone(),
-                        };
-                        debug_assert!(graph.is_connected() && graph.is_stable());
-                        out.push(graph);
-                    }
-                }
-            });
+            tasks.extend(stable_graph_tasks_for_bucket(vertex_count, edge_count));
         }
     }
+
+    let worker_count = stable_graph_generation_worker_count(tasks.len());
+    let out = if worker_count <= 1 {
+        tasks
+            .iter()
+            .flat_map(|task| stable_graph_task(genus, legs, task.clone()))
+            .collect::<Vec<_>>()
+    } else {
+        let next_task = AtomicUsize::new(0);
+        let task_results = thread::scope(|scope| {
+            let mut handles = Vec::new();
+            for _ in 0..worker_count {
+                let next_task = &next_task;
+                let tasks = &tasks;
+                handles.push(scope.spawn(move || {
+                    let mut out = Vec::new();
+                    loop {
+                        let task_index = next_task.fetch_add(1, AtomicOrdering::Relaxed);
+                        let Some(task) = tasks.get(task_index).cloned() else {
+                            break;
+                        };
+                        out.push((task_index, stable_graph_task(genus, legs, task)));
+                    }
+                    out
+                }));
+            }
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().expect("stable graph worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        let mut ordered = vec![Vec::<StableGraph>::new(); tasks.len()];
+        for (task_index, graphs) in task_results {
+            ordered[task_index] = graphs;
+        }
+        ordered.into_iter().flatten().collect::<Vec<_>>()
+    };
 
     debug_assert_eq!(
         out.iter()
@@ -701,6 +719,238 @@ pub fn stable_graphs_with_bounds(
         "two-stage quotient produced duplicate isomorphism classes"
     );
     out
+}
+
+#[derive(Debug, Clone)]
+struct StableGraphTask {
+    vertex_count: usize,
+    edge_count: usize,
+    prefix_pair_indices: Vec<usize>,
+}
+
+const STABLE_GRAPH_PARALLEL_PREFIX_DEPTH: usize = 2;
+
+fn stable_graph_tasks_for_bucket(vertex_count: usize, edge_count: usize) -> Vec<StableGraphTask> {
+    if edge_count == 0 {
+        return vec![StableGraphTask {
+            vertex_count,
+            edge_count,
+            prefix_pair_indices: Vec::new(),
+        }];
+    }
+    let pair_types = edge_pair_types(vertex_count);
+    let last_touch = edge_pair_last_touch(vertex_count, &pair_types);
+    let prefix_depth = STABLE_GRAPH_PARALLEL_PREFIX_DEPTH.min(edge_count);
+    let mut tasks = Vec::new();
+    let mut prefix = Vec::with_capacity(prefix_depth);
+    let mut degree = vec![0usize; vertex_count];
+    let mut dsu = RollbackDisjointSet::new(vertex_count);
+    stable_graph_task_prefix_rec(
+        vertex_count,
+        edge_count,
+        prefix_depth,
+        &pair_types,
+        &last_touch,
+        0,
+        &mut prefix,
+        &mut degree,
+        &mut dsu,
+        vertex_count,
+        &mut tasks,
+    );
+    tasks
+}
+
+fn stable_graph_task_prefix_rec(
+    vertex_count: usize,
+    edge_count: usize,
+    prefix_depth: usize,
+    pair_types: &[StableEdge],
+    last_touch: &[usize],
+    start: usize,
+    prefix: &mut Vec<usize>,
+    degree: &mut [usize],
+    dsu: &mut RollbackDisjointSet,
+    components: usize,
+    tasks: &mut Vec<StableGraphTask>,
+) {
+    if prefix.len() == prefix_depth || prefix.len() == edge_count {
+        tasks.push(StableGraphTask {
+            vertex_count,
+            edge_count,
+            prefix_pair_indices: prefix.clone(),
+        });
+        return;
+    }
+    let remaining = edge_count - prefix.len();
+    if components > remaining + 1 {
+        return;
+    }
+    for idx in start..pair_types.len() {
+        if degree
+            .iter()
+            .enumerate()
+            .any(|(vertex, &d)| d == 0 && last_touch[vertex] < idx)
+        {
+            break;
+        }
+        let pair = &pair_types[idx];
+        let checkpoint = dsu.checkpoint();
+        let merged = !pair.is_loop() && dsu.union_merged(pair.a, pair.b);
+        let next_components = components - usize::from(merged);
+        degree[pair.a] += 1;
+        degree[pair.b] += 1;
+        prefix.push(idx);
+        stable_graph_task_prefix_rec(
+            vertex_count,
+            edge_count,
+            prefix_depth,
+            pair_types,
+            last_touch,
+            idx,
+            prefix,
+            degree,
+            dsu,
+            next_components,
+            tasks,
+        );
+        prefix.pop();
+        degree[pair.b] -= 1;
+        degree[pair.a] -= 1;
+        dsu.rollback_to(checkpoint);
+    }
+}
+
+fn stable_graph_task(genus: usize, legs: usize, task: StableGraphTask) -> Vec<StableGraph> {
+    let vertex_count = task.vertex_count;
+    let edge_count = task.edge_count;
+    let pair_types = edge_pair_types(vertex_count);
+    let leg_assignments = labelled_leg_assignments(legs, vertex_count);
+    let h1 = edge_count + 1 - vertex_count;
+    let genus_sum = genus - h1;
+    let mut out = Vec::new();
+    let last_touch = edge_pair_last_touch(vertex_count, &pair_types);
+    let mut current = Vec::with_capacity(edge_count);
+    let mut degree = vec![0usize; vertex_count];
+    let mut dsu = RollbackDisjointSet::new(vertex_count);
+    let mut components = vertex_count;
+    for &pair_idx in &task.prefix_pair_indices {
+        let pair = &pair_types[pair_idx];
+        let merged = !pair.is_loop() && dsu.union_merged(pair.a, pair.b);
+        components -= usize::from(merged);
+        degree[pair.a] += 1;
+        degree[pair.b] += 1;
+        current.push(pair.clone());
+    }
+    let mut visit = |edges: &[StableEdge]| {
+        decorate_connected_edge_multiset(
+            genus_sum,
+            vertex_count,
+            &leg_assignments,
+            edges,
+            &mut out,
+        );
+    };
+    if edge_count == 0 {
+        visit(&[]);
+    } else {
+        let start = task.prefix_pair_indices.last().copied().unwrap_or(0);
+        connected_edge_multiset_rec(
+            &pair_types,
+            &last_touch,
+            edge_count,
+            start,
+            &mut current,
+            &mut degree,
+            &mut dsu,
+            components,
+            &mut visit,
+        );
+    }
+    out
+}
+
+fn decorate_connected_edge_multiset(
+    genus_sum: usize,
+    vertex_count: usize,
+    leg_assignments: &[Vec<usize>],
+    edges: &[StableEdge],
+    out: &mut Vec<StableGraph>,
+) {
+    // Computed lazily: multisets whose valences admit no stable decoration
+    // never pay for a canonicality sweep.
+    let mut quotient_cache: Option<SkeletonQuotient> = None;
+
+    let mut edge_valence = vec![0usize; vertex_count];
+    for edge in edges {
+        edge_valence[edge.a] += 1;
+        edge_valence[edge.b] += 1;
+    }
+    for leg_assignment in leg_assignments {
+        let mut valence = edge_valence.clone();
+        for &vertex in leg_assignment {
+            valence[vertex] += 1;
+        }
+        // Stability 2g_v + val_v > 2 gives a per-vertex genus minimum;
+        // distributing only the remaining genus over the vertices enumerates
+        // exactly the stable assignments.
+        let genus_minimums = valence
+            .iter()
+            .map(|&val| match val {
+                0 => 2,
+                1 | 2 => 1,
+                _ => 0,
+            })
+            .collect::<Vec<_>>();
+        let required = genus_minimums.iter().sum::<usize>();
+        if required > genus_sum {
+            continue;
+        }
+        for extra in compositions(genus_sum - required, vertex_count) {
+            let quotient =
+                quotient_cache.get_or_insert_with(|| skeleton_quotient(vertex_count, edges));
+            let automorphisms = match quotient {
+                SkeletonQuotient::Canonical(automorphisms) => automorphisms,
+                // A relabelled isomorph of a canonical multiset elsewhere in
+                // the enumeration: skip it entirely.
+                SkeletonQuotient::NotCanonical => return,
+            };
+            let genera = genus_minimums
+                .iter()
+                .zip(extra.iter())
+                .map(|(&minimum, &extra_genus)| minimum + extra_genus)
+                .collect::<Vec<_>>();
+            if !decoration_is_orbit_minimal(automorphisms, &genera, leg_assignment) {
+                continue;
+            }
+            let graph = StableGraph {
+                vertices: genera
+                    .into_iter()
+                    .map(|genus| StableVertex { genus })
+                    .collect(),
+                edges: edges.to_vec(),
+                legs: leg_assignment.clone(),
+            };
+            debug_assert!(graph.is_connected() && graph.is_stable());
+            out.push(graph);
+        }
+    }
+}
+
+fn stable_graph_generation_worker_count(work_items: usize) -> usize {
+    const MIN_PARALLEL_BUCKETS: usize = 8;
+    if work_items < MIN_PARALLEL_BUCKETS {
+        return 1;
+    }
+    let available = thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let requested = std::env::var("GW_THREADS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|count| *count > 0)
+        .unwrap_or(available);
+    requested.min(work_items).max(1)
 }
 
 enum SkeletonQuotient {
@@ -771,91 +1021,99 @@ fn edge_pair_types(vertex_count: usize) -> Vec<StableEdge> {
 /// component count exceeds the remaining edge budget plus one, and when a
 /// still-isolated vertex has no incident pair left at or beyond the current
 /// multiset position.
+#[cfg(test)]
 fn for_each_connected_edge_multiset(
     vertex_count: usize,
     pair_types: &[StableEdge],
     edge_count: usize,
     visit: &mut impl FnMut(&[StableEdge]),
 ) {
-    fn rec(
-        pair_types: &[StableEdge],
-        last_touch: &[usize],
-        edge_count: usize,
-        start: usize,
-        current: &mut Vec<StableEdge>,
-        degree: &mut [usize],
-        dsu: DisjointSet,
-        components: usize,
-        visit: &mut impl FnMut(&[StableEdge]),
-    ) {
-        if current.len() == edge_count {
-            if components == 1 {
-                visit(current);
-            }
-            return;
-        }
-        let remaining = edge_count - current.len();
-        if components > remaining + 1 {
-            return;
-        }
-        for idx in start..pair_types.len() {
-            // Once an untouched vertex has no incident pair at or beyond idx,
-            // no extension from here can connect it.
-            if degree
-                .iter()
-                .enumerate()
-                .any(|(vertex, &d)| d == 0 && last_touch[vertex] < idx)
-            {
-                break;
-            }
-            let pair = &pair_types[idx];
-            let mut next_dsu = dsu.clone();
-            let mut next_components = components;
-            if !pair.is_loop() && next_dsu.union_merged(pair.a, pair.b) {
-                next_components -= 1;
-            }
-            degree[pair.a] += 1;
-            degree[pair.b] += 1;
-            current.push(pair.clone());
-            rec(
-                pair_types,
-                last_touch,
-                edge_count,
-                idx,
-                current,
-                degree,
-                next_dsu,
-                next_components,
-                visit,
-            );
-            current.pop();
-            degree[pair.b] -= 1;
-            degree[pair.a] -= 1;
-        }
-    }
-
     if edge_count == 0 {
         if vertex_count == 1 {
             visit(&[]);
         }
         return;
     }
-    let mut last_touch = vec![0usize; vertex_count];
-    for (idx, pair) in pair_types.iter().enumerate() {
-        last_touch[pair.a] = idx;
-        last_touch[pair.b] = idx;
-    }
-    rec(
+    let last_touch = edge_pair_last_touch(vertex_count, pair_types);
+    connected_edge_multiset_rec(
         pair_types,
         &last_touch,
         edge_count,
         0,
         &mut Vec::with_capacity(edge_count),
         &mut vec![0usize; vertex_count],
-        DisjointSet::new(vertex_count),
+        &mut RollbackDisjointSet::new(vertex_count),
         vertex_count,
         visit,
     );
+}
+
+fn connected_edge_multiset_rec(
+    pair_types: &[StableEdge],
+    last_touch: &[usize],
+    edge_count: usize,
+    start: usize,
+    current: &mut Vec<StableEdge>,
+    degree: &mut [usize],
+    dsu: &mut RollbackDisjointSet,
+    components: usize,
+    visit: &mut impl FnMut(&[StableEdge]),
+) {
+    if current.len() == edge_count {
+        if components == 1 {
+            visit(current);
+        }
+        return;
+    }
+    let remaining = edge_count - current.len();
+    if components > remaining + 1 {
+        return;
+    }
+    for idx in start..pair_types.len() {
+        // Once an untouched vertex has no incident pair at or beyond idx, no
+        // extension from here can connect it.
+        if degree
+            .iter()
+            .enumerate()
+            .any(|(vertex, &d)| d == 0 && last_touch[vertex] < idx)
+        {
+            break;
+        }
+        let pair = &pair_types[idx];
+        let checkpoint = dsu.checkpoint();
+        let merged = !pair.is_loop() && dsu.union_merged(pair.a, pair.b);
+        let next_components = components - usize::from(merged);
+        if !pair.is_loop() && merged {
+            debug_assert!(next_components + 1 == components);
+        }
+        degree[pair.a] += 1;
+        degree[pair.b] += 1;
+        current.push(pair.clone());
+        connected_edge_multiset_rec(
+            pair_types,
+            last_touch,
+            edge_count,
+            idx,
+            current,
+            degree,
+            dsu,
+            next_components,
+            visit,
+        );
+        current.pop();
+        degree[pair.b] -= 1;
+        degree[pair.a] -= 1;
+        dsu.rollback_to(checkpoint);
+    }
+}
+
+fn edge_pair_last_touch(vertex_count: usize, pair_types: &[StableEdge]) -> Vec<usize> {
+    let mut last_touch = vec![0usize; vertex_count];
+    for (idx, pair) in pair_types.iter().enumerate() {
+        last_touch[pair.a] = idx;
+        last_touch[pair.b] = idx;
+    }
+    last_touch
 }
 
 fn labelled_leg_assignments(legs: usize, vertex_count: usize) -> Vec<Vec<usize>> {
@@ -953,6 +1211,58 @@ impl DisjointSet {
             true
         } else {
             false
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RollbackDisjointSet {
+    parent: Vec<usize>,
+    size: Vec<usize>,
+    history: Vec<(usize, usize, usize)>,
+}
+
+impl RollbackDisjointSet {
+    fn new(n: usize) -> Self {
+        Self {
+            parent: (0..n).collect(),
+            size: vec![1; n],
+            history: Vec::new(),
+        }
+    }
+
+    fn find(&self, mut x: usize) -> usize {
+        while self.parent[x] != x {
+            x = self.parent[x];
+        }
+        x
+    }
+
+    fn union_merged(&mut self, a: usize, b: usize) -> bool {
+        let mut ra = self.find(a);
+        let mut rb = self.find(b);
+        if ra == rb {
+            return false;
+        }
+        if self.size[ra] < self.size[rb] {
+            std::mem::swap(&mut ra, &mut rb);
+        }
+        self.history.push((rb, ra, self.size[ra]));
+        self.parent[rb] = ra;
+        self.size[ra] += self.size[rb];
+        true
+    }
+
+    fn checkpoint(&self) -> usize {
+        self.history.len()
+    }
+
+    fn rollback_to(&mut self, checkpoint: usize) {
+        while self.history.len() > checkpoint {
+            let (child, parent, parent_size) =
+                self.history.pop().expect("history length checked above");
+            self.parent[child] = child;
+            self.size[parent] = parent_size;
         }
     }
 }
