@@ -159,8 +159,13 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
             };
             for (left_z, left_matrix) in left_laurent {
                 for (right_z, right_matrix) in right_laurent {
-                    let product = multiply_coeff_matrix(left_matrix, right_matrix, size);
-                    add_matrix_to_laurent(&mut out, left_z + right_z, product);
+                    add_product_matrix_to_laurent(
+                        &mut out,
+                        left_z + right_z,
+                        left_matrix,
+                        right_matrix,
+                        size,
+                    );
                 }
             }
         }
@@ -231,8 +236,13 @@ pub(crate) fn multiply_laurent_matrix_q_slices<C: Coeff>(
     for split in 1..degree {
         for (left_z, left_matrix) in &left[split] {
             for (right_z, right_matrix) in &right[degree - split] {
-                let product = multiply_coeff_matrix(left_matrix, right_matrix, size);
-                add_matrix_to_laurent(&mut out, left_z + right_z, product);
+                add_product_matrix_to_laurent(
+                    &mut out,
+                    left_z + right_z,
+                    left_matrix,
+                    right_matrix,
+                    size,
+                );
             }
         }
     }
@@ -244,16 +254,17 @@ pub(crate) fn subtract_laurent_matrix<C: Coeff>(
     rhs: &LaurentCoeffMatrix<C>,
 ) {
     for (z_power, matrix) in rhs {
-        add_matrix_to_laurent(target, *z_power, neg_coeff_matrix(matrix));
+        add_matrix_to_laurent(target, *z_power, matrix, true);
     }
 }
 
 pub(crate) fn add_matrix_to_laurent<C: Coeff>(
     target: &mut LaurentCoeffMatrix<C>,
     z_power: i32,
-    matrix: CoeffMatrix<C>,
+    matrix: &CoeffMatrix<C>,
+    negate: bool,
 ) {
-    if coeff_matrix_is_zero(&matrix) {
+    if coeff_matrix_is_zero(matrix) {
         return;
     }
     let size = matrix.len();
@@ -262,11 +273,48 @@ pub(crate) fn add_matrix_to_laurent<C: Coeff>(
         .or_insert_with(|| zero_coeff_matrix(size));
     for row in 0..size {
         for col in 0..size {
-            entry[row][col] = entry[row][col].add(&matrix[row][col]);
+            if matrix[row][col].is_structurally_zero() {
+                continue;
+            }
+            let term = if negate {
+                matrix[row][col].neg()
+            } else {
+                matrix[row][col].clone()
+            };
+            entry[row][col] = entry[row][col].add(&term);
         }
     }
     if coeff_matrix_is_zero(entry) {
         target.remove(&z_power);
+    }
+}
+
+pub(crate) fn add_product_matrix_to_laurent<C: Coeff>(
+    target: &mut LaurentCoeffMatrix<C>,
+    z_power: i32,
+    left: &CoeffMatrix<C>,
+    right: &CoeffMatrix<C>,
+    size: usize,
+) {
+    for row in 0..size {
+        for mid in 0..size {
+            if left[row][mid].is_structurally_zero() {
+                continue;
+            }
+            for col in 0..size {
+                if right[mid][col].is_structurally_zero() {
+                    continue;
+                }
+                let term = left[row][mid].mul(&right[mid][col]);
+                if term.is_zero() {
+                    continue;
+                }
+                let entry = target
+                    .entry(z_power)
+                    .or_insert_with(|| zero_coeff_matrix::<C>(size));
+                entry[row][col] = entry[row][col].add(&term);
+            }
+        }
     }
 }
 
@@ -305,24 +353,6 @@ pub(crate) fn negative_factor_to_s_coefficients<C: Coeff>(
     coefficients
 }
 
-pub(crate) fn multiply_coeff_matrix<C: Coeff>(
-    left: &CoeffMatrix<C>,
-    right: &CoeffMatrix<C>,
-    size: usize,
-) -> CoeffMatrix<C> {
-    let mut out = zero_coeff_matrix(size);
-    for row in 0..size {
-        for col in 0..size {
-            let mut total = C::zero();
-            for mid in 0..size {
-                total = total.add(&left[row][mid].mul(&right[mid][col]));
-            }
-            out[row][col] = total;
-        }
-    }
-    out
-}
-
 pub(crate) fn identity_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
     let mut out = zero_coeff_matrix(size);
     for idx in 0..size {
@@ -333,13 +363,6 @@ pub(crate) fn identity_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
 
 pub(crate) fn zero_coeff_matrix<C: Coeff>(size: usize) -> CoeffMatrix<C> {
     vec![vec![C::zero(); size]; size]
-}
-
-pub(crate) fn neg_coeff_matrix<C: Coeff>(matrix: &CoeffMatrix<C>) -> CoeffMatrix<C> {
-    matrix
-        .iter()
-        .map(|row| row.iter().map(Coeff::neg).collect())
-        .collect()
 }
 
 pub(crate) fn coeff_matrix_is_zero<C: Coeff>(matrix: &CoeffMatrix<C>) -> bool {

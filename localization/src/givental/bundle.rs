@@ -44,6 +44,7 @@
 use super::*;
 use crate::twisted::{BidegreeLaurentFactor, HLaurentSeries, LaurentCoeffMatrix};
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 /// Insertion `tau_k(H^p xi^q)` on the bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,15 +273,18 @@ impl ProjectiveBundleRay {
         let preview_min_z = -(column_shift as i32);
         let preview_cone = self.i_container(k_max, preview_min_z);
         let preview = self.fundamental_bidegree_matrix(k_max, &preview_cone);
-        let positive_window = max_nonnegative_z_power(&preview);
+        let raw_positive_windows = max_nonnegative_z_power_by_grade(&preview);
+        let positive_windows = positive_factor_z_windows(k_max, &raw_positive_windows);
+        let dependency_depth = bidegree_recursion_extra_depth(k_max, &positive_windows);
 
         // In the graded Birkhoff recursion, a positive-factor term z^p can
         // move an already-computed negative coefficient z^(-s-p) into z^-s.
-        // Along any dependency chain the total degree drops at least by one,
-        // so at total degree k_max this can happen at most k_max - 1 times.
-        // The final column shift accounts for repeated (z q d/dq + D)
-        // derivatives used to build the raw fundamental matrix from I.
-        let recursion_depth = z_order + k_max.saturating_sub(1) * positive_window;
+        // The dynamic bound below follows the actual bidegree dependency
+        // chains instead of applying the worst positive-z window at every
+        // total-degree drop.  The final column shift accounts for repeated
+        // (z q d/dq + D) derivatives used to build the raw fundamental matrix
+        // from I.
+        let recursion_depth = z_order + dependency_depth;
         -((recursion_depth + column_shift) as i32)
     }
 
@@ -439,13 +443,76 @@ fn h_laurent_bidegree_columns_to_laurent_matrix(
     by_grade
 }
 
-fn max_nonnegative_z_power(matrix: &BidegreeLaurentFactor<Rational>) -> usize {
+fn max_nonnegative_z_power_by_grade(
+    matrix: &BidegreeLaurentFactor<Rational>,
+) -> BTreeMap<Grade, usize> {
     matrix
-        .values()
-        .flat_map(|laurent| laurent.keys().copied())
-        .filter(|z_power| *z_power >= 0)
-        .max()
-        .unwrap_or(0) as usize
+        .iter()
+        .filter_map(|(&grade, laurent)| {
+            laurent
+                .keys()
+                .copied()
+                .filter(|z_power| *z_power >= 0)
+                .max()
+                .map(|z_power| (grade, z_power as usize))
+        })
+        .collect()
+}
+
+fn positive_factor_z_windows(
+    max_total_degree: usize,
+    raw_windows: &BTreeMap<Grade, usize>,
+) -> BTreeMap<Grade, usize> {
+    let mut windows: BTreeMap<Grade, usize> = BTreeMap::new();
+    for total in 1..=max_total_degree {
+        for first in 0..=total {
+            let grade = (first, total - first);
+            let mut window = raw_windows.get(&grade).copied().unwrap_or(0);
+            for left_first in 0..=grade.0 {
+                for left_second in 0..=grade.1 {
+                    let left_grade = (left_first, left_second);
+                    if left_grade == (0, 0) || left_grade == grade {
+                        continue;
+                    }
+                    let right_grade = (grade.0 - left_first, grade.1 - left_second);
+                    if let Some(right_window) = windows.get(&right_grade).copied() {
+                        window = window.max(right_window.saturating_sub(1));
+                    }
+                }
+            }
+            windows.insert(grade, window);
+        }
+    }
+    windows
+}
+
+fn bidegree_recursion_extra_depth(
+    max_total_degree: usize,
+    positive_windows: &BTreeMap<Grade, usize>,
+) -> usize {
+    let mut extra_depths: BTreeMap<Grade, usize> = BTreeMap::new();
+    let mut max_extra_depth = 0usize;
+    for total in 1..=max_total_degree {
+        for first in 0..=total {
+            let grade = (first, total - first);
+            let mut extra_depth = 0usize;
+            for left_first in 0..=grade.0 {
+                for left_second in 0..=grade.1 {
+                    let left_grade = (left_first, left_second);
+                    if left_grade == (0, 0) || left_grade == grade {
+                        continue;
+                    }
+                    let right_grade = (grade.0 - left_first, grade.1 - left_second);
+                    let left_extra = extra_depths.get(&left_grade).copied().unwrap_or(0);
+                    let right_window = positive_windows.get(&right_grade).copied().unwrap_or(0);
+                    extra_depth = extra_depth.max(left_extra + right_window);
+                }
+            }
+            max_extra_depth = max_extra_depth.max(extra_depth);
+            extra_depths.insert(grade, extra_depth);
+        }
+    }
+    max_extra_depth
 }
 
 fn zl_one() -> ZLaurent {
@@ -828,6 +895,130 @@ fn h_bidegree_to_ray_coefficients(
     out
 }
 
+fn genus_zero_three_primary_bundle_layout(insertions: &[BundleInsertion]) -> bool {
+    insertions.len() == 3
+        && insertions
+            .iter()
+            .all(|insertion| insertion.descendant_power == 0)
+}
+
+fn apply_rational_series_matrix_to_vector(
+    matrix: &SeriesMatrix<Rational>,
+    vector: &[QSeries<Rational>],
+    q_degree: usize,
+) -> Vec<QSeries<Rational>> {
+    debug_assert_eq!(matrix.cols(), vector.len());
+    (0..matrix.rows())
+        .map(|row| {
+            let mut total = QSeries::<Rational>::zero(q_degree);
+            for (col, vector_coeff) in vector.iter().enumerate() {
+                if vector_coeff.is_structurally_zero()
+                    || matrix.entry(row, col).is_structurally_zero()
+                {
+                    continue;
+                }
+                total = total.add(&matrix.entry(row, col).mul(vector_coeff));
+            }
+            total
+        })
+        .collect()
+}
+
+fn rational_series_column_matrix(columns: &[Vec<QSeries<Rational>>]) -> SeriesMatrix<Rational> {
+    let rows = columns.first().map(Vec::len).unwrap_or_default();
+    SeriesMatrix::from_entries(
+        (0..rows)
+            .map(|row| columns.iter().map(|column| column[row].clone()).collect())
+            .collect(),
+    )
+}
+
+fn quantum_cyclic_basis_matrix(
+    quantum_grading: &SeriesMatrix<Rational>,
+    q_degree: usize,
+) -> SeriesMatrix<Rational> {
+    let size = quantum_grading.rows();
+    let mut columns = Vec::with_capacity(size);
+    let mut current = vec![QSeries::<Rational>::zero(q_degree); size];
+    current[0] = QSeries::<Rational>::one(q_degree);
+    for _ in 0..size {
+        columns.push(current.clone());
+        current = apply_rational_series_matrix_to_vector(quantum_grading, &current, q_degree);
+    }
+    rational_series_column_matrix(&columns)
+}
+
+fn quantum_cyclic_coordinates(
+    quantum_grading: &SeriesMatrix<Rational>,
+    vector: &[QSeries<Rational>],
+    q_degree: usize,
+) -> Result<Vec<QSeries<Rational>>, GwError> {
+    let basis = quantum_cyclic_basis_matrix(quantum_grading, q_degree);
+    let inverse = crate::twisted::invert_series_matrix_coeff(&basis)?;
+    Ok(apply_rational_series_matrix_to_vector(
+        &inverse, vector, q_degree,
+    ))
+}
+
+fn quantum_product_from_left_coordinates(
+    quantum_grading: &SeriesMatrix<Rational>,
+    left_coordinates: &[QSeries<Rational>],
+    right: &[QSeries<Rational>],
+    q_degree: usize,
+) -> Vec<QSeries<Rational>> {
+    let size = quantum_grading.rows();
+    debug_assert_eq!(left_coordinates.len(), size);
+    debug_assert_eq!(right.len(), size);
+    let mut result = vec![QSeries::<Rational>::zero(q_degree); size];
+    let mut grading_power_right = right.to_vec();
+    for (power, coefficient) in left_coordinates.iter().enumerate() {
+        if !coefficient.is_structurally_zero() {
+            for row in 0..size {
+                result[row] = result[row].add(&grading_power_right[row].mul(coefficient));
+            }
+        }
+        if power + 1 < left_coordinates.len() {
+            grading_power_right = apply_rational_series_matrix_to_vector(
+                quantum_grading,
+                &grading_power_right,
+                q_degree,
+            );
+        }
+    }
+    result
+}
+
+fn pair_rational_series_vectors(
+    metric: &SeriesMatrix<Rational>,
+    left: &[QSeries<Rational>],
+    right: &[QSeries<Rational>],
+    degree: usize,
+) -> Rational {
+    let size = metric.rows();
+    debug_assert_eq!(metric.cols(), size);
+    debug_assert_eq!(left.len(), size);
+    debug_assert_eq!(right.len(), size);
+    let mut paired = QSeries::<Rational>::zero(degree);
+    for (left_idx, left_coeff) in left.iter().enumerate() {
+        if left_coeff.is_structurally_zero() {
+            continue;
+        }
+        for (right_idx, right_coeff) in right.iter().enumerate() {
+            if right_coeff.is_structurally_zero()
+                || metric.entry(left_idx, right_idx).is_structurally_zero()
+            {
+                continue;
+            }
+            paired = paired.add(
+                &left_coeff
+                    .mul(metric.entry(left_idx, right_idx))
+                    .mul(right_coeff),
+            );
+        }
+    }
+    paired.coeff(degree).cloned().unwrap_or_else(Rational::zero)
+}
+
 impl ProjectiveBundleRay {
     fn shifted_fiber_divisor_vector(&self) -> Vec<Rational> {
         let h = self.insertion_class_vector(1, 0);
@@ -999,17 +1190,46 @@ impl ProjectiveBundleRay {
         q_degree: usize,
         z_order: usize,
     ) -> Result<HLaurentBidegreeSeries, GwError> {
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
         static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), HLaurentBidegreeSeries>>> =
             OnceLock::new();
         let key = (self.rayless_cache_key(), q_degree, z_order);
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Some(cone_point) = cache.lock().unwrap().get(&key).cloned() {
+            if profile_enabled {
+                eprintln!(
+                    "GW_PROFILE bundle_flat_bidegree_cache_hit={:.3}s q_degree={} z_order={}",
+                    started.elapsed().as_secs_f64(),
+                    q_degree,
+                    z_order
+                );
+            }
             return Ok(cone_point);
         }
 
+        let negative_started = Instant::now();
         let negative = self.normalized_bidegree_negative_factor(q_degree, z_order)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_flat_bidegree_negative={:.3}s q_degree={} z_order={}",
+                negative_started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order
+            );
+        }
+        let correction_started = Instant::now();
         let cone_point = bidegree_negative_factor_to_cone_point(self.size(), q_degree, &negative);
         let flat_cone_point = self.flat_bidegree_cone_point(&cone_point, q_degree)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_flat_bidegree_correction={:.3}s total={:.3}s q_degree={} z_order={}",
+                correction_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order
+            );
+        }
         cache.lock().unwrap().insert(key, flat_cone_point.clone());
         Ok(flat_cone_point)
     }
@@ -1042,20 +1262,70 @@ impl ProjectiveBundleRay {
         q_degree: usize,
         z_order: usize,
     ) -> Result<BidegreeLaurentFactor<Rational>, GwError> {
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
         static CACHE: OnceLock<
             Mutex<HashMap<(String, usize, usize), BidegreeLaurentFactor<Rational>>>,
         > = OnceLock::new();
         let key = (self.rayless_cache_key(), q_degree, z_order);
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Some(negative) = cache.lock().unwrap().get(&key).cloned() {
+            if profile_enabled {
+                eprintln!(
+                    "GW_PROFILE bundle_bidegree_negative_cache_hit={:.3}s q_degree={} z_order={}",
+                    started.elapsed().as_secs_f64(),
+                    q_degree,
+                    z_order
+                );
+            }
             return Ok(negative);
         }
 
+        let min_z_started = Instant::now();
         let min_z = self.min_z_power(q_degree, z_order);
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_min_z={:.3}s q_degree={} z_order={} min_z={}",
+                min_z_started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order,
+                min_z
+            );
+        }
+        let i_started = Instant::now();
         let cone_point = self.i_container(q_degree, min_z);
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_i_container={:.3}s grades={} q_degree={} z_order={}",
+                i_started.elapsed().as_secs_f64(),
+                cone_point.len(),
+                q_degree,
+                z_order
+            );
+        }
+        let fundamental_started = Instant::now();
         let fundamental = self.fundamental_bidegree_matrix(q_degree, &cone_point);
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_bidegree_fundamental={:.3}s grades={} q_degree={} z_order={}",
+                fundamental_started.elapsed().as_secs_f64(),
+                fundamental.len(),
+                q_degree,
+                z_order
+            );
+        }
+        let birkhoff_started = Instant::now();
         let (_, negative) =
             crate::twisted::birkhoff_factor_by_bidegree(self.size(), q_degree, &fundamental)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_bidegree_birkhoff={:.3}s total={:.3}s q_degree={} z_order={}",
+                birkhoff_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order
+            );
+        }
         cache.lock().unwrap().insert(key, negative.clone());
         Ok(negative)
     }
@@ -1069,21 +1339,75 @@ impl ProjectiveBundleRay {
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix<Rational>, GwError> {
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
         static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), SeriesSMatrix<Rational>>>> =
             OnceLock::new();
-        let key = (self.cache_key(), q_degree, z_order);
+        let target_key = self.cache_key();
+        let key = (target_key.clone(), q_degree, z_order);
         let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-        if let Some(descendant_s) = cache.lock().unwrap().get(&key).cloned() {
-            return Ok(descendant_s);
+        {
+            let cache = cache.lock().unwrap();
+            if let Some(fundamental_s) = cache.get(&key).cloned() {
+                if profile_enabled {
+                    eprintln!(
+                        "GW_PROFILE bundle_fundamental_s_cache_hit={:.3}s q_degree={} z_order={}",
+                        started.elapsed().as_secs_f64(),
+                        q_degree,
+                        z_order
+                    );
+                }
+                return Ok(fundamental_s);
+            }
+            if let Some(fundamental_s) = cache
+                .iter()
+                .find(|((cached_key, cached_q_degree, cached_z_order), _)| {
+                    cached_key == &target_key
+                        && *cached_q_degree == q_degree
+                        && *cached_z_order >= z_order
+                })
+                .map(|(_, fundamental_s)| fundamental_s.truncated(z_order))
+            {
+                if profile_enabled {
+                    eprintln!(
+                        "GW_PROFILE bundle_fundamental_s_cache_truncate={:.3}s q_degree={} z_order={}",
+                        started.elapsed().as_secs_f64(),
+                        q_degree,
+                        z_order
+                    );
+                }
+                return Ok(fundamental_s);
+            }
         }
 
+        let cone_started = Instant::now();
         let cone_point = self.flat_bidegree_ray_cone_point(q_degree, z_order)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_ray_cone_point={:.3}s q_degree={} z_order={} ray={}",
+                cone_started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order,
+                self.ray
+            );
+        }
+        let s_started = Instant::now();
         let fundamental_s = self.fundamental_s_from_ray_cone_point(
             q_degree,
             z_order,
             &cone_point,
             CalibrationId(format!("bundle-bidegree-flat:{}", self.cache_key())),
         )?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_ray_fundamental_s={:.3}s total={:.3}s q_degree={} z_order={} ray={}",
+                s_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                z_order,
+                self.ray
+            );
+        }
         cache.lock().unwrap().insert(key, fundamental_s.clone());
         Ok(fundamental_s)
     }
@@ -1093,11 +1417,51 @@ impl ProjectiveBundleRay {
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix<Rational>, GwError> {
+        if z_order == 0 {
+            return Ok(SeriesSMatrix::identity(self.size(), q_degree, 0));
+        }
+
         let fundamental_s = self.fundamental_s_rational(q_degree, z_order)?;
         crate::twisted::metric_adjoint_descendant_s_matrix_coeff(
             fundamental_s,
             &self.flat_metric_series(q_degree),
         )
+    }
+
+    fn quantum_grading_multiplication(
+        &self,
+        q_degree: usize,
+    ) -> Result<SeriesMatrix<Rational>, GwError> {
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
+        let fundamental_s = self.fundamental_s_rational(q_degree, 1)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_quantum_grading_fundamental_s={:.3}s q_degree={} ray={}",
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                self.ray
+            );
+        }
+        let product_started = Instant::now();
+        let s_one = fundamental_s.coefficient(1).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "bundle quantum product needs the fundamental S-matrix through z^{-1}".to_string(),
+            )
+        })?;
+        let quantum = self
+            .classical_grading_multiplication(q_degree)
+            .add(&s_one.q_derivative());
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_quantum_grading_product={:.3}s total={:.3}s q_degree={} ray={}",
+                product_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                self.ray
+            );
+        }
+        Ok(quantum)
     }
 
     /// Classical multiplication by the grading divisor in the `D`-power
@@ -1175,33 +1539,47 @@ impl SemisimpleCohftProvider for BundleRayProvider {
         if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(kernel);
         }
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
 
         // Quantum multiplication by the grading divisor from the fundamental
         // S-matrix: the z^0 part of the quantum differential equation gives
         // A_q = A_cl + t d/dt S_1.
-        let fundamental_s = self.target.fundamental_s_rational(q_degree, 1)?;
-        let s_one = fundamental_s.coefficient(1).ok_or_else(|| {
-            GwError::ConventionMismatch(
-                "bundle kernel needs the fundamental S-matrix through z^{-1}".to_string(),
-            )
-        })?;
-        let quantum_multiplication = self
-            .target
-            .classical_grading_multiplication(q_degree)
-            .add(&s_one.q_derivative());
+        let quantum_started = Instant::now();
+        let quantum_multiplication = self.target.quantum_grading_multiplication(q_degree)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_kernel_quantum={:.3}s q_degree={} r_order={} ray={}",
+                quantum_started.elapsed().as_secs_f64(),
+                q_degree,
+                r_order,
+                self.target.ray
+            );
+        }
 
         let unit_coordinates = {
             let mut unit = vec![RatFun::zero(); self.target.size()];
             unit[0] = RatFun::one();
             unit
         };
+        let frame_started = Instant::now();
         let frame = recipe::operator_lagrange_frame(
             &rational_series_matrix_to_ratfun(&quantum_multiplication),
             &self.target.grading_seeds(),
             &unit_coordinates,
             &rational_series_matrix_to_ratfun(&self.target.flat_metric_series(q_degree)),
         )?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_kernel_frame={:.3}s q_degree={} r_order={} ray={}",
+                frame_started.elapsed().as_secs_f64(),
+                q_degree,
+                r_order,
+                self.target.ray
+            );
+        }
 
+        let asymptotics_started = Instant::now();
         let mut classical_diagonal = Vec::with_capacity(self.target.size());
         for i in 0..=self.target.n {
             for j in 0..self.target.rank() {
@@ -1227,7 +1605,17 @@ impl SemisimpleCohftProvider for BundleRayProvider {
                 classical_diagonal.push(classical_r_asymptotics_for_point(&differences, r_order));
             }
         }
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_kernel_asymptotics={:.3}s q_degree={} r_order={} ray={}",
+                asymptotics_started.elapsed().as_secs_f64(),
+                q_degree,
+                r_order,
+                self.target.ray
+            );
+        }
 
+        let calibration_started = Instant::now();
         let calibration = calibration_from_canonical_frame(
             &frame,
             &classical_diagonal,
@@ -1235,12 +1623,101 @@ impl SemisimpleCohftProvider for BundleRayProvider {
             r_order,
             CalibrationId(format!("bundle-ray-i-birkhoff:{}", self.target.cache_key())),
         )?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_kernel_calibration={:.3}s q_degree={} r_order={} ray={}",
+                calibration_started.elapsed().as_secs_f64(),
+                q_degree,
+                r_order,
+                self.target.ray
+            );
+        }
+        let kernel_started = Instant::now();
         let kernel = Arc::new(GiventalGraphKernel::from_calibration(
             calibration,
             graph_dimension,
         )?);
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_kernel_build={:.3}s total={:.3}s q_degree={} r_order={} ray={}",
+                kernel_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                q_degree,
+                r_order,
+                self.target.ray
+            );
+        }
         cache.lock().unwrap().insert(key, kernel.clone());
         Ok(kernel)
+    }
+
+    fn direct_value(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Self::Insertion],
+        _truncation: Option<&Truncation>,
+    ) -> Result<Option<RatFun>, GwError> {
+        if genus != 0 || !genus_zero_three_primary_bundle_layout(insertions) {
+            return Ok(None);
+        }
+        let profile_enabled = crate::env_flag("GW_PROFILE");
+        let started = Instant::now();
+
+        let insertion_vectors = insertions
+            .iter()
+            .map(|insertion| {
+                self.target
+                    .insertion_class_vector(insertion.h_power, insertion.xi_power)
+                    .into_iter()
+                    .map(|coefficient| QSeries::<Rational>::constant(coefficient, degree))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let quantum_started = Instant::now();
+        let quantum_grading = self.target.quantum_grading_multiplication(degree)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_direct_quantum={:.3}s degree={} ray={}",
+                quantum_started.elapsed().as_secs_f64(),
+                degree,
+                self.target.ray
+            );
+        }
+        let coordinates_started = Instant::now();
+        let left_coordinates =
+            quantum_cyclic_coordinates(&quantum_grading, &insertion_vectors[0], degree)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_direct_coordinates={:.3}s degree={} ray={}",
+                coordinates_started.elapsed().as_secs_f64(),
+                degree,
+                self.target.ray
+            );
+        }
+        let product_started = Instant::now();
+        let product = quantum_product_from_left_coordinates(
+            &quantum_grading,
+            &left_coordinates,
+            &insertion_vectors[1],
+            degree,
+        );
+        let value = pair_rational_series_vectors(
+            &self.target.flat_metric_series(degree),
+            &product,
+            &insertion_vectors[2],
+            degree,
+        );
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_direct_product_pair={:.3}s total={:.3}s degree={} ray={}",
+                product_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                degree,
+                self.target.ray
+            );
+        }
+        Ok(Some(RatFun::from_rational(value)))
     }
 
     fn insertion_vector(
@@ -1281,6 +1758,27 @@ pub fn bundle_dimension_matches(
     insertion_degree as isize == virtual_dimension
 }
 
+fn rayless_precompute_z_orders(genus: usize, insertions: &[BundleInsertion]) -> Vec<usize> {
+    let mut z_orders = Vec::new();
+    if genus == 0 && genus_zero_three_primary_bundle_layout(insertions) {
+        z_orders.push(1);
+    }
+    if 2 * genus + insertions.len() > 2 {
+        z_orders.push(1);
+        if let Some(max_descendant) = insertions
+            .iter()
+            .map(|insertion| insertion.descendant_power)
+            .max()
+            .filter(|max_descendant| *max_descendant > 0)
+        {
+            z_orders.push(max_descendant);
+        }
+    }
+    z_orders.sort_unstable();
+    z_orders.dedup();
+    z_orders
+}
+
 /// Computes all class invariants `N_{(d1, d2)}` whose shifted total degree
 /// `d1 + (d2 + A d1)` equals `total_degree`, by running `total_degree + 1`
 /// rays and solving the Vandermonde system exactly.
@@ -1301,26 +1799,80 @@ pub fn reconstruct_bundle_invariants(
         .max()
         .ok_or_else(|| GwError::ConventionMismatch("bundle twists must be nonempty".to_string()))?;
     let ray_count = total_degree + 1;
-    let mut rays = Vec::with_capacity(ray_count);
-    let mut values = Vec::with_capacity(ray_count);
-    for step in 0..ray_count {
-        let ray = Rational::from(step + 1);
-        let target = ProjectiveBundleRay::new(
-            n,
-            twists.to_vec(),
-            weights_base.to_vec(),
-            weights_fiber.to_vec(),
-            ray.clone(),
-        )?;
-        let provider = BundleRayProvider::new(target);
-        let value =
-            compute_semisimple_graph_value(&provider, genus, total_degree, insertions, None)?;
-        let value = value.as_rational().ok_or_else(|| {
-            GwError::AlgebraFailure("bundle ray value did not specialize to a rational".to_string())
-        })?;
-        rays.push(ray);
-        values.push(value);
+    let profile_enabled = crate::env_flag("GW_PROFILE");
+    let started = Instant::now();
+
+    let warm_target = ProjectiveBundleRay::new(
+        n,
+        twists.to_vec(),
+        weights_base.to_vec(),
+        weights_fiber.to_vec(),
+        Rational::one(),
+    )?;
+    for z_order in rayless_precompute_z_orders(genus, insertions) {
+        let warm_started = Instant::now();
+        let _ = warm_target.normalized_flat_bidegree_cone_point(total_degree, z_order)?;
+        if profile_enabled {
+            eprintln!(
+                "GW_PROFILE bundle_reconstruct_rayless_warm={:.3}s total={:.3}s total_degree={} z_order={}",
+                warm_started.elapsed().as_secs_f64(),
+                started.elapsed().as_secs_f64(),
+                total_degree,
+                z_order
+            );
+        }
     }
+
+    let ray_results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(ray_count);
+        for step in 0..ray_count {
+            handles.push(
+                scope.spawn(move || -> Result<(Rational, Rational), GwError> {
+                    let ray = Rational::from(step + 1);
+                    let target = ProjectiveBundleRay::new(
+                        n,
+                        twists.to_vec(),
+                        weights_base.to_vec(),
+                        weights_fiber.to_vec(),
+                        ray.clone(),
+                    )?;
+                    let provider = BundleRayProvider::new(target);
+                    let value = compute_semisimple_graph_value(
+                        &provider,
+                        genus,
+                        total_degree,
+                        insertions,
+                        None,
+                    )?;
+                    let value = value.as_rational().ok_or_else(|| {
+                        GwError::AlgebraFailure(
+                            "bundle ray value did not specialize to a rational".to_string(),
+                        )
+                    })?;
+                    Ok((ray, value))
+                }),
+            );
+        }
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    GwError::AlgebraFailure("bundle ray worker panicked".to_string())
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    if profile_enabled {
+        eprintln!(
+            "GW_PROFILE bundle_reconstruct_rays={:.3}s total_degree={} rays={}",
+            started.elapsed().as_secs_f64(),
+            total_degree,
+            ray_count
+        );
+    }
+
+    let (rays, mut values): (Vec<_>, Vec<_>) = ray_results.into_iter().unzip();
 
     let mut matrix = rays
         .iter()
