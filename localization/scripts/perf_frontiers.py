@@ -18,6 +18,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -536,8 +537,14 @@ def main() -> int:
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    graph_cache_dir = out_dir / "graph-cache"
-    graph_cache_dir.mkdir(parents=True, exist_ok=True)
+    graph_cache_dir = None
+    cold_graph_cache_base = None
+    if args.graph_cache_mode == "shared":
+        graph_cache_dir = out_dir / "graph-cache"
+        graph_cache_dir.mkdir(parents=True, exist_ok=True)
+    elif args.graph_cache_mode == "cold":
+        cold_graph_cache_base = out_dir / "cold-graph-cache" / stamp
+        cold_graph_cache_base.mkdir(parents=True, exist_ok=True)
     rows = []
 
     for index, case in enumerate(selected, start=1):
@@ -548,7 +555,9 @@ def main() -> int:
             args.timeout,
             args.frontier_seconds,
             args.repeat,
+            args.graph_cache_mode,
             graph_cache_dir,
+            cold_graph_cache_base,
         )
         attach_baseline(row, baseline_rows.get(case.name), args.regression_percent)
         rows.append(row)
@@ -601,6 +610,15 @@ def parse_args() -> argparse.Namespace:
         help="run each successful case this many times and compare medians",
     )
     parser.add_argument("--output-dir", default="target/perf-frontiers")
+    parser.add_argument(
+        "--graph-cache-mode",
+        choices=("shared", "cold", "off"),
+        default="shared",
+        help=(
+            "stable-graph disk cache mode: shared uses the project-local cache, "
+            "cold creates a fresh cache per sample, off disables disk caching"
+        ),
+    )
     parser.add_argument(
         "--baseline",
         help="CSV from an earlier run; adds timing deltas and regression flags",
@@ -665,17 +683,30 @@ def run_case(
     timeout: float,
     frontier_seconds: float,
     repeat: int,
-    graph_cache_dir: Path,
+    graph_cache_mode: str,
+    graph_cache_dir: Path | None,
+    cold_graph_cache_base: Path | None,
 ) -> dict[str, object]:
     cmd = [str(binary), *case.cmd]
-    env = os.environ.copy()
-    env.pop("GW_PROFILE", None)
-    env.setdefault("GWAI_GRAPH_CACHE_DIR", str(graph_cache_dir))
+    base_env = os.environ.copy()
+    base_env.pop("GW_PROFILE", None)
     samples = []
     statuses = []
+    graph_cache_dirs = []
     stdout = ""
     stderr = ""
     for attempt in range(repeat):
+        env = base_env.copy()
+        graph_cache_path = configure_graph_cache(
+            env,
+            graph_cache_mode,
+            graph_cache_dir,
+            cold_graph_cache_base,
+            case.name,
+            attempt,
+        )
+        if graph_cache_path is not None:
+            graph_cache_dirs.append(str(graph_cache_path))
         started = time.perf_counter()
         try:
             completed = subprocess.run(
@@ -719,6 +750,8 @@ def run_case(
         "elapsed_max_s": round(max(samples), 6),
         "elapsed_samples_s": ",".join(f"{sample:.6f}" for sample in samples),
         "repeat": len(samples),
+        "graph_cache_mode": graph_cache_mode,
+        "graph_cache_dirs": ",".join(graph_cache_dirs),
         "frontier": status == "timeout" or elapsed >= frontier_seconds,
         "stdout_bytes": len(stdout.encode()),
         "stderr_bytes": len(stderr.encode()),
@@ -726,6 +759,39 @@ def run_case(
         "stderr_tail": tail(stderr),
         "notes": case.notes,
     }
+
+
+def configure_graph_cache(
+    env: dict[str, str],
+    mode: str,
+    shared_dir: Path | None,
+    cold_base: Path | None,
+    case_name: str,
+    attempt: int,
+) -> Path | None:
+    if mode == "shared":
+        if shared_dir is not None:
+            env.setdefault("GWAI_GRAPH_CACHE_DIR", str(shared_dir))
+        path = env.get("GWAI_GRAPH_CACHE_DIR")
+        return Path(path) if path else None
+    if mode == "cold":
+        if cold_base is None:
+            raise RuntimeError("cold graph-cache mode requires a base directory")
+        safe_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in case_name)
+        path = Path(
+            tempfile.mkdtemp(
+                prefix=f"{safe_name}-sample{attempt + 1}-",
+                dir=cold_base,
+            )
+        )
+        env.pop("GWAI_DISABLE_GRAPH_CACHE", None)
+        env["GWAI_GRAPH_CACHE_DIR"] = str(path)
+        return path
+    if mode == "off":
+        env["GWAI_DISABLE_GRAPH_CACHE"] = "1"
+        env.pop("GWAI_GRAPH_CACHE_DIR", None)
+        return None
+    raise ValueError(f"unknown graph cache mode: {mode}")
 
 
 def median(values: list[float]) -> float:
@@ -821,6 +887,8 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         "elapsed_max_s",
         "elapsed_samples_s",
         "repeat",
+        "graph_cache_mode",
+        "graph_cache_dirs",
         "baseline_s",
         "delta_s",
         "change_percent",
@@ -849,6 +917,7 @@ def write_markdown(path: Path, rows: list[dict[str, object]], args: argparse.Nam
         f"- frontier threshold: `{args.frontier_seconds:.1f}s`",
         f"- repeat: `{args.repeat}`",
         f"- profile: `{'release' if args.release else 'debug'}`",
+        f"- graph cache mode: `{args.graph_cache_mode}`",
         f"- baseline: `{args.baseline or 'none'}`",
         "",
         render_markdown_table(rows),
