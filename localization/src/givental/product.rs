@@ -18,6 +18,7 @@
 //! rationals.  [`reconstruct_bidegree_invariants`] packages this.
 
 use super::*;
+use std::time::Instant;
 
 /// Insertion `tau_k(H1^a H2^b)` on the product.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -516,23 +517,59 @@ pub fn reconstruct_bidegree_invariants(
     insertions: &[ProductInsertion],
 ) -> Result<Vec<Rational>, GwError> {
     let ray_count = total_degree + 1;
-    let mut rays = Vec::with_capacity(ray_count);
-    let mut values = Vec::with_capacity(ray_count);
-    for step in 0..ray_count {
-        let ray = Rational::from(step + 1);
-        let target =
-            ProductProjectiveRay::new(n, m, weights_x.to_vec(), weights_y.to_vec(), ray.clone())?;
-        let provider = ProductRayProvider::new(target);
-        let value =
-            compute_semisimple_graph_value(&provider, genus, total_degree, insertions, None)?;
-        let value = value.as_rational().ok_or_else(|| {
-            GwError::AlgebraFailure(
-                "product ray value did not specialize to a rational".to_string(),
-            )
-        })?;
-        rays.push(ray);
-        values.push(value);
+    let profile_enabled = crate::env_flag("GW_PROFILE");
+    let started = Instant::now();
+
+    let ray_results = std::thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(ray_count);
+        for step in 0..ray_count {
+            handles.push(
+                scope.spawn(move || -> Result<(Rational, Rational), GwError> {
+                    let ray = Rational::from(step + 1);
+                    let target = ProductProjectiveRay::new(
+                        n,
+                        m,
+                        weights_x.to_vec(),
+                        weights_y.to_vec(),
+                        ray.clone(),
+                    )?;
+                    let provider = ProductRayProvider::new(target);
+                    let value = compute_semisimple_graph_value(
+                        &provider,
+                        genus,
+                        total_degree,
+                        insertions,
+                        None,
+                    )?;
+                    let value = value.as_rational().ok_or_else(|| {
+                        GwError::AlgebraFailure(
+                            "product ray value did not specialize to a rational".to_string(),
+                        )
+                    })?;
+                    Ok((ray, value))
+                }),
+            );
+        }
+
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().map_err(|_| {
+                    GwError::AlgebraFailure("product ray worker panicked".to_string())
+                })?
+            })
+            .collect::<Result<Vec<_>, _>>()
+    })?;
+    if profile_enabled {
+        eprintln!(
+            "GW_PROFILE product_reconstruct_rays={:.3}s total_degree={} rays={}",
+            started.elapsed().as_secs_f64(),
+            total_degree,
+            ray_count
+        );
     }
+
+    let (rays, mut values): (Vec<_>, Vec<_>) = ray_results.into_iter().unzip();
 
     // Solve sum_{d2} ray^{d2} N_{d2} = value for each ray (Vandermonde).
     let mut matrix = rays

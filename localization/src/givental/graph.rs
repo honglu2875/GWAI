@@ -847,7 +847,6 @@ where
 }
 
 const MASTER_SHARED_KERNEL_MAX_MARKINGS: usize = 2;
-const MASTER_DEFAULT_MAX_WORKERS: usize = 8;
 const MASTER_MIN_SHARED_KERNEL_TASKS: usize = 8;
 const MASTER_MIN_RESTRICTED_KERNEL_TASKS: usize = 2;
 
@@ -1860,7 +1859,7 @@ pub(crate) struct OrderedSeriesCoefficient {
 }
 
 pub(crate) fn master_worker_count(work_items: usize) -> usize {
-    if work_items < 8 {
+    if work_items <= 1 {
         return 1;
     }
     let available = thread::available_parallelism()
@@ -1870,7 +1869,7 @@ pub(crate) fn master_worker_count(work_items: usize) -> usize {
         .ok()
         .and_then(|raw| raw.parse::<usize>().ok())
         .filter(|count| *count > 0)
-        .unwrap_or_else(|| available.min(MASTER_DEFAULT_MAX_WORKERS));
+        .unwrap_or(available);
     requested.min(work_items).max(1)
 }
 
