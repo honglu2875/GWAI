@@ -40,6 +40,10 @@ scripts/run-perf-frontiers.sh --suite extended --case p2_g1_dmax2_m3_k3_series -
 # After stable-graph generation parallelism.
 scripts/run-perf-frontiers.sh --suite frontier --timeout 90 --no-build --graph-cache-mode cold
 scripts/run-perf-frontiers.sh --suite extended --case formula_g4_m1 --timeout 90 --no-build --graph-cache-mode cold
+
+# New frontier probes after graph generation stopped dominating the sampled suite.
+GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-formula-g4m2-20260706 timeout 90s target/debug/gw-pn formula --g 4 --markings 2 --n 2 --d 2 --max-descendant 1 --no-glossary
+GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-rank3-bundle-d4-20260706 timeout 90s target/debug/gw-pn bundle --n 1 --twists 2,1,-3 --g 0 --d 4 --insert 'H*xi^2' --insert H --insert H --weights-base 1,2 --weights-fiber 0,10,30
 ```
 
 Raw local artifacts from these runs:
@@ -55,6 +59,10 @@ Raw local artifacts from these runs:
 - `target/perf-frontiers/perf-frontiers-20260706T150643Z.*`
 - `target/perf-frontiers/perf-frontiers-20260706T195805Z.*`
 - `target/perf-frontiers/perf-frontiers-20260706T195942Z.*`
+
+The newest frontier probes were run as one-off commands timed with
+`/usr/bin/time -f 'elapsed=%e'` and stdout redirected under `/tmp`, then
+promoted into the `extended` harness suite for future repeats.
 
 Cache caveat: the frontier harness defaults to a shared project-local
 `target/perf-frontiers/graph-cache/` directory because that is the useful
@@ -96,42 +104,61 @@ generation moved the sampled cold formula rows well below the previous timeout.
 | bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=5`, three `tau1(point)` | 17.01s | 17.00s | ok | Still visible but below the one-minute frontier. |
 | bundle | twist rank | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3`, primary ruling | 22.25s | 22.09s | ok | Parallel bidegree Birkhoff moved this down, but bundle setup remains visible. |
 
+## New Frontier Probes
+
+| mode | axis | probe | time | status | read |
+|---|---|---|---:|---|---|
+| formula | stable graphs | `g=4`, `m=1` | 31.70s | ok | Largest formula row below the cutoff. |
+| formula | stable graphs | `g=4`, `m=2` | 90.01s | timeout | Marking jump is a hard graph/canonicalization frontier. |
+| formula | stable graphs | `g=5`, `m=0` | 90.01s | timeout | Genus jump also crosses the cutoff. |
+| psi | genus | `g=12`, one marking, `psi^34` | 37.87s | ok | Point theory is now visible. |
+| psi | genus | `g=13`, one marking, `psi^37` | 90.00s | timeout | Point-theory recursion crosses the cutoff here. |
+| product | genus/degree | `P^1 x P^1`, `g=3`, total `d=3`, `tau7(point)` | 28.13s | ok | Below frontier. |
+| product | genus/degree | `P^1 x P^1`, `g=3`, total `d=4`, `tau9(point)` | 54.81s | ok | Product row right on the frontier threshold. |
+| twisted | degree | local `P^2`, `O(-3)`, `g=2`, `d=5` | 40.49s | ok | Below frontier. |
+| twisted | degree | local `P^2`, `O(-3)`, `g=2`, `d=6` | 90.00s | timeout | Twisted degree frontier bracket. |
+| twisted | equivariant | `P^2`, `O(-1)`, `g=0`, `d=2`, expanded symbolic | 90.00s | timeout | Symbolic equivariant calibration/graph path crosses the cutoff. |
+| twisted | equivariant | same, factored symbolic | 90.00s | timeout | Factored mode also crosses the cutoff. |
+| series | markings/psi | `P^2`, `g=1`, `d<=2`, `m<=4`, `psi<=3` | 33.26s | ok | Candidate enumeration is visible. |
+| series | markings/psi | `P^2`, `g=1`, `d<=2`, `m<=5`, `psi<=3` | 90.02s | timeout | One extra marking crosses the cutoff. |
+| bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=7`, three `tau1(point)` | 46.50s | ok | Below frontier. |
+| bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=8`, three `tau1(point)` | 71.01s | ok | Clear F2 bundle frontier. |
+| bundle | twist rank | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=4`, primary ruling | 73.23s | ok | Clear rank-3 bundle frontier. |
+
 ## Frontier Table
 
 | mode | genus | degree | dimension/colors | markings | psi classes | twist/rank factors | current frontier |
 |---|---|---|---|---|---|---|---|
-| formula/stable graphs | Still visible cold. `g=4,m=1` is now 31.70s instead of timing out at 90s. | Indirect, only through expansion metadata. | Indirect via expansion size. | Dominant cold axis. `g=3,m=2` is now 1.46s cold and 0.11s warm; `g=3,m=1` is 0.06s cold and 0.02s warm. | Affects rendered expansion size. | Twisted expansion adds labels, not the core count. | Parallel prefix generation moved sampled formula rows below one minute; larger `(g,n)` rows are the next graph frontier. |
-| ordinary Givental `P^n` | Visible but below frontier in sampled single-invariant rows. | Increases q/R truncation and graph coefficient work. | Matrix size and color sums grow with `n+1`; `P^3` sample was 2.99s. | Expands external-leg states and graph contractions. | Raises `z_order`/`r_order`; high single psi still manageable here. | None. | For ordinary target algebra, not yet near one minute; stable graphs become frontier first. |
-| twisted | Same stable-graph pressure as Givental. | Hypergeometric I-function, Birkhoff, and graph degree grow with `d`; local `P^2`, `g=2,d=3` was 5.62s. | Color count and relation degree grow with `n`. | Same graph/external-leg pressure. | Raises calibration order. | More negative factors increase hypergeometric products; sampled rank 3 was 1.95s. | Higher genus/degree symbolic leg products remain the suspected next frontier, not the sampled small rank. |
-| product | Same graph pressure per ray. | Total degree gives `d+1` Novikov rays and larger q truncation. | Product colors multiply: `(n+1)(m+1)`. | Same graph/external-leg pressure. | Raises calibration order. | None. | Ray parallelism moved the sampled `P^1 x P^1`, `g=2,d=3` row to 4.99s; product is no longer a leading frontier in this suite. |
-| bundle | Same graph pressure per ray. | Shifted total degree gives `d+1` rays and bidegree Birkhoff windows. | Size is `(n+1) * rank`; rank 3 is costly. | Same graph/external-leg pressure. | Raises S/R order and prewarm depth. | Positive-z and mixed twist signs drive bidegree Birkhoff/fundamental-S cost. | Rank-3 bundle primary at shifted `d=3` is 22.25s after parallel bidegree Birkhoff; per-ray fundamental-S/correction setup is now the visible bundle cost. |
-| resolvent/series | Depends on packed graph contraction and candidate count. | Degree ranges multiply candidate coefficients. | Target color count affects packed kernels. | Markings can explode candidate terms, but packed rows sampled stayed under 6s. | `max-descendant` directly multiplies candidates. | Twisted resolvent adds calibration cost. | No one-minute row in sampled cases; candidate enumeration should be watched at higher `m,k`. |
-| psi point theory | Recursion/table cost grows with genus and markings. | Not applicable. | Not applicable. | More markings increases partitions. | Powers determine dimension-valid tuples. | Not applicable. | `g=10` one marking was 6.19s; not the first optimization target. |
+| formula/stable graphs | `g=4,m=1` is 31.70s; `g=5,m=0` times out at 90s. | Indirect, only through expansion metadata. | Indirect via expansion size. | `g=4,m=2` times out at 90s. | Affects rendered expansion size. | Twisted expansion adds labels, not the core count. | Larger `(g,n)` canonicalization/orbit handling is again a graph frontier, but above the old sampled row. |
+| ordinary Givental `P^n` | Visible but below frontier in sampled single-invariant rows. | Increases q/R truncation and graph coefficient work. | Matrix size and color sums grow with `n+1`; `P^3` sample was 2.99s. | Expands external-leg states and graph contractions. | Raises `z_order`/`r_order`; high single psi still manageable here. | None. | No one-minute ordinary target row found yet; product/bundle/twisted hit the frontier first. |
+| twisted | Same stable-graph pressure as Givental. | Local `P^2`, `g=2,d=5` is 40.49s and `d=6` times out. | Color count and relation degree grow with `n`. | Same graph/external-leg pressure. | Raises calibration order. | More negative factors increase hypergeometric products; equivariant `O(-1),d=2` times out in both expanded and factored modes. | Twisted degree and symbolic equivariant calibration are now clear frontiers. |
+| product | Same graph pressure per ray. | Total degree gives `d+1` Novikov rays and larger q truncation. | Product colors multiply: `(n+1)(m+1)`. | Same graph/external-leg pressure. | Raises calibration order. | None. | `P^1 x P^1`, `g=3,d=4`, `tau9(point)` is 54.81s: product is back on the frontier at higher genus. |
+| bundle | Same graph pressure per ray. | Shifted total degree gives `d+1` rays and bidegree Birkhoff windows. | Size is `(n+1) * rank`; rank 3 is costly. | Same graph/external-leg pressure. | Raises S/R order and prewarm depth. | Positive-z and mixed twist signs drive bidegree Birkhoff/fundamental-S cost. | Rank-3 shifted `d=4` is 73.23s; F2 `g=1,d=8` is 71.01s. Bundle setup remains a top backend frontier. |
+| resolvent/series | Depends on packed graph contraction and candidate count. | Degree ranges multiply candidate coefficients. | Target color count affects packed kernels. | `P^2`, `g=1,d<=2,m<=4,k<=3` is 33.26s; `m<=5` times out. | `max-descendant` directly multiplies candidates. | Twisted resolvent adds calibration cost. | Sparse series candidate enumeration is a clear frontier with one more marking. |
+| psi point theory | Recursion/table cost grows with genus and markings. | Not applicable. | Not applicable. | More markings increases partitions. | Powers determine dimension-valid tuples. | Not applicable. | `g=12` one marking is 37.87s; `g=13` times out. Point theory is now worth optimizing if high genus matters. |
 
 ## Optimization Frontiers
 
-1. Cold stable-graph enumeration is no longer the clearest sampled one-minute
-   frontier after rollback DSU, once-per-key cache coordination, and parallel
-   prefix generation.  A fresh `g=3,m=2` table is now 1.46s, and `g=4,m=1`
-   finishes in 31.70s.  Larger `(g,n)` rows still need a separate
-   canonicalization/orbit-handling pass.
+1. Bundle setup is now the most practical backend frontier in the sampled
+   suite.  Rank-3 shifted `d=4` took 73.23s, and F2 `g=1,d=8` took 71.01s.
+   The next bundle pass should focus on per-ray fundamental-S/correction reuse
+   and bidegree setup growth.
 
-2. Bundle setup is the next backend-specific practical target.  Product ray
-   reconstruction is now parallel and the sampled product rows are below 5s;
-   bundle rank/twist rows still spend visible time in shared bidegree
-   calibration correction and per-ray fundamental-S construction.
+2. Twisted equivariant symbolic rows are an equally important specialized
+   frontier.  `O(-1)` over `P^2`, `g=0,d=2`, two insertions timed out at 90s in
+   both expanded and factored modes, while local `P^2`, `g=2,d=6` also timed
+   out.
 
-3. Bundle rank/twist cost remains meaningful after the bounded Birkhoff fix.
-   The rank-3 primary case is down to roughly 22s after parallel bidegree
-   Birkhoff products, but the dominant profile is now ray fundamental-S
-   construction and calibration correction rather than the Birkhoff matrix
-   multiplication alone.
+3. Product is back on the frontier only at higher genus: `P^1 x P^1`,
+   `g=3,d=4`, `tau9(point)` took 54.81s.  This points back to graph
+   contraction/coloring plus ray reconstruction, not the low-genus product
+   rows.
 
-4. Twisted sampled rows are not currently frontier cases.  The existing module
-   note that dense symbolic stable-graph leg products remain the likely
-   frontier still looks plausible, but the next probe should intentionally use
-   larger equivariant/factored rows rather than the small `g=0,d=1` comparison.
+4. Stable-graph generation is no longer the first sampled bottleneck, but
+   larger formula rows still cross the cutoff: `g=4,m=2` and `g=5,m=0` both
+   timed out at 90s.  The next graph-specific pass should target
+   canonicalization/orbit handling rather than broad prefix parallelism.
 
-5. Packed resolvent and sparse series paths look healthy for the sampled rows.
-   Future stress tests should increase `markings` and `max-descendant` together,
-   because that is the axis most likely to create a candidate explosion.
+5. Sparse series and point theory now have clear high-end brackets:
+   `P^2`, `g=1,d<=2,m<=5,k<=3` timed out after `m<=4` took 33.26s, and
+   one-marking point theory goes from 37.87s at `g=12` to timeout at `g=13`.
