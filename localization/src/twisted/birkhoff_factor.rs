@@ -5,6 +5,7 @@ use crate::algebra::Coeff;
 use crate::error::GwError;
 use crate::series::{QSeries, SeriesMatrix};
 use std::collections::BTreeMap;
+use std::thread;
 
 pub(crate) type CoeffMatrix<C> = Vec<Vec<C>>;
 pub(crate) type LaurentCoeffMatrix<C> = BTreeMap<i32, CoeffMatrix<C>>;
@@ -46,7 +47,7 @@ pub(crate) fn birkhoff_factor_by_q_degree<C: Coeff>(
 }
 
 #[cfg(test)]
-pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff>(
+pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff + Send + Sync>(
     size: usize,
     max_total_degree: usize,
     matrix: &BidegreeLaurentFactor<C>,
@@ -90,7 +91,7 @@ pub(crate) fn birkhoff_factor_by_bidegree<C: Coeff>(
     Ok((positive, negative))
 }
 
-pub(crate) fn birkhoff_negative_factor_by_bidegree_with_z_bounds<C: Coeff>(
+pub(crate) fn birkhoff_negative_factor_by_bidegree_with_z_bounds<C: Coeff + Send + Sync>(
     size: usize,
     max_total_degree: usize,
     matrix: &BidegreeLaurentFactor<C>,
@@ -213,7 +214,7 @@ pub(crate) fn bidegree_slice_z_window<C: Coeff>(
 }
 
 #[cfg(test)]
-pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
+pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff + Send + Sync>(
     left: &BidegreeLaurentFactor<C>,
     right: &BidegreeLaurentFactor<C>,
     grade: Bidegree,
@@ -222,7 +223,7 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices<C: Coeff>(
     multiply_laurent_matrix_bidegree_slices_z_window(left, right, grade, size, i32::MIN, i32::MAX)
 }
 
-pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff>(
+pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff + Send + Sync>(
     left: &BidegreeLaurentFactor<C>,
     right: &BidegreeLaurentFactor<C>,
     grade: Bidegree,
@@ -230,7 +231,7 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff>(
     min_z: i32,
     max_z: i32,
 ) -> LaurentCoeffMatrix<C> {
-    let mut out = BTreeMap::new();
+    let mut products = Vec::new();
     for left_first in 0..=grade.0 {
         for left_second in 0..=grade.1 {
             let left_grade = (left_first, left_second);
@@ -250,18 +251,93 @@ pub(crate) fn multiply_laurent_matrix_bidegree_slices_z_window<C: Coeff>(
                     if z_power < min_z || z_power > max_z {
                         continue;
                     }
-                    add_product_matrix_to_laurent(
-                        &mut out,
-                        z_power,
-                        left_matrix,
-                        right_matrix,
-                        size,
-                    );
+                    products.push((z_power, left_matrix, right_matrix));
                 }
             }
         }
     }
+    let worker_count = birkhoff_product_worker_count(products.len());
+    if crate::env_flag("GW_PROFILE_BIRKHOFF") {
+        println!(
+            "GW_PROFILE birkhoff_bidegree_products={} workers={} grade=({},{}) z_window=[{},{}]",
+            products.len(),
+            worker_count,
+            grade.0,
+            grade.1,
+            min_z,
+            max_z
+        );
+    }
+    multiply_laurent_matrix_products_with_worker_count(&products, size, worker_count)
+}
+
+type LaurentMatrixProduct<'a, C> = (i32, &'a CoeffMatrix<C>, &'a CoeffMatrix<C>);
+
+fn multiply_laurent_matrix_products_with_worker_count<C: Coeff + Send + Sync>(
+    products: &[LaurentMatrixProduct<'_, C>],
+    size: usize,
+    worker_count: usize,
+) -> LaurentCoeffMatrix<C> {
+    if worker_count <= 1 {
+        return multiply_laurent_matrix_products_serial(products, size);
+    }
+
+    let chunk_size = products.len().div_ceil(worker_count);
+    let partials = thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for chunk in products.chunks(chunk_size) {
+            handles.push(scope.spawn(move || multiply_laurent_matrix_products_serial(chunk, size)));
+        }
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("Birkhoff matrix product worker panicked")
+            })
+            .collect::<Vec<_>>()
+    });
+
+    let mut out = LaurentCoeffMatrix::new();
+    for partial in partials {
+        for (z_power, matrix) in partial {
+            add_matrix_to_laurent(&mut out, z_power, &matrix, false);
+        }
+    }
     out
+}
+
+fn multiply_laurent_matrix_products_serial<C: Coeff>(
+    products: &[LaurentMatrixProduct<'_, C>],
+    size: usize,
+) -> LaurentCoeffMatrix<C> {
+    let mut out = LaurentCoeffMatrix::new();
+    for (z_power, left_matrix, right_matrix) in products {
+        add_product_matrix_to_laurent(&mut out, *z_power, left_matrix, right_matrix, size);
+    }
+    out
+}
+
+fn birkhoff_product_worker_count(work_items: usize) -> usize {
+    const MIN_PARALLEL_PRODUCTS: usize = 64;
+    const PRODUCTS_PER_WORKER: usize = 16;
+
+    if work_items < MIN_PARALLEL_PRODUCTS {
+        return 1;
+    }
+
+    let available = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let requested = std::env::var("GW_THREADS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(available);
+    requested
+        .min(work_items)
+        .min(work_items.div_ceil(PRODUCTS_PER_WORKER))
+        .max(1)
 }
 
 pub(crate) fn validate_identity_at_q_zero<C: Coeff>(
