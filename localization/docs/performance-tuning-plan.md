@@ -1,8 +1,11 @@
-# Performance Tuning Plan (draft for discussion)
+# Performance Tuning Plan
 
-> Status: proposal, 2026-07-06.  Measurements below are from one 240-core GCP
-> machine; nothing here is committed work yet.  Comments welcome — the tier
-> ordering is the main thing to agree on.
+> Status: initial plan plus first implementation pass, 2026-07-06.
+> Measurements below are from one 240-core GCP machine.  The first pass landed
+> release debug symbols, stable-graph phase attribution, uncapped graph
+> workers, graph-level dynamic scheduling, product ray parallelism, sparse
+> entry accumulation, and parallel bidegree Birkhoff products.  The remaining
+> tier ordering is still the working roadmap.
 
 A cross-backend tuning plan grounded in release-build profiling, complementing
 the harness rows in [performance-frontiers.md](performance-frontiers.md).
@@ -76,21 +79,22 @@ mutation is the difference.
    dynamically linked; the feature gate keeps the MIT/Apache default intact.
 
 2. **Parallelism overhaul in the contraction engine** (`givental/graph.rs`):
-   - Default worker count: `available_parallelism()` capped by work items,
+   - Landed: default worker count is `available_parallelism()` capped by work items,
      not by the hardcoded `MASTER_DEFAULT_MAX_WORKERS = 8` (this machine has
      240 cores; `GW_THREADS=64` already gives 5x today).
-   - Replace static contiguous `chunks()` over graphs with dynamic dispatch
-     (shared `AtomicUsize` index) over flattened **(graph, coloring-orbit)**
-     units, largest-estimated-cost first.  Fixes both the ~30% efficiency
-     (graphs are generated small-to-large, so contiguous chunks are skewed)
-     and the single-value path's `worker_count = f(graph count)` degeneracy —
-     at `(g,n)=(1,1)` there are 2 stable graphs but hundreds of colorings, so
-     the equivariant contraction runs serial today.
-   - Parallelize `product.rs::reconstruct_bidegree_invariants`'s ray loop —
+   - Landed partly: static contiguous `chunks()` over graphs are replaced with
+     graph-level dynamic dispatch via a shared `AtomicUsize`.  Remaining:
+     flatten to **(graph, coloring-orbit)** units, largest-estimated-cost
+     first, to fix the single-value path's `worker_count = f(graph count)`
+     degeneracy.
+   - Landed: `product.rs::reconstruct_bidegree_invariants`'s ray loop is
+     parallelized —
      `total_degree + 1` fully independent engine runs, mirroring the
      `thread::scope` pattern `bundle.rs` already uses (frontier doc item 2).
-   - Parallelize the factored calibration's series-matrix products and
-     Birkhoff steps entry-wise; the 16-minute equivariant calibration is
+   - Landed for projective bundles: bidegree Birkhoff Laurent matrix products
+     run in deterministic parallel chunks.  Remaining: parallelize the
+     factored calibration's series-matrix products and one-variable Birkhoff
+     steps entry-wise; the 16-minute equivariant calibration is still
      single-threaded matrix algebra.
 
 3. **Stable-graph generation** (`graphs.rs`; frontier doc item 1, the
@@ -119,9 +123,10 @@ mutation is the difference.
    hits in the genus-4 run stop deep-cloning series; build keys without
    re-allocating (SmallVec + sort once).
 
-6. **`SparsePoly` mechanics**: `add_term` currently does get→clone→add→insert
-   (two tree walks plus a coefficient clone) — use the `entry` API with `+=`;
-   consider SmallVec-backed `Monomial` (most monomials have ≤4 factors).
+6. **`SparsePoly` mechanics**: initial `entry`-API accumulation landed for
+   sparse polynomials and nearby Laurent helpers.  Remaining: consider
+   SmallVec-backed `Monomial` (most monomials have ≤4 factors) and broader
+   in-place coefficient accumulation.
 
 7. **`FactoredRatFun` keys**: intern denominator factors (a per-process
    `SparsePoly -> u32` table like the existing symbol interner); term keys
@@ -161,8 +166,8 @@ mutation is the difference.
 |---|---|---|---:|
 | formula/stable graphs `g=4,m=1` timeout | serial enumeration + DSU clones + IR filter | 3 (then 8/orderly) | 10–50x |
 | twisted equivariant stress (`g>=1` symbolic) | BigRational GCD in factored calibration, serial | 1, 2, 7, 9 | 10–1000x |
-| product `g=2,d=3` 19.4s | serial rays x graph contraction | 2, 1 | ~(d+1)x, then 1.5–2.5x |
-| bundle rank-3 34s | ray fundamental-S + quantum-product setup | 1, 2, 10 | 2–5x |
+| product `g=2,d=3` was 19.4s, now 5.0s | serial rays x graph contraction | 2 landed; 1 remains | Product is no longer a leading sampled frontier. |
+| bundle rank-3 was 34s, now 22s | bidegree Birkhoff improved; calibration correction and per-ray fundamental-S remain | 2 partly landed; 1, 10 remain | Further 2–5x likely needs shared ray calibration or bignum work. |
 | ordinary `P^n` genus scaling | GCD + alloc churn in contraction | 1, 2, 4, 5 | 3–10x |
 | psi `g=10` 6.2s | DVV recursion over big rationals | 1 (free rider) | 2–5x |
 
