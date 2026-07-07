@@ -6,9 +6,17 @@ use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub};
 use std::sync::{OnceLock, RwLock};
 
 use crate::error::GwError;
+#[cfg(not(feature = "gmp-rational"))]
 use num_bigint::BigInt;
+#[cfg(not(feature = "gmp-rational"))]
 use num_rational::BigRational;
+#[cfg(not(feature = "gmp-rational"))]
 use num_traits::{One, Signed, Zero};
+#[cfg(feature = "gmp-rational")]
+use rug::Rational as BackendRational;
+
+#[cfg(not(feature = "gmp-rational"))]
+type BackendRational = BigRational;
 
 /// Global variable-name interner.
 ///
@@ -57,32 +65,36 @@ fn symbol_lambda_index(id: u32) -> Option<usize> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Rational(BigRational);
+pub struct Rational(BackendRational);
 
 impl Rational {
     pub fn zero() -> Self {
-        Rational(BigRational::zero())
+        rational_zero()
     }
 
     pub fn one() -> Self {
-        Rational(BigRational::one())
+        rational_one()
     }
 
     pub fn new(num: i128, den: i128) -> Self {
         assert!(den != 0, "zero denominator");
-        Rational(BigRational::new(BigInt::from(num), BigInt::from(den)))
+        rational_new(num, den)
     }
 
     pub fn is_zero(&self) -> bool {
-        self.0.is_zero()
+        rational_is_zero(&self.0)
     }
 
     pub fn is_negative(&self) -> bool {
-        self.0.is_negative()
+        rational_is_negative(&self.0)
     }
 
     pub fn abs(&self) -> Self {
-        Rational(self.0.abs())
+        if self.is_negative() {
+            -self.clone()
+        } else {
+            self.clone()
+        }
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
@@ -95,11 +107,111 @@ impl Rational {
             }
             exp >>= 1;
             if exp > 0 {
-                base = Rational(&base.0 * &base.0);
+                base = Rational(rational_mul_backend(&base.0, &base.0));
             }
         }
         out
     }
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_zero() -> Rational {
+    Rational(BackendRational::zero())
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_zero() -> Rational {
+    Rational(BackendRational::from(0))
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_one() -> Rational {
+    Rational(BackendRational::one())
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_one() -> Rational {
+    Rational(BackendRational::from(1))
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_new(num: i128, den: i128) -> Rational {
+    Rational(BackendRational::new(BigInt::from(num), BigInt::from(den)))
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_new(num: i128, den: i128) -> Rational {
+    Rational(BackendRational::from((num, den)))
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_is_zero(value: &BackendRational) -> bool {
+    value.is_zero()
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_is_zero(value: &BackendRational) -> bool {
+    value.is_zero()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_is_negative(value: &BackendRational) -> bool {
+    value.is_negative()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_neg_backend(value: &BackendRational) -> BackendRational {
+    -value
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_neg_backend(value: &BackendRational) -> BackendRational {
+    (-value).into()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_add_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    left + right
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_add_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    (left + right).into()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_sub_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    left - right
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_sub_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    (left - right).into()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_mul_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    left * right
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_mul_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    (left * right).into()
+}
+
+#[cfg(not(feature = "gmp-rational"))]
+fn rational_div_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    left / right
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_div_backend(left: &BackendRational, right: &BackendRational) -> BackendRational {
+    (left / right).into()
+}
+
+#[cfg(feature = "gmp-rational")]
+fn rational_is_negative(value: &BackendRational) -> bool {
+    value.is_negative()
 }
 
 impl From<i128> for Rational {
@@ -193,6 +305,11 @@ impl PartialOrd for Rational {
 
 impl fmt::Display for Rational {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[cfg(feature = "gmp-rational")]
+        {
+            return write!(f, "{}", self.0);
+        }
+        #[cfg(not(feature = "gmp-rational"))]
         if self.0.denom().is_one() {
             write!(f, "{}", self.0.numer())
         } else {
@@ -274,24 +391,24 @@ impl Coeff for Rational {
     }
 
     fn neg(&self) -> Self {
-        Rational(-&self.0)
+        Rational(rational_neg_backend(&self.0))
     }
 
     fn add(&self, rhs: &Self) -> Self {
-        Rational(&self.0 + &rhs.0)
+        Rational(rational_add_backend(&self.0, &rhs.0))
     }
 
     fn sub(&self, rhs: &Self) -> Self {
-        Rational(&self.0 - &rhs.0)
+        Rational(rational_sub_backend(&self.0, &rhs.0))
     }
 
     fn mul(&self, rhs: &Self) -> Self {
-        Rational(&self.0 * &rhs.0)
+        Rational(rational_mul_backend(&self.0, &rhs.0))
     }
 
     fn div(&self, rhs: &Self) -> Self {
         assert!(!rhs.is_zero(), "division by zero");
-        Rational(&self.0 / &rhs.0)
+        Rational(rational_div_backend(&self.0, &rhs.0))
     }
 }
 

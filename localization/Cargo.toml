@@ -18,6 +18,11 @@ clap = { version = "4", features = ["derive"] }
 num-bigint = "0.4"
 num-rational = "0.4"
 num-traits = "0.2"
+rug = { version = "1.30", optional = true, default-features = false, features = ["rational", "std"] }
+
+[features]
+default = []
+gmp-rational = ["dep:rug"]
 
 [lints.clippy]
 # This crate is heavy on exact symbolic algebra: loop indices routinely carry
