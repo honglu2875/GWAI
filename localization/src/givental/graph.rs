@@ -5,6 +5,7 @@
 use super::*;
 use crate::factored::FactoredRatFun;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     match compute_by_givental_graphs(req) {
@@ -177,7 +178,7 @@ pub struct GiventalGraphKernel<C = RatFun> {
     inverse_r: Vec<SeriesMatrix<C>>,
     translation: Vec<Vec<QSeries<C>>>,
     edge_options: Vec<Vec<Vec<EdgeFactorOption<C>>>>,
-    vertex_cache: Mutex<HashMap<VertexContributionKey, QSeries<C>>>,
+    vertex_cache: Mutex<HashMap<VertexContributionKey, Arc<QSeries<C>>>>,
 }
 
 impl<C: Coeff> GiventalGraphKernel<C> {
@@ -1956,7 +1957,7 @@ pub(crate) fn contract_restricted_task_chunk(
 pub(crate) struct ScalarGraphChunkResult<C = RatFun> {
     total: QSeries<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 }
 
 pub(crate) fn evaluate_scalar_graphs_parallel<C>(
@@ -2005,7 +2006,7 @@ where
                             graph_dimension,
                             vertex_cache,
                         );
-                        total = total.add(&result.total);
+                        total.add_assign(&result.total);
                         profile.absorb_graph_counts(&result.profile);
                         vertex_cache = result.vertex_cache;
                     }
@@ -2031,7 +2032,7 @@ where
     let mut shared_vertex_cache = kernel.vertex_cache.lock().unwrap();
     for result in results {
         profile.absorb_graph_counts(&result.profile);
-        total = total.add(&result.total);
+        total.add_assign(&result.total);
         for (key, value) in result.vertex_cache {
             shared_vertex_cache.entry(key).or_insert(value);
         }
@@ -2045,44 +2046,26 @@ pub(crate) fn evaluate_scalar_graph_chunk<C>(
     kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    mut vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 ) -> ScalarGraphChunkResult<C>
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = QSeries::<C>::zero(q_degree);
     for prepared in graphs {
-        let graph = &prepared.graph;
-        profile.colorings += prepared.colorings.len();
-        for coloring in prepared.colorings.iter() {
-            let mut graph_total = QSeries::<C>::zero(q_degree);
-            let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
-            let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
-            let coloring_factor = C::from_rational(coloring.factor.clone());
-            accumulate_graph_factors(
-                graph,
-                &coloring.colors,
+        for coloring_index in 0..prepared.colorings.len() {
+            accumulate_scalar_coloring(
+                prepared,
+                coloring_index,
                 leg_options,
-                &kernel.edge_options,
-                &kernel.calibration,
-                &kernel.translation,
-                oracle,
-                &mut vertex_cache,
+                kernel,
                 q_degree,
                 graph_dimension,
-                0,
-                0,
-                QSeries::<C>::one(q_degree),
-                &mut base_powers,
-                &mut vertex_power_sums,
-                &prepared.vertex_power_caps,
-                &mut graph_total,
+                &mut vertex_cache,
+                &mut total,
                 &mut profile,
             );
-
-            total = total.add(&graph_total.scale(&coloring_factor));
         }
     }
     ScalarGraphChunkResult {
@@ -2090,6 +2073,51 @@ where
         profile,
         vertex_cache,
     }
+}
+
+fn accumulate_scalar_coloring<C>(
+    prepared: &PreparedStableGraph,
+    coloring_index: usize,
+    leg_options: &[Vec<Vec<LegFactorOption<C>>>],
+    kernel: &GiventalGraphKernel<C>,
+    q_degree: usize,
+    graph_dimension: usize,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
+    total: &mut QSeries<C>,
+    profile: &mut GraphEvalProfile,
+) where
+    C: Coeff,
+{
+    let oracle = WittenKontsevich::shared();
+    let graph = &prepared.graph;
+    let coloring = &prepared.colorings[coloring_index];
+    profile.colorings += 1;
+    let mut graph_total = QSeries::<C>::zero(q_degree);
+    let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+    let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+    let coloring_factor = C::from_rational(coloring.factor.clone());
+    accumulate_graph_factors(
+        graph,
+        &coloring.colors,
+        leg_options,
+        &kernel.edge_options,
+        &kernel.calibration,
+        &kernel.translation,
+        oracle,
+        vertex_cache,
+        q_degree,
+        graph_dimension,
+        0,
+        0,
+        QSeries::<C>::one(q_degree),
+        &mut base_powers,
+        &mut vertex_power_sums,
+        &prepared.vertex_power_caps,
+        &mut graph_total,
+        profile,
+    );
+
+    total.add_assign(&graph_total.scale(&coloring_factor));
 }
 
 pub(crate) fn qseries_slice_to_rational(series: &[QSeries]) -> Option<Vec<RationalQSeries>> {
@@ -2531,7 +2559,7 @@ pub(crate) fn evaluate_rational_graphs_if_possible(
 pub(crate) struct ExternalGraphChunkResult<C = RatFun> {
     total: ExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 }
 
 pub(crate) fn evaluate_external_graphs_parallel<C>(
@@ -2625,39 +2653,22 @@ pub(crate) fn evaluate_external_graph_chunk<C>(
     kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    mut vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 ) -> ExternalGraphChunkResult<C>
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = ExternalLegKernel::<C>::zero(markings, colors, graph_dimension, q_degree);
     for prepared in graphs {
-        let graph = &prepared.graph;
-        profile.colorings += prepared.colorings.len();
-        for coloring in prepared.colorings.iter() {
-            let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
-            let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
-            let mut external_states = Vec::with_capacity(markings);
-            let coloring_factor = C::from_rational(coloring.factor.clone());
-            accumulate_external_leg_graph_factors(
-                graph,
-                &coloring.colors,
-                &kernel.edge_options,
-                &kernel.calibration,
-                &kernel.translation,
-                oracle,
-                &mut vertex_cache,
+        for coloring_index in 0..prepared.colorings.len() {
+            accumulate_external_coloring(
+                prepared,
+                coloring_index,
+                kernel,
                 q_degree,
                 graph_dimension,
-                0,
-                0,
-                QSeries::<C>::one(q_degree).scale(&coloring_factor),
-                &mut base_powers,
-                &mut vertex_power_sums,
-                &prepared.vertex_power_caps,
-                &mut external_states,
+                &mut vertex_cache,
                 &mut total,
                 &mut profile,
             );
@@ -2670,10 +2681,52 @@ where
     }
 }
 
+fn accumulate_external_coloring<C>(
+    prepared: &PreparedStableGraph,
+    coloring_index: usize,
+    kernel: &GiventalGraphKernel<C>,
+    q_degree: usize,
+    graph_dimension: usize,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
+    total: &mut ExternalLegKernel<C>,
+    profile: &mut GraphEvalProfile,
+) where
+    C: Coeff,
+{
+    let oracle = WittenKontsevich::shared();
+    let graph = &prepared.graph;
+    let coloring = &prepared.colorings[coloring_index];
+    profile.colorings += 1;
+    let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+    let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+    let mut external_states = Vec::with_capacity(graph.legs.len());
+    let coloring_factor = C::from_rational(coloring.factor.clone());
+    accumulate_external_leg_graph_factors(
+        graph,
+        &coloring.colors,
+        &kernel.edge_options,
+        &kernel.calibration,
+        &kernel.translation,
+        oracle,
+        vertex_cache,
+        q_degree,
+        graph_dimension,
+        0,
+        0,
+        QSeries::<C>::one(q_degree).scale(&coloring_factor),
+        &mut base_powers,
+        &mut vertex_power_sums,
+        &prepared.vertex_power_caps,
+        &mut external_states,
+        total,
+        profile,
+    );
+}
+
 pub(crate) struct RestrictedExternalGraphChunkResult<C = RatFun> {
     total: RestrictedExternalLegKernel<C>,
     profile: GraphEvalProfile,
-    vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 }
 
 pub(crate) fn evaluate_restricted_external_graphs_parallel<C>(
@@ -2762,40 +2815,23 @@ pub(crate) fn evaluate_restricted_external_graph_chunk<C>(
     kernel: &GiventalGraphKernel<C>,
     q_degree: usize,
     graph_dimension: usize,
-    mut vertex_cache: HashMap<VertexContributionKey, QSeries<C>>,
+    mut vertex_cache: HashMap<VertexContributionKey, Arc<QSeries<C>>>,
 ) -> RestrictedExternalGraphChunkResult<C>
 where
     C: Coeff,
 {
-    let oracle = WittenKontsevich::shared();
     let mut profile = GraphEvalProfile::new();
     let mut total = template.zero_like();
     for prepared in graphs {
-        let graph = &prepared.graph;
-        profile.colorings += prepared.colorings.len();
-        for coloring in prepared.colorings.iter() {
-            let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
-            let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
-            let mut external_state_indices = Vec::with_capacity(template.markings);
-            let coloring_factor = C::from_rational(coloring.factor.clone());
-            accumulate_restricted_external_leg_graph_factors(
-                graph,
-                &coloring.colors,
-                &kernel.edge_options,
-                &kernel.calibration,
-                &kernel.translation,
-                oracle,
-                &mut vertex_cache,
+        for coloring_index in 0..prepared.colorings.len() {
+            accumulate_restricted_external_coloring(
+                prepared,
+                coloring_index,
+                template,
+                kernel,
                 q_degree,
                 graph_dimension,
-                0,
-                0,
-                QSeries::<C>::one(q_degree).scale(&coloring_factor),
-                &mut base_powers,
-                &mut vertex_power_sums,
-                &prepared.vertex_power_caps,
-                &mut external_state_indices,
-                &template.states_by_marking_color,
+                &mut vertex_cache,
                 &mut total,
                 &mut profile,
             );
@@ -2806,6 +2842,50 @@ where
         profile,
         vertex_cache,
     }
+}
+
+fn accumulate_restricted_external_coloring<C>(
+    prepared: &PreparedStableGraph,
+    coloring_index: usize,
+    template: &RestrictedExternalLegKernel<C>,
+    kernel: &GiventalGraphKernel<C>,
+    q_degree: usize,
+    graph_dimension: usize,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
+    total: &mut RestrictedExternalLegKernel<C>,
+    profile: &mut GraphEvalProfile,
+) where
+    C: Coeff,
+{
+    let oracle = WittenKontsevich::shared();
+    let graph = &prepared.graph;
+    let coloring = &prepared.colorings[coloring_index];
+    profile.colorings += 1;
+    let mut base_powers = vec![Vec::<usize>::new(); graph.vertices.len()];
+    let mut vertex_power_sums = vec![0usize; graph.vertices.len()];
+    let mut external_state_indices = Vec::with_capacity(template.markings);
+    let coloring_factor = C::from_rational(coloring.factor.clone());
+    accumulate_restricted_external_leg_graph_factors(
+        graph,
+        &coloring.colors,
+        &kernel.edge_options,
+        &kernel.calibration,
+        &kernel.translation,
+        oracle,
+        vertex_cache,
+        q_degree,
+        graph_dimension,
+        0,
+        0,
+        QSeries::<C>::one(q_degree).scale(&coloring_factor),
+        &mut base_powers,
+        &mut vertex_power_sums,
+        &prepared.vertex_power_caps,
+        &mut external_state_indices,
+        &template.states_by_marking_color,
+        total,
+        profile,
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2875,7 +2955,7 @@ impl<C: Coeff> ExternalLegKernel<C> {
             return;
         }
         let index = self.tensor_index(states);
-        self.entries[index] = self.entries[index].add(value);
+        self.entries[index].add_assign(value);
     }
 
     fn add_assign(&mut self, rhs: &Self) {
@@ -2885,7 +2965,7 @@ impl<C: Coeff> ExternalLegKernel<C> {
         debug_assert_eq!(self.q_degree, rhs.q_degree);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
             if !right.is_structurally_zero() {
-                *left = left.add(right);
+                left.add_assign(right);
             }
         }
     }
@@ -2992,7 +3072,7 @@ impl<C: Coeff> RestrictedExternalLegKernel<C> {
             return;
         }
         let index = self.tensor_index_from_state_indices(state_indices);
-        self.entries[index] = self.entries[index].add(value);
+        self.entries[index].add_assign(value);
     }
 
     fn add_assign(&mut self, rhs: &Self) {
@@ -3003,7 +3083,7 @@ impl<C: Coeff> RestrictedExternalLegKernel<C> {
         debug_assert_eq!(self.state_counts, rhs.state_counts);
         for (left, right) in self.entries.iter_mut().zip(rhs.entries.iter()) {
             if !right.is_structurally_zero() {
-                *left = left.add(right);
+                left.add_assign(right);
             }
         }
     }
@@ -3193,7 +3273,7 @@ pub(crate) fn qseries_mul_coeff_generic<C: Coeff>(
         if right_coeff.is_structurally_zero() {
             continue;
         }
-        total = total.add(&left_coeff.mul(right_coeff));
+        crate::fused::add_product_assign(&mut total, left_coeff, right_coeff);
     }
     total
 }
@@ -3205,7 +3285,7 @@ pub(crate) fn accumulate_external_leg_graph_factors<C>(
     calibration: &SemisimpleCalibration<C>,
     translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
@@ -3371,7 +3451,7 @@ pub(crate) fn accumulate_restricted_external_leg_graph_factors<C>(
     calibration: &SemisimpleCalibration<C>,
     translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
@@ -3796,7 +3876,7 @@ pub(crate) fn accumulate_graph_factors<C>(
     calibration: &SemisimpleCalibration<C>,
     translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
     q_degree: usize,
     max_power: usize,
     factor_index: usize,
@@ -4066,7 +4146,7 @@ pub(crate) fn vertex_contribution_with_translations<C>(
     calibration: &SemisimpleCalibration<C>,
     translation: &[Vec<QSeries<C>>],
     oracle: &WittenKontsevich,
-    vertex_cache: &mut HashMap<VertexContributionKey, QSeries<C>>,
+    vertex_cache: &mut HashMap<VertexContributionKey, Arc<QSeries<C>>>,
     q_degree: usize,
     profile: &mut GraphEvalProfile,
 ) -> QSeries<C>
@@ -4088,7 +4168,7 @@ where
         if profile.enabled {
             profile.vertex_cache_hits += 1;
         }
-        return cached.clone();
+        return cached.as_ref().clone();
     }
     if profile.enabled {
         profile.vertex_cache_misses += 1;
@@ -4099,7 +4179,7 @@ where
     let translation_excess = base_dimension - base_power_sum;
     if translation_excess < 0 {
         let zero = QSeries::<C>::zero(q_degree);
-        vertex_cache.insert(key, zero.clone());
+        vertex_cache.insert(key, Arc::new(zero.clone()));
         return zero;
     }
 
@@ -4149,7 +4229,7 @@ where
         let term = coefficient.mul(&vertex_factor).scale(&psi.div(&symmetry));
         total = total.add(&term);
     }
-    vertex_cache.insert(key, total.clone());
+    vertex_cache.insert(key, Arc::new(total.clone()));
     total
 }
 

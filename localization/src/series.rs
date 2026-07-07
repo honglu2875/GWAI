@@ -1,5 +1,6 @@
 use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
+use crate::fused;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,14 +76,15 @@ impl<C: Coeff> QSeries<C> {
     }
 
     pub fn add(&self, rhs: &Self) -> Self {
+        let mut out = self.clone();
+        out.add_assign(rhs);
+        out
+    }
+
+    pub fn add_assign(&mut self, rhs: &Self) {
         self.assert_same_truncation(rhs);
-        Self {
-            coeffs: self
-                .coeffs
-                .iter()
-                .zip(rhs.coeffs.iter())
-                .map(|(a, b)| a.add(b))
-                .collect(),
+        for (left, right) in self.coeffs.iter_mut().zip(rhs.coeffs.iter()) {
+            fused::add_assign(left, right);
         }
     }
 
@@ -147,11 +149,42 @@ impl<C: Coeff> QSeries<C> {
                 if rhs.coeffs[j].is_structurally_zero() {
                     continue;
                 }
-                let term = self.coeffs[i].mul(&rhs.coeffs[j]);
-                out[i + j] = out[i + j].add(&term);
+                fused::add_product_assign(&mut out[i + j], &self.coeffs[i], &rhs.coeffs[j]);
             }
         }
         Self { coeffs: out }
+    }
+
+    pub fn add_product_assign(&mut self, left: &Self, right: &Self) {
+        left.assert_same_truncation(right);
+        self.assert_same_truncation(left);
+        if left.is_structurally_zero() || right.is_structurally_zero() {
+            return;
+        }
+        if left.is_structurally_one() {
+            self.add_assign(right);
+            return;
+        }
+        if right.is_structurally_one() {
+            self.add_assign(left);
+            return;
+        }
+        let max_degree = self.max_degree();
+        for i in 0..=max_degree {
+            if left.coeffs[i].is_structurally_zero() {
+                continue;
+            }
+            for j in 0..=max_degree - i {
+                if right.coeffs[j].is_structurally_zero() {
+                    continue;
+                }
+                fused::add_product_assign(
+                    &mut self.coeffs[i + j],
+                    &left.coeffs[i],
+                    &right.coeffs[j],
+                );
+            }
+        }
     }
 
     pub fn inverse(&self) -> Result<Self, GwError> {
@@ -171,8 +204,7 @@ impl<C: Coeff> QSeries<C> {
         for degree in 1..=max_degree {
             let mut sum = C::zero();
             for k in 1..=degree {
-                let term = self.coeffs[k].mul(&out[degree - k]);
-                sum = sum.add(&term);
+                fused::add_product_assign(&mut sum, &self.coeffs[k], &out[degree - k]);
             }
             out[degree] = sum.div(constant).neg();
         }
@@ -212,8 +244,7 @@ impl<C: Coeff> QSeries<C> {
         for degree in 1..=max_degree {
             let mut quadratic_terms = C::zero();
             for left in 1..degree {
-                let term = out[left].mul(&out[degree - left]);
-                quadratic_terms = quadratic_terms.add(&term);
+                fused::add_product_assign(&mut quadratic_terms, &out[left], &out[degree - left]);
             }
             let numerator = self.coeffs[degree].sub(&quadratic_terms);
             out[degree] = numerator.div(&C::from_usize(2));
@@ -330,21 +361,19 @@ impl<C: Coeff> SeriesMatrix<C> {
     }
 
     pub fn add(&self, rhs: &Self) -> Self {
+        let mut out = self.clone();
+        out.add_assign(rhs);
+        out
+    }
+
+    pub fn add_assign(&mut self, rhs: &Self) {
         assert_eq!(self.rows, rhs.rows);
         assert_eq!(self.cols, rhs.cols);
-        Self::from_entries(
-            self.entries
-                .iter()
-                .zip(rhs.entries.iter())
-                .map(|(left_row, right_row)| {
-                    left_row
-                        .iter()
-                        .zip(right_row.iter())
-                        .map(|(left, right)| left.add(right))
-                        .collect()
-                })
-                .collect(),
-        )
+        for (left_row, right_row) in self.entries.iter_mut().zip(rhs.entries.iter()) {
+            for (left, right) in left_row.iter_mut().zip(right_row.iter()) {
+                left.add_assign(right);
+            }
+        }
     }
 
     pub fn sub(&self, rhs: &Self) -> Self {
@@ -388,7 +417,7 @@ impl<C: Coeff> SeriesMatrix<C> {
                     {
                         continue;
                     }
-                    total = total.add(&self.entries[row][k].mul(&rhs.entries[k][col]));
+                    total.add_product_assign(&self.entries[row][k], &rhs.entries[k][col]);
                 }
                 out.entries[row][col] = total;
             }
@@ -494,8 +523,8 @@ pub(crate) fn exp_series<C: Coeff>(series: &[C], max_degree: usize) -> Vec<C> {
         let mut sum = C::zero();
         for split in 1..=degree {
             let coeff = series.get(split).cloned().unwrap_or_else(C::zero);
-            let term = C::from_usize(split).mul(&coeff).mul(&out[degree - split]);
-            sum = sum.add(&term);
+            let scaled_coeff = C::from_usize(split).mul(&coeff);
+            fused::add_product_assign(&mut sum, &scaled_coeff, &out[degree - split]);
         }
         out[degree] = sum.div(&C::from_usize(degree));
     }
@@ -513,8 +542,11 @@ pub(crate) fn mul_plain_series<C: Coeff>(left: &[C], right: &[C], max_degree: us
             if right[right_degree].is_zero() {
                 continue;
             }
-            out[left_degree + right_degree] =
-                out[left_degree + right_degree].add(&left[left_degree].mul(&right[right_degree]));
+            fused::add_product_assign(
+                &mut out[left_degree + right_degree],
+                &left[left_degree],
+                &right[right_degree],
+            );
         }
     }
     out
@@ -534,7 +566,7 @@ pub(crate) fn compose_plain_series<C: Coeff>(
         let coefficient = series.get(degree).cloned().unwrap_or_else(C::zero);
         if !coefficient.is_zero() {
             for idx in 0..=max_degree {
-                out[idx] = out[idx].add(&coefficient.mul(&power[idx]));
+                fused::add_product_assign(&mut out[idx], &coefficient, &power[idx]);
             }
         }
         power = mul_plain_series(&power, input, max_degree);

@@ -76,6 +76,16 @@ pub struct ProjectiveBundleRay {
     pub ray: Rational,
 }
 
+#[derive(Debug, Clone)]
+struct ProjectiveBundleClassicalData {
+    fiber_weights: Vec<Vec<Rational>>,
+    xi_restrictions: Vec<Rational>,
+    grading_seeds: Vec<Rational>,
+    transition: Vec<Vec<Rational>>,
+    flat_metric: Vec<Vec<Rational>>,
+    h_power_relation: Vec<Rational>,
+}
+
 impl ProjectiveBundleRay {
     pub fn new(
         n: usize,
@@ -131,76 +141,78 @@ impl ProjectiveBundleRay {
         *self.twists.iter().max().expect("twists nonempty")
     }
 
-    /// Weight of the `l`-th fiber coordinate over base fixed point `i`.
-    fn fiber_weight(&self, i: usize, l: usize) -> Rational {
-        Rational::from(self.twists[l] as i128) * self.weights_base[i].clone()
-            + self.weights_fiber[l].clone()
+    fn raw_fiber_weight(
+        twists: &[usize],
+        weights_base: &[Rational],
+        weights_fiber: &[Rational],
+        i: usize,
+        l: usize,
+    ) -> Rational {
+        Rational::from(twists[l] as i128) * weights_base[i].clone() + weights_fiber[l].clone()
     }
 
-    /// Restriction of `xi` at fixed point `(i, j)`.
-    fn xi_restriction(&self, i: usize, j: usize) -> Rational {
-        -self.fiber_weight(i, j)
-    }
-
-    /// Classical eigenvalues of the grading divisor `D = xi + (A+1) H`.
-    fn grading_seeds(&self) -> Vec<Rational> {
-        let shift = Rational::from((self.big_a() + 1) as i128);
-        let mut seeds = vec![Rational::zero(); self.size()];
-        for i in 0..=self.n {
-            for j in 0..self.rank() {
-                seeds[self.point(i, j)] =
-                    self.xi_restriction(i, j) + shift.clone() * self.weights_base[i].clone();
-            }
-        }
-        seeds
-    }
-
-    /// Equivariant Euler class of the tangent space at `(i, j)`.
-    fn euler(&self, i: usize, j: usize) -> Rational {
-        let mut euler = Rational::one();
-        for k in 0..=self.n {
-            if k != i {
-                euler = euler * (self.weights_base[i].clone() - self.weights_base[k].clone());
-            }
-        }
-        for l in 0..self.rank() {
-            if l != j {
-                euler = euler * (self.fiber_weight(i, l) - self.fiber_weight(i, j));
-            }
-        }
-        euler
-    }
-
-    fn classical_transition(&self) -> Vec<Vec<Rational>> {
-        recipe::classical_lagrange_transition(&self.grading_seeds())
-    }
-
-    /// Atiyah-Bott flat metric in the classical `D`-power basis.
-    fn flat_metric(&self) -> Vec<Vec<Rational>> {
+    fn build_classical_data(&self) -> ProjectiveBundleClassicalData {
+        let rank = self.rank();
         let size = self.size();
-        let seeds = self.grading_seeds();
-        let mut metric = vec![vec![Rational::zero(); size]; size];
+        let big_a = self.big_a();
+        let mut fiber_weights = vec![vec![Rational::zero(); rank]; self.n + 1];
+        for (i, row) in fiber_weights.iter_mut().enumerate() {
+            for (l, value) in row.iter_mut().enumerate() {
+                *value = Self::raw_fiber_weight(
+                    &self.twists,
+                    &self.weights_base,
+                    &self.weights_fiber,
+                    i,
+                    l,
+                );
+            }
+        }
+
+        let mut xi_restrictions = vec![Rational::zero(); size];
+        let mut grading_seeds = vec![Rational::zero(); size];
+        let shift = Rational::from((big_a + 1) as i128);
+        for i in 0..=self.n {
+            for j in 0..rank {
+                let point = self.point(i, j);
+                xi_restrictions[point] = -fiber_weights[i][j].clone();
+                grading_seeds[point] =
+                    xi_restrictions[point].clone() + shift.clone() * self.weights_base[i].clone();
+            }
+        }
+
+        let mut eulers = vec![Rational::one(); size];
+        for i in 0..=self.n {
+            for j in 0..rank {
+                let mut euler = Rational::one();
+                for k in 0..=self.n {
+                    if k != i {
+                        euler =
+                            euler * (self.weights_base[i].clone() - self.weights_base[k].clone());
+                    }
+                }
+                for l in 0..rank {
+                    if l != j {
+                        euler = euler * (fiber_weights[i][l].clone() - fiber_weights[i][j].clone());
+                    }
+                }
+                eulers[self.point(i, j)] = euler;
+            }
+        }
+
+        let transition = recipe::classical_lagrange_transition(&grading_seeds);
+        let mut flat_metric = vec![vec![Rational::zero(); size]; size];
         for row in 0..size {
             for col in 0..size {
                 let mut total = Rational::zero();
-                for i in 0..=self.n {
-                    for j in 0..self.rank() {
-                        let seed = &seeds[self.point(i, j)];
-                        total += seed.pow_usize(row + col) / self.euler(i, j);
-                    }
+                for point in 0..size {
+                    total += grading_seeds[point].pow_usize(row + col) / eulers[point].clone();
                 }
-                metric[row][col] = total;
+                flat_metric[row][col] = total;
             }
         }
-        metric
-    }
 
-    /// Classical relation `D^size = sum_k rel_k D^k` (ascending, length
-    /// `size`), from the minimal polynomial `prod (x - seed)`.
-    fn h_power_relation(&self) -> Vec<Rational> {
-        let seeds = self.grading_seeds();
         let mut coefficients = vec![Rational::one()];
-        for seed in &seeds {
+        for seed in &grading_seeds {
             let mut next = vec![Rational::zero(); coefficients.len() + 1];
             for (power, coefficient) in coefficients.iter().enumerate() {
                 next[power] += -(seed.clone()) * coefficient.clone();
@@ -208,22 +220,66 @@ impl ProjectiveBundleRay {
             }
             coefficients = next;
         }
-        (0..self.size())
+        let h_power_relation = (0..size)
             .map(|power| -coefficients[power].clone())
-            .collect()
+            .collect();
+
+        ProjectiveBundleClassicalData {
+            fiber_weights,
+            xi_restrictions,
+            grading_seeds,
+            transition,
+            flat_metric,
+            h_power_relation,
+        }
+    }
+
+    fn classical_data(&self) -> Arc<ProjectiveBundleClassicalData> {
+        static CACHE: OnceLock<Mutex<HashMap<String, Arc<ProjectiveBundleClassicalData>>>> =
+            OnceLock::new();
+        let key = self.rayless_cache_key();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(data) = cache.lock().unwrap().get(&key).cloned() {
+            return data;
+        }
+        let data = Arc::new(self.build_classical_data());
+        cache.lock().unwrap().insert(key, data.clone());
+        data
+    }
+
+    /// Weight of the `l`-th fiber coordinate over base fixed point `i`.
+    fn fiber_weight(&self, i: usize, l: usize) -> Rational {
+        self.classical_data().fiber_weights[i][l].clone()
+    }
+
+    /// Classical eigenvalues of the grading divisor `D = xi + (A+1) H`.
+    fn grading_seeds(&self) -> Vec<Rational> {
+        self.classical_data().grading_seeds.clone()
+    }
+
+    /// Atiyah-Bott flat metric in the classical `D`-power basis.
+    fn flat_metric(&self) -> Vec<Vec<Rational>> {
+        self.classical_data().flat_metric.clone()
+    }
+
+    /// Classical relation `D^size = sum_k rel_k D^k` (ascending, length
+    /// `size`), from the minimal polynomial `prod (x - seed)`.
+    fn h_power_relation(&self) -> Vec<Rational> {
+        self.classical_data().h_power_relation.clone()
     }
 
     /// Classical coordinates of `H^p xi^q` in the `D`-power basis.
     fn insertion_class_vector(&self, h_power: usize, xi_power: usize) -> Vec<Rational> {
         let size = self.size();
-        let transition = self.classical_transition();
+        let data = self.classical_data();
         let mut vector = vec![Rational::zero(); size];
         for i in 0..=self.n {
             for j in 0..self.rank() {
                 let restriction = self.weights_base[i].pow_usize(h_power)
-                    * self.xi_restriction(i, j).pow_usize(xi_power);
+                    * data.xi_restrictions[self.point(i, j)].pow_usize(xi_power);
                 for row in 0..size {
-                    vector[row] += transition[row][self.point(i, j)].clone() * restriction.clone();
+                    vector[row] +=
+                        data.transition[row][self.point(i, j)].clone() * restriction.clone();
                 }
             }
         }
@@ -305,7 +361,15 @@ impl ProjectiveBundleRay {
 
     /// Scalar z-Laurent restriction of the `(d1, d2)` I-coefficient at the
     /// fixed point `(i, j)`.
-    fn i_restriction(&self, i: usize, j: usize, d1: usize, d2: isize, min_z: i32) -> ZLaurent {
+    fn i_restriction_with_data(
+        &self,
+        data: &ProjectiveBundleClassicalData,
+        i: usize,
+        j: usize,
+        d1: usize,
+        d2: isize,
+        min_z: i32,
+    ) -> ZLaurent {
         let mut out = zl_one();
         for k in 1..=d1 {
             for i_prime in 0..=self.n {
@@ -315,7 +379,7 @@ impl ProjectiveBundleRay {
         }
         for l in 0..self.rank() {
             let fiber_degree = d2 + (self.twists[l] * d1) as isize;
-            let value = self.fiber_weight(i, l) - self.fiber_weight(i, j);
+            let value = data.fiber_weights[i][l].clone() - data.fiber_weights[i][j].clone();
             if fiber_degree >= 0 {
                 for k in 1..=(fiber_degree as usize) {
                     out = zl_mul_inverse_affine(&out, &value, k, min_z);
@@ -336,10 +400,10 @@ impl ProjectiveBundleRay {
     fn i_coefficient(&self, d1: usize, d2p: usize, min_z: i32) -> HLaurentSeries {
         let size = self.size();
         let d2 = d2p as isize - (self.big_a() * d1) as isize;
-        let transition = self.classical_transition();
+        let data = self.classical_data();
         let restrictions = (0..=self.n)
             .flat_map(|i| (0..self.rank()).map(move |j| (i, j)))
-            .map(|(i, j)| self.i_restriction(i, j, d1, d2, min_z))
+            .map(|(i, j)| self.i_restriction_with_data(&data, i, j, d1, d2, min_z))
             .collect::<Vec<_>>();
 
         let mut out = HLaurentSeries::zero(size - 1);
@@ -352,7 +416,7 @@ impl ProjectiveBundleRay {
                 let mut total = Rational::zero();
                 for (point, restriction) in restrictions.iter().enumerate() {
                     if let Some(value) = restriction.get(&z_power) {
-                        total += transition[row][point].clone() * value.clone();
+                        total += data.transition[row][point].clone() * value.clone();
                     }
                 }
                 if !total.is_zero() {

@@ -1,7 +1,9 @@
 # Performance Tuning Plan
 
 > Status: initial plan plus first implementation pass, 2026-07-06; optional
-> GMP rational backend landed behind `gmp-rational` on 2026-07-07.
+> GMP rational backend landed behind `gmp-rational` on 2026-07-07.  A follow-up
+> cleanup pass on 2026-07-07 landed fused accumulation hooks, `Arc`-backed
+> vertex-cache snapshots, and projective-bundle classical-data reuse.
 > Measurements below are from one 240-core GCP machine.  The first pass landed
 > release debug symbols, stable-graph phase attribution, uncapped graph
 > workers, graph-level dynamic scheduling, product ray parallelism, sparse
@@ -117,12 +119,19 @@ mutation is the difference.
 4. **In-place `Coeff` ops**: add `add_assign`, `mul_assign`, and a fused
    `accumulate(&mut self, a, b)` (acc += a*b) with default impls; use them in
    `QSeries::{add,mul}`, `SeriesMatrix::mul`, and the contraction leaf
-   accumulation.  Directly attacks the ~30% allocator share; with GMP the
-   in-place ops also avoid temporary re-reductions.
+   accumulation.  Landed initial `add_assign` / `add_product_assign` hooks and
+   a small `fused` kernel module; `QSeries`, `SeriesMatrix`, graph coefficient
+   contraction, and plain calibration series now route convolution-style
+   accumulation through those helpers.  The default symbolic coefficient types
+   still use safe fallback implementations, so future coefficient-specific
+   kernels can be added without spreading manual `acc += a*b` patterns.
 
 5. **Vertex-contribution cache**: store `Arc<QSeries<C>>` so the 5.3M cache
    hits in the genus-4 run stop deep-cloning series; build keys without
-   re-allocating (SmallVec + sort once).
+   re-allocating (SmallVec + sort once).  The `Arc<QSeries<C>>` cache value
+   change landed for graph-kernel vertex caches.  Coloring-orbit work-unit
+   scheduling was also prototyped, but rejected: it regressed ordinary and
+   sparse-series rows and did not improve the extended product stress row.
 
 6. **`SparsePoly` mechanics**: initial `entry`-API accumulation landed for
    sparse polynomials and nearby Laurent helpers.  Remaining: consider
@@ -166,6 +175,32 @@ mutation is the difference.
     remaining twisted/series equivariant paths never materialize expanded
     `RatFun` matrices, and share warm calibrations across rays and
     degree/genus sweeps (the product-ray analogue of what bundles already do).
+    For bundles, the low-risk reuse pass landed a rayless classical-data cache
+    for fiber weights, fixed-point restrictions, grading seeds, transition
+    matrices, flat metrics, and the classical relation.  This avoids repeated
+    setup inside bidegree I-coefficients and per-ray kernel construction.
+
+## Follow-up cleanup pass, 2026-07-07
+
+Release/no-cache frontier-suite medians (`repeat=3`) against commit
+`ed90521`, default rational backend:
+
+| area | representative row | before | after | read |
+|---|---|---:|---:|---|
+| product | `P^1 x P^2`, `g=1`, total `d=2` | 0.096s | 0.082s | 1.17x faster, likely from fused series accumulation. |
+| bundle | rank-3 `P(O(2)+O(1)+O(-3))`, shifted `d=3` | 0.556s | 0.541s | 1.03x faster from classical setup reuse plus fused kernels. |
+| bundle | `F_2`, `g=1`, shifted `d=5` | 0.607s | 0.587s | 1.03x faster. |
+| twisted | `P^2`, `O(-1)^3`, `g=2`, `d=2` | 0.065s | 0.064s | Small neutral-to-positive movement. |
+| formula | `g=3`, `m=2` stable graphs | 0.135s | 0.142s | No graph-generator win; the attempted composition visitor was reverted. |
+| series | `P^2`, `g=0,d<=2,m<=4,k<=2` | 0.239s | 0.245s | Within noise/slightly slower; avoid coloring-orbit scheduling by default. |
+
+Rejected experiments:
+
+- Lazy stable-graph composition visitors reduced allocation on paper but
+  regressed `formula_g3_m2`; reverted.
+- Coloring-orbit scheduling gave too much atomic/scheduling overhead.  It
+  regressed the standard suite and was slower on the extended
+  `P^1 x P^1`, `g=3,d=4` row (`2.70s` vs `2.64s`), so it was not kept.
 
 ## Expected effect per frontier row
 

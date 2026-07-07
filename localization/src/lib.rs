@@ -25,6 +25,7 @@ pub mod error;
 pub mod factored;
 pub mod formula;
 pub mod frobenius;
+mod fused;
 pub mod geometry;
 pub mod givental;
 pub mod graphs;

@@ -324,7 +324,7 @@ impl fmt::Display for Rational {
 /// early-specialized computations only need exact rational coefficients.  This
 /// trait lets those two cases share `q`-series and matrix code while keeping the
 /// coefficient representation swappable.
-pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
+pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug + Sized {
     fn zero() -> Self;
     fn one() -> Self;
     fn from_rational(value: Rational) -> Self;
@@ -343,6 +343,18 @@ pub trait Coeff: Clone + PartialEq + Eq + fmt::Debug {
     fn sub(&self, rhs: &Self) -> Self;
     fn mul(&self, rhs: &Self) -> Self;
     fn div(&self, rhs: &Self) -> Self;
+
+    fn add_assign(&mut self, rhs: &Self) {
+        *self = self.add(rhs);
+    }
+
+    fn add_product_assign(&mut self, left: &Self, right: &Self) {
+        if left.is_structurally_zero() || right.is_structurally_zero() {
+            return;
+        }
+        let product = left.mul(right);
+        self.add_assign(&product);
+    }
 
     fn from_usize(value: usize) -> Self {
         Self::from_rational(Rational::from(value))
@@ -398,12 +410,23 @@ impl Coeff for Rational {
         Rational(rational_add_backend(&self.0, &rhs.0))
     }
 
+    fn add_assign(&mut self, rhs: &Self) {
+        self.0 += rhs.0.clone();
+    }
+
     fn sub(&self, rhs: &Self) -> Self {
         Rational(rational_sub_backend(&self.0, &rhs.0))
     }
 
     fn mul(&self, rhs: &Self) -> Self {
         Rational(rational_mul_backend(&self.0, &rhs.0))
+    }
+
+    fn add_product_assign(&mut self, left: &Self, right: &Self) {
+        if left.is_zero() || right.is_zero() {
+            return;
+        }
+        self.0 += rational_mul_backend(&left.0, &right.0);
     }
 
     fn div(&self, rhs: &Self) -> Self {
