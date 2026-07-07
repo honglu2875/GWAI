@@ -544,6 +544,51 @@ pub(crate) fn genus_zero_two_point_s_matrix_pairing_coeff<C: Coeff>(
     Ok(paired.coeff(degree).cloned().unwrap_or_else(C::zero))
 }
 
+pub(crate) fn genus_zero_two_point_raw_s_matrix_pairing_coeff<C: Coeff>(
+    colors: usize,
+    degree: usize,
+    s_order: usize,
+    raw_s_matrix: &SeriesSMatrix<C>,
+    metric: &SeriesMatrix<C>,
+    descendant: &[QSeries<C>],
+    primary: &[QSeries<C>],
+) -> Result<C, GwError> {
+    let s_coeff = raw_s_matrix
+        .coefficient(s_order)
+        .ok_or(GwError::TruncationTooLow)?;
+
+    let mut metric_descendant = vec![QSeries::<C>::zero(degree); colors];
+    for (row, target) in metric_descendant.iter_mut().enumerate() {
+        let mut total = QSeries::<C>::zero(degree);
+        for (col, class_coeff) in descendant.iter().enumerate() {
+            if metric.entry(row, col).is_structurally_zero() || class_coeff.is_structurally_zero() {
+                continue;
+            }
+            total = total.add(&metric.entry(row, col).mul(class_coeff));
+        }
+        *target = total;
+    }
+
+    let mut paired = QSeries::<C>::zero(degree);
+    for (row, metric_descendant_coeff) in metric_descendant.iter().enumerate() {
+        if metric_descendant_coeff.is_structurally_zero() {
+            continue;
+        }
+        for (col, primary_coeff) in primary.iter().enumerate() {
+            if s_coeff.entry(row, col).is_structurally_zero()
+                || primary_coeff.is_structurally_zero()
+            {
+                continue;
+            }
+            let term = metric_descendant_coeff
+                .mul(s_coeff.entry(row, col))
+                .mul(primary_coeff);
+            paired = paired.add(&term);
+        }
+    }
+    Ok(paired.coeff(degree).cloned().unwrap_or_else(C::zero))
+}
+
 pub(crate) fn genus_zero_three_primary_layout(insertions: &[Insertion]) -> bool {
     insertions.len() == 3
         && insertions
@@ -718,6 +763,24 @@ impl FactoredTwistedProjectiveSpaceProvider {
         Ok(metric)
     }
 
+    fn factored_raw_descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
+        let base_weights = self.factored_base_weights();
+        let fiber_weights = self.factored_fiber_weights();
+        NegativeSplitLineHypergeometricModel::<FactoredRatFun>::from_coeff_weights(
+            self.inner.base.n,
+            self.inner.twist.clone(),
+            q_degree,
+            z_order,
+            base_weights,
+            &fiber_weights,
+        )?
+        .birkhoff_descendant_s_matrix(z_order)
+    }
+
     fn factored_genus_zero_two_point_fallback(
         &self,
         degree: usize,
@@ -728,11 +791,11 @@ impl FactoredTwistedProjectiveSpaceProvider {
         else {
             return Ok(None);
         };
-        let s_matrix = self.coeff_descendant_s_matrix(degree, s_order)?;
+        let s_matrix = self.factored_raw_descendant_s_matrix(degree, s_order)?;
         let metric = self.factored_flat_metric_matrix(degree)?;
         let descendant = self.coeff_insertion_vector(&insertions[descendant_idx], degree)?;
         let primary = self.coeff_insertion_vector(&insertions[primary_idx], degree)?;
-        genus_zero_two_point_s_matrix_pairing_coeff(
+        genus_zero_two_point_raw_s_matrix_pairing_coeff(
             self.coeff_colors(),
             degree,
             s_order,
@@ -792,17 +855,8 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix<FactoredRatFun>, GwError> {
-        let base_weights = self.factored_base_weights();
         let fiber_weights = self.factored_fiber_weights();
-        let s_matrix = NegativeSplitLineHypergeometricModel::<FactoredRatFun>::from_coeff_weights(
-            self.inner.base.n,
-            self.inner.twist.clone(),
-            q_degree,
-            z_order,
-            base_weights.clone(),
-            &fiber_weights,
-        )?
-        .birkhoff_descendant_s_matrix(z_order)?;
+        let s_matrix = self.factored_raw_descendant_s_matrix(q_degree, z_order)?;
         let (flat_metric, flat_metric_inverse) =
             twisted_inverse_euler_flat_metric_pair_from_rational_base(
                 self.inner.base.n,

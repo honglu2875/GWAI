@@ -1188,6 +1188,72 @@ fn factored_twisted_two_point_uses_native_s_matrix() {
 }
 
 #[test]
+fn factored_two_point_raw_s_pairing_matches_metric_adjoint_pairing() {
+    let twist = NegativeSplitBundleTwist::new(vec![1]).unwrap();
+    let base = vec![
+        Rational::from(1usize),
+        Rational::from(2usize),
+        Rational::from(4usize),
+    ];
+    let factored_base = base
+        .iter()
+        .cloned()
+        .map(FactoredRatFun::from_rational)
+        .collect::<Vec<_>>();
+    let fiber = vec![FactoredRatFun::variable("mu_0")];
+    let degree = 1;
+    let s_order = 2;
+
+    let raw_s = NegativeSplitLineHypergeometricModel::<FactoredRatFun>::from_coeff_weights(
+        2,
+        twist.clone(),
+        degree,
+        s_order,
+        factored_base,
+        &fiber,
+    )
+    .unwrap()
+    .birkhoff_descendant_s_matrix(s_order)
+    .unwrap();
+    let (metric, metric_inverse) =
+        twisted_inverse_euler_flat_metric_pair_from_rational_base(2, degree, &twist, &base, &fiber)
+            .unwrap();
+    let adjoint_s = metric_adjoint_descendant_s_matrix_with_inverse_coeff(
+        raw_s.clone(),
+        &metric,
+        &metric_inverse,
+    )
+    .unwrap();
+    let mut descendant = vec![QSeries::<FactoredRatFun>::zero(degree); 3];
+    descendant[2] = QSeries::one(degree);
+    let mut primary = vec![QSeries::<FactoredRatFun>::zero(degree); 3];
+    primary[1] = QSeries::one(degree);
+
+    let direct = genus_zero_two_point_raw_s_matrix_pairing_coeff(
+        3,
+        degree,
+        s_order,
+        &raw_s,
+        &metric,
+        &descendant,
+        &primary,
+    )
+    .unwrap();
+    let adjoint = genus_zero_two_point_s_matrix_pairing_coeff(
+        3,
+        degree,
+        s_order,
+        &adjoint_s,
+        &metric,
+        &descendant,
+        &primary,
+    )
+    .unwrap();
+
+    assert_eq!(direct.to_ratfun(), adjoint.to_ratfun());
+}
+
+#[test]
 fn factored_flat_metric_vandermonde_inverse_is_identity() {
     let twist = NegativeSplitBundleTwist::new(vec![3]).unwrap();
     let base = vec![
