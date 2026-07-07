@@ -769,6 +769,9 @@ def main() -> int:
     if args.repeat < 1:
         print("error: --repeat must be at least 1", file=sys.stderr)
         return 2
+    if args.features and args.all_features:
+        print("error: --features and --all-features cannot be used together", file=sys.stderr)
+        return 2
     selected = select_cases(args)
     if args.list:
         for case in selected:
@@ -778,7 +781,7 @@ def main() -> int:
     baseline_rows = load_baseline(args.baseline) if args.baseline else {}
     binary = resolve_binary(args)
     if not args.no_build:
-        build(args.release)
+        build(args.release, args.features, args.all_features)
 
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_dir = Path(args.output_dir)
@@ -805,6 +808,8 @@ def main() -> int:
             graph_cache_dir,
             cold_graph_cache_base,
         )
+        row["profile"] = profile_label(args)
+        row["features"] = feature_label(args)
         attach_baseline(row, baseline_rows.get(case.name), args.regression_percent)
         rows.append(row)
         status = row["status"]
@@ -883,6 +888,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--binary", help="path to gw-pn binary")
     parser.add_argument("--release", action="store_true", help="benchmark target/release/gw-pn")
+    parser.add_argument(
+        "--features",
+        help=(
+            "Cargo features passed to `cargo build --features`; with --no-build this is "
+            "recorded as metadata only"
+        ),
+    )
+    parser.add_argument(
+        "--all-features",
+        action="store_true",
+        help=(
+            "Pass `--all-features` to cargo build; with --no-build this is "
+            "recorded as metadata only"
+        ),
+    )
     parser.add_argument("--no-build", action="store_true", help="skip cargo build")
     return parser.parse_args()
 
@@ -916,10 +936,26 @@ def resolve_binary(args: argparse.Namespace) -> Path:
     return Path("target") / profile / "gw-pn"
 
 
-def build(release: bool) -> None:
+def profile_label(args: argparse.Namespace) -> str:
+    return "release" if args.release else "debug"
+
+
+def feature_label(args: argparse.Namespace) -> str:
+    if args.all_features:
+        return "all"
+    if args.features:
+        return args.features
+    return "default"
+
+
+def build(release: bool, features: str | None, all_features: bool) -> None:
     cmd = ["cargo", "build", "--quiet"]
     if release:
         cmd.insert(2, "--release")
+    if all_features:
+        cmd.append("--all-features")
+    elif features:
+        cmd.extend(["--features", features])
     subprocess.run(cmd, check=True)
 
 
@@ -1133,6 +1169,8 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         "elapsed_max_s",
         "elapsed_samples_s",
         "repeat",
+        "profile",
+        "features",
         "graph_cache_mode",
         "graph_cache_dirs",
         "baseline_s",
@@ -1162,7 +1200,8 @@ def write_markdown(path: Path, rows: list[dict[str, object]], args: argparse.Nam
         f"- timeout: `{args.timeout:.1f}s`",
         f"- frontier threshold: `{args.frontier_seconds:.1f}s`",
         f"- repeat: `{args.repeat}`",
-        f"- profile: `{'release' if args.release else 'debug'}`",
+        f"- profile: `{profile_label(args)}`",
+        f"- cargo features: `{feature_label(args)}`",
         f"- graph cache mode: `{args.graph_cache_mode}`",
         f"- baseline: `{args.baseline or 'none'}`",
         "",

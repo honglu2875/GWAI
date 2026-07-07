@@ -21,6 +21,7 @@ scripts/run-perf-frontiers.sh --suite smoke --save-baseline
 scripts/run-perf-frontiers.sh --baseline target/perf-frontiers/baseline.csv --repeat 3
 scripts/run-perf-frontiers.sh --suite extended --case extended --no-build
 scripts/run-perf-frontiers.sh --graph-cache-mode cold --timeout 90 --no-build
+scripts/run-perf-frontiers.sh --release --features gmp-rational --graph-cache-mode off --case bundle
 ```
 
 The current stable-graph generator is exact but naive for higher genus and
@@ -42,6 +43,8 @@ By default, the harness stores stable graph tables under
 benchmark an unwritable home-cache path.  Use `--graph-cache-mode cold` to give
 each case attempt a fresh stable-graph cache directory, or `--graph-cache-mode
 off` to set `GWAI_DISABLE_GRAPH_CACHE=1`.  The wrapper also accepts
-`GW_PERF_GRAPH_CACHE_MODE=shared|cold|off`.
+`GW_PERF_GRAPH_CACHE_MODE=shared|cold|off`.  Use `--features gmp-rational` or
+`GW_PERF_FEATURES=gmp-rational` to build and record the optional GMP rational
+backend; use `--release` for algebra-heavy tuning decisions.
 Use `--save-baseline` before an optimization pass and `--baseline PATH` after
 it to get percentage deltas; use `--repeat N` for noisy rows.

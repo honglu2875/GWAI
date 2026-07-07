@@ -1,6 +1,7 @@
 # Performance Tuning Plan
 
-> Status: initial plan plus first implementation pass, 2026-07-06.
+> Status: initial plan plus first implementation pass, 2026-07-06; optional
+> GMP rational backend landed behind `gmp-rational` on 2026-07-07.
 > Measurements below are from one 240-core GCP machine.  The first pass landed
 > release debug symbols, stable-graph phase attribution, uncapped graph
 > workers, graph-level dynamic scheduling, product ray parallelism, sparse
@@ -70,13 +71,13 @@ mutation is the difference.
 ### Tier 1 — cross-cutting, high leverage (days each)
 
 1. **Bignum backend swap** (`algebra.rs` only — `Rational` is already a
-   newtype and no `BigInt`/`BigRational` leaks outside the file).  Put a
-   GMP-backed `rug::Rational` behind a cargo feature, keep `num` as the
-   default/fallback for pure-Rust builds.  Expected: 1.5–2.5x on the rational
-   contraction tier (~40% of it is GCD), and one order of magnitude or more on
-   the factored/equivariant paths (86% GCD).  Every backend — twisted,
-   product, bundle, psi — inherits the win.  License note: GMP is LGPL,
-   dynamically linked; the feature gate keeps the MIT/Apache default intact.
+   newtype and no `BigInt`/`BigRational` leaks outside the file).  Landed:
+   `rug::Rational` is available behind the `gmp-rational` cargo feature, while
+   `num` remains the default/fallback for pure-Rust builds.  No-cache release
+   rows show roughly 1.2-5x speedups across sampled Givental, product, bundle,
+   and twisted paths, with the largest wins in projective-bundle arithmetic.
+   License note: GMP is LGPL, dynamically linked; the feature gate keeps the
+   MIT/Apache default intact.
 
 2. **Parallelism overhaul in the contraction engine** (`givental/graph.rs`):
    - Landed: default worker count is `available_parallelism()` capped by work items,
@@ -153,7 +154,13 @@ mutation is the difference.
    and keep the symbolic path as the validation twin.  This turns the
    16-minute-plus stress rows into seconds and sidesteps expression swell
    entirely where the polynomial-collapse hypothesis holds (rational-function
-   reconstruction with degree bounds covers the rest).
+   reconstruction with degree bounds covers the rest).  Caveat from the
+   2026-07-07 probe: raw rational fiber-weight specialization before the
+   symbolic Birkhoff/mirror-coordinate work is not valid as a drop-in
+   replacement.  Degree-one `O(-2)` and `O(-3)` checks over `P^2` reconstruct
+   shifted polynomials instead of the symbolic top terms, so any reconstruction
+   shortcut must be guarded behind a feature flag and validated against the
+   symbolic path after the correct coordinate identification is implemented.
 
 10. **Genericize the J-calibration solve over `Coeff`** (README TODO) so the
     remaining twisted/series equivariant paths never materialize expanded
@@ -174,11 +181,13 @@ mutation is the difference.
 ## Validation workflow
 
 Unchanged from the crate's discipline: every tuning change gates on
-`cargo test`, `gw-pn tests`, the A/B escape hatches
+`cargo test`, `cargo test --features gmp-rational`, `gw-pn tests`, the A/B escape hatches
 (`GWAI_DISABLE_RATIONAL_GRAPH`, `GWAI_DISABLE_FACTORED_GRAPH`), and a
 frontier-harness pass against a saved baseline
 (`scripts/run-perf-frontiers.sh --save-baseline` before, `--baseline` after —
-adding `--release` rows for algebra-sensitive changes).  Determinism caveats:
+adding `--release` rows for algebra-sensitive changes, and
+`--features gmp-rational` when measuring the optional rational backend).
+Determinism caveats:
 parallel work-stealing must reduce results in a fixed order (sum per unit into
 per-worker accumulators, then combine in unit order) so outputs stay
 bit-identical, and the graph generator's output order is part of the disk

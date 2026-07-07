@@ -41,3 +41,6 @@ jobs:
 
       - name: Test
         run: cargo test
+
+      - name: Test optional GMP rational backend
+        run: cargo test --features gmp-rational

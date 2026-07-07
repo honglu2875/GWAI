@@ -26,6 +26,8 @@ GW_PERF_TIMEOUT=75
 GW_PERF_FRONTIER_SECONDS=55
 GW_PERF_REPEAT=1
 GW_PERF_GRAPH_CACHE_MODE=shared
+GW_PERF_FEATURES=
+GW_PERF_ALL_FEATURES=
 ```
 
 The passes below were run on 2026-07-06 with:
@@ -71,6 +73,36 @@ frontiers: it gives each case attempt a fresh stable-graph disk cache and
 records the cache mode in the CSV/JSONL artifacts.  The table below keeps both
 views.  Stable-graph cold generation remains visible, but parallel prefix
 generation moved the sampled cold formula rows well below the previous timeout.
+
+## GMP Backend Snapshot
+
+The optional `gmp-rational` feature was measured on 2026-07-07 with release
+builds, one fresh CLI process per row, and `--graph-cache-mode off` so the
+stable-graph disk cache could not hide cold costs.  These rows are the right
+scale for algebra-heavy tuning decisions; debug-build measurements show much
+larger speedups but overstate the production effect.
+
+Command shape:
+
+```sh
+scripts/run-perf-frontiers.sh --release --graph-cache-mode off --case CASE
+scripts/run-perf-frontiers.sh --release --features gmp-rational --graph-cache-mode off --case CASE
+```
+
+| mode | probe | default release | GMP release | speedup |
+|---|---|---:|---:|---:|
+| givental | `P^3`, `g=2`, `d=2`, `tau6(H^3)` | 0.141s | 0.060s | 2.34x |
+| product | `P^1 x P^1`, `g=2`, total `d=3`, `tau6(point)` | 0.233s | 0.095s | 2.44x |
+| bundle | `P(O+O(2))`, `g=1`, shifted `d=5`, three `tau1(point)` | 0.615s | 0.184s | 3.34x |
+| bundle | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3` | 0.556s | 0.113s | 4.94x |
+| twisted | local `P^2`, `O(-3)`, `g=2`, `d=3` | 0.131s | 0.048s | 2.72x |
+| twisted | `P^2`, `O(-1)`, factored equivariant, `g=0`, `d=1` | 0.009s | 0.007s | 1.20x |
+
+Read: the GMP backend is a real cross-cutting win, especially in bundle and
+twisted rational paths, while very small factored symbolic rows are dominated
+by setup rather than rational arithmetic.  Keep the default backend pure Rust;
+use `gmp-rational` for frontier hunting and production runs where the LGPL
+system dependency is acceptable.
 
 ## Measured Rows
 

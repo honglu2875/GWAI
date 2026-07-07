@@ -37,6 +37,12 @@ Run Rust unit tests:
 cargo test --quiet
 ```
 
+The optional GMP rational backend is behind a feature flag:
+
+```bash
+cargo test --quiet --features gmp-rational
+```
+
 ## Insertions
 
 Insertions are written as `tauK(CLASS)`.
