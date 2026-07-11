@@ -292,13 +292,6 @@ pub(crate) fn projective_space_graph_kernel(
 pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
 
-    if !is_stable_cohft_range(req.genus, req.insertions.len()) {
-        return Err(GwError::UnsupportedInvariant(
-            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
-                .to_string(),
-        ));
-    }
-
     if let Some((virtual_dimension, total_degree)) =
         dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
     {
@@ -309,6 +302,13 @@ pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantRes
                 "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
             )],
         });
+    }
+
+    if !is_stable_cohft_range(req.genus, req.insertions.len()) {
+        return Err(GwError::UnsupportedInvariant(
+            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
+                .to_string(),
+        ));
     }
 
     if req.equivariant {
@@ -374,7 +374,23 @@ where
 {
     let total_degree = provider.insertion_degree(insertions)?;
     let virtual_dimension = provider.virtual_dimension(genus, degree, insertions.len())?;
-    (virtual_dimension >= 0 && total_degree as isize != virtual_dimension)
+    provider
+        .vanishes_by_dimension(virtual_dimension, total_degree)
+        .then_some((virtual_dimension, total_degree))
+}
+
+fn exact_dimension_mismatch<P>(
+    provider: &P,
+    genus: usize,
+    degree: usize,
+    insertions: &[P::Insertion],
+) -> Option<(isize, usize)>
+where
+    P: SemisimpleCohftProvider,
+{
+    let total_degree = provider.insertion_degree(insertions)?;
+    let virtual_dimension = provider.virtual_dimension(genus, degree, insertions.len())?;
+    (usize::try_from(virtual_dimension).ok() != Some(total_degree))
         .then_some((virtual_dimension, total_degree))
 }
 
@@ -888,7 +904,7 @@ where
         })
         .collect::<Vec<_>>();
     let mut notes = vec![
-        "series enumerates a bounded sparse descendant potential; unsupported dimension-valid coefficients are skipped"
+        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and nonequivariant profiles are dimension-pruned"
             .to_string(),
     ];
     let basis = crate::insertion_basis(req.n, req.max_descendant_power);
@@ -1079,7 +1095,11 @@ where
     let mut task_indices = Vec::<ResolventIndex>::new();
     let candidate_terms = enumerate_resolvent_indices(req, |index| {
         let insertions = index.to_insertions(req.target_n);
-        if evaluator.is_dimension_mismatch(req.degree, &insertions) {
+        // A resolvent is intentionally the exact virtual-dimension slice,
+        // even when its coefficients retain equivariant parameters.
+        if exact_dimension_mismatch(&evaluator.provider, req.genus, req.degree, &insertions)
+            .is_some()
+        {
             return Ok(());
         }
         evaluator.validate_truncation(req.markings, &insertions)?;
@@ -1168,7 +1188,10 @@ where
         let mut value = ResolventPolynomial::zero();
         let mut nonzero_terms = 0usize;
         let candidate_terms = usize::from(req.virtual_dimension == 0);
-        if req.virtual_dimension == 0 {
+        let provider_dimension_matches = provider
+            .coeff_virtual_dimension(req.genus, req.degree, 0)
+            .is_none_or(|virtual_dimension| usize::try_from(virtual_dimension).ok() == Some(0));
+        if req.virtual_dimension == 0 && provider_dimension_matches {
             let coefficient = compute_semisimple_graph_value_with_coeff::<C, _>(
                 &provider,
                 req.genus,
@@ -1210,7 +1233,7 @@ where
             provider.coeff_insertion_degree(&insertions),
             provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
         ) {
-            if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
+            if usize::try_from(virtual_dimension).ok() != Some(total_degree) {
                 return Ok(());
             }
         }
@@ -1355,7 +1378,10 @@ where
     let mut value = ResolventPolynomial::zero();
     let mut nonzero_terms = 0usize;
     let candidate_terms = usize::from(req.virtual_dimension == 0);
-    if req.virtual_dimension == 0 {
+    let provider_dimension_matches = provider
+        .virtual_dimension(req.genus, req.degree, 0)
+        .is_none_or(|virtual_dimension| usize::try_from(virtual_dimension).ok() == Some(0));
+    if req.virtual_dimension == 0 && provider_dimension_matches {
         let coefficient =
             compute_semisimple_graph_value(provider, req.genus, req.degree, &[], None)?;
         let normalized = normalize(coefficient)?;

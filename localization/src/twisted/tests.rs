@@ -822,6 +822,40 @@ fn fiber_equivariant_twisted_does_not_prune_dimension_mismatch() {
 }
 
 #[test]
+fn nonequivariant_negative_virtual_dimension_is_zero() {
+    let req = TwistedInvariantRequest::new(2, vec![4], 2, 1, Vec::new()).unwrap();
+    let result = compute_negative_split_twisted(&req).unwrap();
+    assert_eq!(result.value, RatFun::zero());
+    assert_eq!(result.engine, "twisted-negative-split-dimension");
+    assert!(result.notes[0].contains("virtual dimension -1"));
+}
+
+#[test]
+fn factored_negative_virtual_dimension_takes_base_limit() {
+    let mut req = TwistedInvariantRequest::new(
+        1,
+        vec![5],
+        0,
+        1,
+        vec![tau(0, CohomologyClass::h_power(1, 1)); 3],
+    )
+    .unwrap();
+    req.equivariant = true;
+
+    let expected = RatFun::variable("mu_0").pow_usize(4);
+    assert_eq!(
+        compute_negative_split_twisted(&req).unwrap().value,
+        expected
+    );
+    assert_eq!(
+        compute_negative_split_twisted_factored(&req)
+            .unwrap()
+            .to_ratfun(),
+        expected
+    );
+}
+
+#[test]
 fn fiber_equivariant_degree_one_top_terms_match_untwisted_p2() {
     let insertions = vec![
         tau(0, CohomologyClass::h_power(2, 2)),

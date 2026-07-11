@@ -28,7 +28,7 @@ pub fn seed_compute(
     // ranges; validation tests may call them explicitly.
     if let Some(total_degree) = req.insertion_degree() {
         let virtual_dimension = req.virtual_dimension();
-        if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
+        if !req.equivariant && usize::try_from(virtual_dimension).ok() != Some(total_degree) {
             return Ok(InvariantResult {
                 value: RatFun::zero(),
                 engine,

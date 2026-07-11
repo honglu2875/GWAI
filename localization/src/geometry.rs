@@ -302,6 +302,14 @@ mod tests {
     }
 
     #[test]
+    fn p1_excess_degree_pairing_is_an_equivariant_class() {
+        let p1 = EquivariantProjectiveSpace::new(1);
+        let h = CohomologyClass::h_power(1, 1);
+        let expected = &lambda(0) + &lambda(1);
+        assert!((&p1.pairing(&h, &h) - &expected).is_zero());
+    }
+
+    #[test]
     fn quantum_relation_reduces_h_power() {
         let p2 = EquivariantProjectiveSpace::new(2);
         let h = CohomologyClass::h_power(2, 1);

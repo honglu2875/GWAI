@@ -26,7 +26,7 @@ pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
 
     if let Some(total_degree) = req.insertion_degree() {
         let virtual_dimension = req.virtual_dimension();
-        if virtual_dimension >= 0 && total_degree as isize != virtual_dimension {
+        if usize::try_from(virtual_dimension).ok() != Some(total_degree) {
             return Ok(result(Rational::zero(), "dimension mismatch gives zero"));
         }
     }

@@ -307,7 +307,7 @@ impl fmt::Display for Rational {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         #[cfg(feature = "gmp-rational")]
         {
-            return write!(f, "{}", self.0);
+            write!(f, "{}", self.0)
         }
         #[cfg(not(feature = "gmp-rational"))]
         if self.0.denom().is_one() {

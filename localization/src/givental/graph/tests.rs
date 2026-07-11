@@ -451,6 +451,44 @@ fn equivariant_compute_limits_to_nonequivariant_value() {
 }
 
 #[test]
+fn equivariant_excess_degree_is_not_pruned() {
+    // In degree zero this is the classical Atiyah-Bott integral
+    // integral_{P1} H^2 = lambda_0 + lambda_1.
+    let insertions = vec![
+        tau(0, CohomologyClass::one(1)),
+        tau(0, CohomologyClass::h_power(1, 1)),
+        tau(0, CohomologyClass::h_power(1, 1)),
+    ];
+    let nonequivariant =
+        compute_by_givental_graphs(&InvariantRequest::new(1, 0, 0, insertions.clone())).unwrap();
+    assert_eq!(nonequivariant.value, RatFun::zero());
+
+    let equivariant_req = InvariantRequest {
+        equivariant: true,
+        ..InvariantRequest::new(1, 0, 0, insertions)
+    };
+    let equivariant = compute_by_givental_graphs(&equivariant_req).unwrap();
+    assert_eq!(equivariant.engine, "givental-r-graph");
+    let expected = &crate::algebra::lambda(0) + &crate::algebra::lambda(1);
+    assert!((&equivariant.value - &expected).is_zero());
+    assert_eq!(
+        equivariant
+            .value
+            .evaluate_lambda_weights(1, &[Rational::from(2), Rational::from(5)])
+            .unwrap(),
+        Rational::from(7)
+    );
+}
+
+#[test]
+fn nonequivariant_negative_virtual_dimension_is_zero() {
+    let result = compute_by_givental_graphs(&InvariantRequest::new(5, 2, 0, Vec::new())).unwrap();
+    assert_eq!(result.value, RatFun::zero());
+    assert_eq!(result.engine, "givental-r-graph");
+    assert!(result.notes[0].contains("virtual dimension -2"));
+}
+
+#[test]
 fn factored_graph_path_matches_symbolic_evaluator() {
     // Symbolic equivariant kernel: coefficients are genuine rational
     // functions in lambda, so the factored tier engages.  Compare against the
@@ -901,6 +939,45 @@ fn packed_resolvent_matches_invariant_wise_projective_resolver() {
     assert_eq!(packed.value, invariant_wise.value);
     assert_eq!(packed.candidate_terms, invariant_wise.candidate_terms);
     assert_eq!(packed.nonzero_terms, invariant_wise.nonzero_terms);
+}
+
+#[test]
+fn zero_marking_packed_resolvent_checks_provider_dimension() {
+    // The public request is intentionally inconsistent: its claimed virtual
+    // dimension is zero, while P^5 at (g,d,m)=(2,0,0) has dimension -2.
+    // Both packed paths must filter the empty insertion instead of evaluating
+    // the negative-dimensional graph sum.
+    let req = ResolventRequest {
+        target_n: 5,
+        genus: 2,
+        degree: 0,
+        markings: 0,
+        virtual_dimension: 0,
+    };
+    let provider = ProjectiveSpaceProvider::new(5, false);
+    let expanded = compute_packed_resolvent_with_provider(
+        &req,
+        provider.clone(),
+        "test-expanded-resolvent",
+        "test",
+        Ok::<RatFun, GwError>,
+    )
+    .unwrap();
+    assert!(expanded.value.is_zero());
+    assert_eq!(expanded.candidate_terms, 1);
+    assert_eq!(expanded.nonzero_terms, 0);
+
+    let generic = compute_packed_resolvent_with_coeff_provider::<RatFun, _, _>(
+        &req,
+        provider,
+        "test-generic-resolvent",
+        "test",
+        Ok::<RatFun, GwError>,
+    )
+    .unwrap();
+    assert!(generic.value.is_zero());
+    assert_eq!(generic.candidate_terms, 1);
+    assert_eq!(generic.nonzero_terms, 0);
 }
 
 fn assert_r_matrix_unitary_after_lambda_eval(

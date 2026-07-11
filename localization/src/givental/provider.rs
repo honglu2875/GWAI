@@ -55,6 +55,17 @@ pub trait SemisimpleCohftProvider {
         None
     }
 
+    /// Whether a correlator is forced to vanish by the grading of the output
+    /// coefficient ring.
+    ///
+    /// The default is the nonequivariant scalar rule: a known homogeneous
+    /// insertion degree must equal a nonnegative virtual dimension.  Providers
+    /// whose output retains equivariant parameters may override this because
+    /// excess insertion degree can be carried by those parameters.
+    fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        usize::try_from(virtual_dimension).ok() != Some(total_degree)
+    }
+
     fn expected_degree_from_dimension(
         &self,
         _genus: usize,
@@ -380,6 +391,19 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         )
     }
 
+    fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        if self.equivariant {
+            // A proper equivariant pushforward has parameter degree
+            // `total_degree - virtual_dimension`.  Only negative parameter
+            // degree is forced to vanish; excess degree can be nonzero.
+            usize::try_from(virtual_dimension)
+                .ok()
+                .is_some_and(|dimension| total_degree < dimension)
+        } else {
+            usize::try_from(virtual_dimension).ok() != Some(total_degree)
+        }
+    }
+
     fn expected_degree_from_dimension(
         &self,
         genus: usize,
@@ -402,6 +426,19 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         degree_max: usize,
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
+        if self.equivariant {
+            let Some(total_degree) = self.insertion_degree(insertions) else {
+                return (0..=degree_max).collect();
+            };
+            return (0..=degree_max)
+                .filter(|degree| {
+                    self.virtual_dimension(genus, *degree, insertions.len())
+                        .is_none_or(|virtual_dimension| {
+                            !self.vanishes_by_dimension(virtual_dimension, total_degree)
+                        })
+                })
+                .collect();
+        }
         self.expected_degree_from_dimension(genus, insertions)
             .filter(|degree| *degree <= degree_max)
             .into_iter()

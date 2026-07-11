@@ -207,9 +207,12 @@ pub fn compute_negative_split_twisted_factored(
         req.n,
         req.twist.degrees().to_vec(),
     )?;
-    if twisted_dimension_mismatch(provider.inner(), req.genus, req.degree, &req.insertions)
-        .is_some()
-    {
+    let dimension_matches =
+        twisted_dimension_data(provider.inner(), req.genus, req.degree, &req.insertions)
+            .is_some_and(|(virtual_dimension, total_degree)| {
+                usize::try_from(virtual_dimension).ok() == Some(total_degree)
+            });
+    if !dimension_matches {
         return compute_negative_split_twisted(req)
             .map(|result| FactoredRatFun::from_ratfun(result.value));
     }
@@ -295,10 +298,21 @@ pub(crate) fn twisted_dimension_mismatch(
     degree: usize,
     insertions: &[Insertion],
 ) -> Option<(isize, usize)> {
+    let (virtual_dimension, total_degree) =
+        twisted_dimension_data(provider, genus, degree, insertions)?;
+    (usize::try_from(virtual_dimension).ok() != Some(total_degree))
+        .then_some((virtual_dimension, total_degree))
+}
+
+fn twisted_dimension_data(
+    provider: &TwistedProjectiveSpaceProvider,
+    genus: usize,
+    degree: usize,
+    insertions: &[Insertion],
+) -> Option<(isize, usize)> {
     let total_degree = provider.insertion_degree(insertions)?;
     let virtual_dimension = provider.virtual_dimension(genus, degree, insertions.len())?;
-    (virtual_dimension >= 0 && total_degree as isize != virtual_dimension)
-        .then_some((virtual_dimension, total_degree))
+    Some((virtual_dimension, total_degree))
 }
 
 impl TwistedProjectiveSpaceProvider {
@@ -1029,6 +1043,17 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
             self.twist
                 .virtual_dimension(self.base.n, genus, degree, markings),
         )
+    }
+
+    fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        if self.line_mode == TwistedLineMode::FiberEquivariant {
+            // The fiber parameters can carry excess degree.  Keep the
+            // localized theory conservative here: degree-zero inverse-Euler
+            // twists can also have negative parameter degree.
+            false
+        } else {
+            usize::try_from(virtual_dimension).ok() != Some(total_degree)
+        }
     }
 
     fn expected_degree_from_dimension(

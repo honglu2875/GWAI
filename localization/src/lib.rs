@@ -249,7 +249,7 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
 
     let mut coefficients = Vec::new();
     let mut notes = vec![
-        "series enumerates a bounded sparse descendant potential; unsupported dimension-valid coefficients are skipped"
+        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and nonequivariant profiles are dimension-pruned"
             .to_string(),
     ];
     let mut engine = "series";
@@ -258,6 +258,12 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
 
     for markings in 0..=req.max_markings {
         for insertions in insertion_monomials(&basis, markings) {
+            if req.equivariant {
+                for bucket in &mut candidates_by_degree {
+                    bucket.push(insertions.clone());
+                }
+                continue;
+            }
             let probe_req = req.coefficient_request(0, insertions.clone());
             if probe_req.insertion_degree().is_some() {
                 if let Some(expected_degree) = probe_req.expected_degree_from_dimension() {
@@ -286,9 +292,10 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
         });
         for insertions in candidates {
             let coefficient_req = req.coefficient_request(degree, insertions.clone());
-            if coefficient_req
-                .insertion_degree()
-                .is_some_and(|actual| actual as isize != coefficient_req.virtual_dimension())
+            if !req.equivariant
+                && coefficient_req.insertion_degree().is_some_and(|actual| {
+                    usize::try_from(coefficient_req.virtual_dimension()).ok() != Some(actual)
+                })
             {
                 continue;
             }
@@ -453,5 +460,30 @@ mod tests {
                 && coefficient.value == RatFun::from_rational(algebra::Rational::new(1, 576))
                 && coefficient.insertion_label() == "tau6(H)"
         }));
+    }
+
+    #[test]
+    fn equivariant_series_keeps_excess_degree_coefficients() {
+        let mut req = SeriesRequest::new(1, 0, 0, 3);
+        req.equivariant = true;
+        let series = compute_series(req).unwrap();
+        let coefficient = series
+            .coefficients
+            .iter()
+            .find(|coefficient| {
+                coefficient.degree == 0
+                    && coefficient.insertion_label() == "tau0(1) tau0(H) tau0(H)"
+            })
+            .expect("equivariant degree-zero H^2 coefficient should be retained");
+        assert_eq!(
+            coefficient
+                .value
+                .evaluate_lambda_weights(
+                    1,
+                    &[algebra::Rational::from(2), algebra::Rational::from(5)],
+                )
+                .unwrap(),
+            algebra::Rational::from(7)
+        );
     }
 }

@@ -99,8 +99,11 @@ cargo run --quiet -- compute --n <n> --g <genus> --d <degree> \
   --mode givental
 ```
 
-`--d` may be omitted: for `P^n` the dimension constraint determines the degree
-from the genus and insertions, and the CLI infers and reports it.
+`--d` may be omitted: the CLI then infers and reports the degree selected by
+the nonequivariant dimension constraint.  Pass `--d` explicitly when requesting
+an off-dimension equivariant class.  Nonequivariant requests vanish unless the
+insertion degree equals a nonnegative virtual dimension; equivariant requests
+can retain excess degree as a polynomial in the torus weights.
 
 Supported `--mode` values:
 
@@ -438,10 +441,12 @@ sum_{a_i,k_i} <prod_i tau_{k_i}(H^{a_i})>_{g,d}
   prod_i t_i^{a_i}/a_i! * z_i^{-k_i-1}.
 ```
 
-For fixed genus, degree, and number of markings, the virtual dimension fixes
-`sum_i(a_i+k_i)`, so this is a finite Laurent polynomial in the `z_i^{-1}` and
-a polynomial in the `t_i`.  Each coefficient is simplified by the same exact
-algebra engine used elsewhere in the crate.
+The resolvent is defined to be the exact virtual-dimension slice
+`sum_i(a_i+k_i) = vdim`, so it is a finite Laurent polynomial in the `z_i^{-1}`
+and a polynomial in the `t_i`.  This remains the definition with
+`--equivariant`; that flag changes the coefficient ring, not the slice.  Each
+coefficient is simplified by the same exact algebra engine used elsewhere in
+the crate.
 
 The command uses the packed S/R external-leg graph evaluator by default: it
 precontracts the stable-graph sum once for fixed `(g,d,m)` and attaches all
@@ -502,9 +507,10 @@ cargo run --quiet -- degree-series --n 2 --twist -1 --g 2 --d-max 2 \
 Degree ranges default to `--d-min 0` in the ordinary theory and `--d-min 1` in
 the negative split-bundle theory. You can override this with `--d-min`.
 When `--max-markings` is supplied, the command enumerates all monomials in
-`tauK(1),...,tauK(H^n)` up to those bounds and prunes dimension-incompatible
-profiles before running the graph evaluator. `--include-zero` prints computed
-zero values too.
+`tauK(1),...,tauK(H^n)` up to those bounds.  Nonequivariant scans prune profiles
+outside the exact virtual dimension.  Equivariant scans retain excess-degree
+profiles (and conservatively retain every bounded profile for localized
+negative-split twists). `--include-zero` prints computed zero values too.
 
 ## `genus-series`
 

@@ -883,7 +883,14 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
         InsertionSelection::Bounded(scan) => {
             for degree in degree_min..=degree_max {
                 for insertions in &scan.profiles {
-                    if !dimension_compatible(n, twist_model.as_ref(), genus, degree, insertions) {
+                    if !dimension_compatible(
+                        n,
+                        twist_model.as_ref(),
+                        genus,
+                        degree,
+                        insertions,
+                        equivariant,
+                    ) {
                         continue;
                     }
                     let label = insertion_list_label(insertions);
@@ -966,7 +973,14 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
         InsertionSelection::Bounded(scan) => {
             for genus in genus_min..=genus_max {
                 for insertions in &scan.profiles {
-                    if !dimension_compatible(n, twist_model.as_ref(), genus, degree, insertions) {
+                    if !dimension_compatible(
+                        n,
+                        twist_model.as_ref(),
+                        genus,
+                        degree,
+                        insertions,
+                        equivariant,
+                    ) {
                         continue;
                     }
                     let label = insertion_list_label(insertions);
@@ -1536,6 +1550,7 @@ fn dimension_compatible(
     genus: usize,
     degree: usize,
     insertions: &[gw_pn::Insertion],
+    equivariant: bool,
 ) -> bool {
     let Some(total_degree) = insertion_degree(insertions) else {
         return true;
@@ -1544,7 +1559,16 @@ fn dimension_compatible(
         Some(twist) => twist.virtual_dimension(n, genus, degree, insertions.len()),
         None => ordinary_virtual_dimension(n, genus, degree, insertions.len()),
     };
-    virtual_dimension >= 0 && total_degree as isize == virtual_dimension
+    if equivariant {
+        // Fiber-equivariant twists are represented over a localized
+        // coefficient ring, so retain every bounded profile.  Ordinary
+        // equivariant pushforwards only vanish in negative parameter degree.
+        return twist.is_some()
+            || usize::try_from(virtual_dimension)
+                .ok()
+                .is_none_or(|dimension| total_degree >= dimension);
+    }
+    usize::try_from(virtual_dimension).ok() == Some(total_degree)
 }
 
 fn ordinary_virtual_dimension(n: usize, genus: usize, degree: usize, markings: usize) -> isize {
@@ -1582,6 +1606,20 @@ fn insertion_list_label(insertions: &[gw_pn::Insertion]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_scan_dimension_filter_respects_coefficient_ring() {
+        let insertions = vec![
+            tau(0, CohomologyClass::one(1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+            tau(0, CohomologyClass::h_power(1, 1)),
+        ];
+        assert!(!dimension_compatible(1, None, 0, 0, &insertions, false));
+        assert!(dimension_compatible(1, None, 0, 0, &insertions, true));
+
+        assert!(!dimension_compatible(5, None, 2, 0, &[], false));
+        assert!(dimension_compatible(5, None, 2, 0, &[], true));
+    }
 
     #[test]
     fn cli_parses_negative_twist_value() {
