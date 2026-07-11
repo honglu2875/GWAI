@@ -524,19 +524,16 @@ impl Monomial {
         let mut degree = 0i32;
         let mut coefficient = Rational::one();
         for (id, exp) in &self.0 {
-            if let Some(idx) = symbol_lambda_index(*id) {
-                if idx >= weights.len() {
-                    return None;
-                }
-                degree += *exp;
-                if *exp >= 0 {
-                    coefficient = coefficient * weights[idx].pow_usize(*exp as usize);
-                } else {
-                    let reciprocal = Rational::one() / weights[idx].pow_usize((-*exp) as usize);
-                    coefficient = coefficient * reciprocal;
-                }
-            } else {
+            let idx = symbol_lambda_index(*id)?;
+            if idx >= weights.len() {
                 return None;
+            }
+            degree += *exp;
+            if *exp >= 0 {
+                coefficient = coefficient * weights[idx].pow_usize(*exp as usize);
+            } else {
+                let reciprocal = Rational::one() / weights[idx].pow_usize((-*exp) as usize);
+                coefficient = coefficient * reciprocal;
             }
         }
         Some((degree, coefficient))
