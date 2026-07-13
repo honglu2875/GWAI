@@ -27,7 +27,30 @@ pub struct ResolventRequest {
     pub genus: usize,
     pub degree: usize,
     pub markings: usize,
+    /// The exact dimension slice to enumerate. Provider-backed entry points
+    /// validate this value before every early return. The generic callback
+    /// evaluator cannot infer a theory and therefore treats it as trusted.
     pub virtual_dimension: isize,
+}
+
+impl ResolventRequest {
+    pub fn for_projective_space(
+        target_n: usize,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Self {
+        let virtual_dimension = (1 - genus as isize) * (target_n as isize - 3)
+            + (target_n + 1) as isize * degree as isize
+            + markings as isize;
+        Self {
+            target_n,
+            genus,
+            degree,
+            markings,
+            virtual_dimension,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +181,11 @@ impl<C: Coeff> ResolventPolynomial<C> {
         descendant_powers: &[usize],
         coefficient: C,
     ) {
+        assert_eq!(
+            h_powers.len(),
+            descendant_powers.len(),
+            "resolvent coefficient must have one H-power and one descendant power per marking"
+        );
         let (monomial, scalar) = resolvent_monomial(h_powers, descendant_powers);
         self.add_term(monomial, coefficient.mul(&C::from_rational(scalar)));
     }
@@ -196,6 +224,24 @@ impl ResolventPolynomial<FactoredRatFun> {
             );
         }
         Ok(out)
+    }
+}
+
+impl ResolventPolynomial<RatFun> {
+    /// Whether two Laurent polynomials have the same rational-function
+    /// coefficient at every labelled resolvent monomial.
+    ///
+    /// Structural [`PartialEq`] remains available for callers that need to
+    /// compare the exact stored numerator/denominator representations.
+    pub fn equivalent(&self, rhs: &Self) -> bool {
+        self.terms.iter().all(|(monomial, coefficient)| {
+            rhs.terms.get(monomial).map_or_else(
+                || coefficient.is_zero(),
+                |other| coefficient.equivalent(other),
+            )
+        }) && rhs.terms.iter().all(|(monomial, coefficient)| {
+            self.terms.contains_key(monomial) || coefficient.is_zero()
+        })
     }
 }
 
@@ -520,6 +566,15 @@ mod tests {
     use super::*;
 
     #[test]
+    #[should_panic(
+        expected = "resolvent coefficient must have one H-power and one descendant power per marking"
+    )]
+    fn polynomial_rejects_mismatched_coefficient_index_lengths() {
+        let mut value = ResolventPolynomial::<RatFun>::zero();
+        value.add_coefficient(&[1], &[], RatFun::one());
+    }
+
+    #[test]
     fn finite_resolvent_sum_matches_manual_one_marking_expression() {
         let req = ResolventRequest {
             target_n: 1,
@@ -603,5 +658,34 @@ mod tests {
         );
 
         assert_eq!(value.to_string(), "-(1/2)*1/(z0) + t0/(z0)");
+    }
+
+    #[test]
+    fn resolvent_equivalence_compares_coefficients_as_rational_functions() {
+        let x = RatFun::variable("x");
+        let y = RatFun::variable("y");
+        let quotient = &(&x.pow_usize(2) - &y.pow_usize(2)) / &(&x - &y);
+        let sum = &x + &y;
+        let monomial = ResolventMonomial {
+            t_powers: vec![1],
+            z_denominator_powers: vec![1],
+        };
+        let mut left = ResolventPolynomial::zero();
+        left.add_term(monomial.clone(), quotient);
+        let mut right = ResolventPolynomial::zero();
+        right.add_term(monomial, sum);
+
+        assert_ne!(left, right);
+        assert!(left.equivalent(&right));
+
+        let extra_monomial = ResolventMonomial {
+            t_powers: vec![0],
+            z_denominator_powers: vec![2],
+        };
+        right.terms.insert(extra_monomial.clone(), RatFun::zero());
+        assert!(left.equivalent(&right));
+
+        right.terms.insert(extra_monomial, RatFun::one());
+        assert!(!left.equivalent(&right));
     }
 }

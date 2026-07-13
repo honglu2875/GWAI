@@ -12,6 +12,13 @@ fn negative_split_degrees_must_be_positive() {
 }
 
 #[test]
+fn twisted_request_rejects_class_from_another_target() {
+    let err = TwistedInvariantRequest::new(1, vec![3], 0, 1, vec![tau(0, CohomologyClass::one(2))])
+        .unwrap_err();
+    assert!(matches!(err, GwError::ConventionMismatch(_)));
+}
+
+#[test]
 fn local_cy_threefold_dimension_is_degree_independent_without_insertions() {
     let local_p2 = NegativeSplitBundleTwist::new(vec![3]).unwrap();
     let conifold = NegativeSplitBundleTwist::new(vec![1, 1]).unwrap();
@@ -35,6 +42,27 @@ fn local_cy_provider_returns_all_degree_candidates_when_dimension_matches() {
     assert!(provider
         .candidate_degrees_from_dimension(2, 4, &[h])
         .is_empty());
+}
+
+#[test]
+fn negative_slope_expected_degree_matches_candidate_degree() {
+    // For P^1 twisted by O(-3), vdim = 2 - d with these three markings.
+    // The insertions have total degree one, so the unique valid degree is one:
+    // both the numerator and the virtual-dimension slope are negative.
+    let provider = TwistedProjectiveSpaceProvider::new(1, vec![3], false).unwrap();
+    let insertions = vec![
+        tau(0, CohomologyClass::h_power(1, 1)),
+        tau(0, CohomologyClass::one(1)),
+        tau(0, CohomologyClass::one(1)),
+    ];
+    assert_eq!(
+        provider.expected_degree_from_dimension(0, &insertions),
+        Some(1)
+    );
+    assert_eq!(
+        provider.candidate_degrees_from_dimension(0, 3, &insertions),
+        vec![1]
+    );
 }
 
 #[test]
@@ -1184,6 +1212,21 @@ fn negative_split_compute_matches_local_p2_degree_one() {
 }
 
 #[test]
+fn local_p2_unmarked_low_genus_uses_divisor_reconstruction() {
+    for (genus, expected) in [(0, Rational::from(3)), (1, Rational::new(1, 4))] {
+        let req = TwistedInvariantRequest::new(2, vec![3], genus, 1, Vec::new()).unwrap();
+        let result = compute_negative_split_twisted(&req).unwrap();
+        assert!(result
+            .value
+            .equivalent(&RatFun::from_rational(expected.clone())));
+        assert!(result
+            .notes
+            .iter()
+            .any(|note| note.contains("divisor equation")));
+    }
+}
+
+#[test]
 fn factored_twisted_compute_requires_equivariant_mode() {
     let req = TwistedInvariantRequest::new(
         2,
@@ -1199,6 +1242,26 @@ fn factored_twisted_compute_requires_equivariant_mode() {
     let err = compute_negative_split_twisted_factored(&req).unwrap_err();
 
     assert!(err.to_string().contains("--equivariant"));
+}
+
+#[test]
+fn factored_fundamental_class_cancellation_displays_as_zero() {
+    let mut req = TwistedInvariantRequest::new(
+        2,
+        vec![4],
+        0,
+        1,
+        vec![
+            tau(0, CohomologyClass::h_power(2, 1)),
+            tau(0, CohomologyClass::h_power(2, 1)),
+            tau(0, CohomologyClass::one(2)),
+        ],
+    )
+    .unwrap();
+    req.equivariant = true;
+    let value = compute_negative_split_twisted_factored(&req).unwrap();
+    assert!(value.is_zero());
+    assert_eq!(value.to_string(), "0");
 }
 
 #[test]
@@ -1473,6 +1536,24 @@ fn packed_resolvent_matches_invariant_wise_local_p2() {
     assert_eq!(packed.value, invariant_wise.value);
     assert_eq!(packed.candidate_terms, invariant_wise.candidate_terms);
     assert_eq!(packed.nonzero_terms, invariant_wise.nonzero_terms);
+}
+
+#[test]
+fn twisted_packed_resolvent_rejects_target_mismatch() {
+    let req = ResolventRequest {
+        target_n: 1,
+        genus: 0,
+        degree: 1,
+        markings: 3,
+        virtual_dimension: 3,
+    };
+    let expanded =
+        compute_negative_split_twisted_resolvent_packed(2, vec![3], &req, false).unwrap_err();
+    assert!(matches!(expanded, GwError::ConventionMismatch(_)));
+
+    let factored =
+        compute_negative_split_twisted_resolvent_packed_factored(2, vec![3], &req).unwrap_err();
+    assert!(matches!(factored, GwError::ConventionMismatch(_)));
 }
 
 #[test]

@@ -104,6 +104,21 @@ impl InvariantRequest {
             + self.insertions.len() as isize
     }
 
+    /// Validate target-dependent request data before mathematical shortcuts
+    /// such as dimension pruning are applied.
+    pub fn validate(&self) -> Result<(), GwError> {
+        for (index, insertion) in self.insertions.iter().enumerate() {
+            if insertion.class.n() != self.n {
+                return Err(GwError::ConventionMismatch(format!(
+                    "P^{} request insertion {index} belongs to P^{}",
+                    self.n,
+                    insertion.class.n()
+                )));
+            }
+        }
+        Ok(())
+    }
+
     pub fn dimension_without_degree(&self) -> isize {
         (1 - self.genus as isize) * (self.n as isize - 3) + self.insertions.len() as isize
     }
@@ -124,7 +139,11 @@ impl InvariantRequest {
         if numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        Some((numerator / denominator) as usize)
+        let degree = (numerator / denominator) as usize;
+        // P^0 is a point, so its only effective curve class has degree zero.
+        // Do not let a formal dimension equation infer a nonexistent positive
+        // Novikov degree.
+        (self.n != 0 || degree == 0).then_some(degree)
     }
 }
 
@@ -227,7 +246,16 @@ impl SeriesCoefficient {
 pub struct SeriesResult {
     pub coefficients: Vec<SeriesCoefficient>,
     pub engine: &'static str,
+    /// False when at least one requested coefficient was unsupported and
+    /// therefore omitted from this result.
+    pub complete: bool,
     pub notes: Vec<String>,
+}
+
+impl SeriesResult {
+    pub fn is_complete(&self) -> bool {
+        self.complete
+    }
 }
 
 pub fn tau(descendant_power: usize, class: CohomologyClass) -> Insertion {
@@ -235,6 +263,7 @@ pub fn tau(descendant_power: usize, class: CohomologyClass) -> Insertion {
 }
 
 pub fn compute(req: InvariantRequest) -> Result<InvariantResult, GwError> {
+    req.validate()?;
     match req.mode {
         ComputeMode::Givental => givental::compute(&req),
     }
@@ -249,9 +278,10 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
 
     let mut coefficients = Vec::new();
     let mut notes = vec![
-        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and nonequivariant profiles are dimension-pruned"
+        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and profiles forced to vanish by the provider's coefficient-ring grading are dimension-pruned"
             .to_string(),
     ];
+    let mut complete = true;
     let mut engine = "series";
     let basis = insertion_basis(req.n, req.max_descendant_power);
     let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
@@ -311,6 +341,7 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
                     }
                 }
                 Err(GwError::UnsupportedInvariant(msg)) => {
+                    complete = false;
                     notes.push(format!(
                         "skipped q^{degree} {}: {msg}",
                         insertion_monomial_label(&insertions)
@@ -324,6 +355,7 @@ pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
     Ok(SeriesResult {
         coefficients,
         engine,
+        complete,
         notes,
     })
 }
@@ -441,6 +473,33 @@ mod tests {
     }
 
     #[test]
+    fn point_target_degree_inference_never_returns_positive_degree() {
+        let degree_zero = InvariantRequest::new(
+            0,
+            0,
+            99,
+            vec![
+                tau(0, CohomologyClass::one(0)),
+                tau(0, CohomologyClass::one(0)),
+                tau(0, CohomologyClass::one(0)),
+            ],
+        );
+        assert_eq!(degree_zero.expected_degree_from_dimension(), Some(0));
+
+        let formally_degree_one = InvariantRequest::new(
+            0,
+            0,
+            99,
+            vec![
+                tau(1, CohomologyClass::one(0)),
+                tau(0, CohomologyClass::one(0)),
+                tau(0, CohomologyClass::one(0)),
+            ],
+        );
+        assert_eq!(formally_degree_one.expected_degree_from_dimension(), None);
+    }
+
+    #[test]
     fn primary_potential_series_finds_degree_one_plane_line_coefficient() {
         let series = compute_series(SeriesRequest::new(2, 0, 1, 3)).unwrap();
         assert!(series.coefficients.iter().any(|coefficient| {
@@ -460,6 +519,31 @@ mod tests {
                 && coefficient.value == RatFun::from_rational(algebra::Rational::new(1, 576))
                 && coefficient.insertion_label() == "tau6(H)"
         }));
+    }
+
+    #[test]
+    fn partial_series_reports_incomplete_status() {
+        let mut req = SeriesRequest::new(1, 1, 0, 0);
+        req.include_zero = true;
+        let series = compute_series(req).unwrap();
+        assert!(!series.is_complete());
+        assert!(series.notes.iter().any(|note| note.contains("skipped q^0")));
+    }
+
+    #[test]
+    fn point_target_series_never_emits_positive_degree() {
+        let mut req = SeriesRequest::new(0, 0, 2, 3);
+        req.max_descendant_power = 1;
+        let series = compute_series(req).unwrap();
+        assert!(series.coefficients.iter().any(|coefficient| {
+            coefficient.degree == 0
+                && coefficient.insertion_label() == "tau0(1) tau0(1) tau0(1)"
+                && coefficient.value == RatFun::one()
+        }));
+        assert!(series
+            .coefficients
+            .iter()
+            .all(|coefficient| coefficient.degree == 0));
     }
 
     #[test]

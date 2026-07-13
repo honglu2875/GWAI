@@ -14,6 +14,7 @@ use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 const SCALAR_DISPLAY_EXPANSION_TERM_LIMIT: usize = 1024;
+const ZERO_DISPLAY_EXPANSION_TERM_LIMIT: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactoredRatFun {
@@ -160,6 +161,19 @@ impl FactoredRatFun {
         self.terms.len() <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
             && self.expanded_denominator_term_count_upper_bound()
                 <= SCALAR_DISPLAY_EXPANSION_TERM_LIMIT
+    }
+
+    fn can_expand_for_zero_display(&self) -> bool {
+        self.terms.len() <= ZERO_DISPLAY_EXPANSION_TERM_LIMIT
+            && self.expanded_denominator_term_count_upper_bound()
+                <= ZERO_DISPLAY_EXPANSION_TERM_LIMIT
+            && self.total_denominator_factor_count() <= 2 * ZERO_DISPLAY_EXPANSION_TERM_LIMIT
+            && self
+                .terms
+                .values()
+                .map(SparsePoly::term_count)
+                .sum::<usize>()
+                <= 4 * ZERO_DISPLAY_EXPANSION_TERM_LIMIT
     }
 
     pub fn pow_usize(&self, exp: usize) -> Self {
@@ -451,7 +465,11 @@ impl Div for FactoredRatFun {
 
 impl fmt::Display for FactoredRatFun {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.terms.is_empty() {
+        if self.is_structurally_zero()
+            || (self.terms.len() > 1
+                && self.can_expand_for_zero_display()
+                && self.to_ratfun().is_zero())
+        {
             return write!(f, "0");
         }
         if let Some(value) = self.as_structural_rational() {
@@ -542,6 +560,7 @@ mod tests {
 
         assert!(expr.is_zero());
         assert_eq!(expr.to_ratfun(), RatFun::zero());
+        assert_eq!(expr.to_string(), "0");
         assert_eq!((&mu / &mu).as_rational(), Some(Rational::one()));
     }
 

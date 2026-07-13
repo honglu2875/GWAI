@@ -12,6 +12,10 @@ pub type RationalQSeries = QSeries<Rational>;
 
 impl<C: Coeff> QSeries<C> {
     pub fn from_coeffs(coeffs: Vec<C>) -> Self {
+        assert!(
+            !coeffs.is_empty(),
+            "q-series must contain at least its constant coefficient"
+        );
         Self { coeffs }
     }
 
@@ -290,7 +294,24 @@ impl<C: Coeff> SeriesMatrix<C> {
     pub fn from_entries(entries: Vec<Vec<QSeries<C>>>) -> Self {
         let rows = entries.len();
         let cols = entries.first().map(Vec::len).unwrap_or_default();
-        assert!(entries.iter().all(|row| row.len() == cols));
+        assert!(
+            entries.iter().all(|row| row.len() == cols),
+            "series-matrix rows must have equal lengths"
+        );
+        if let Some(max_degree) = entries
+            .iter()
+            .flat_map(|row| row.iter())
+            .next()
+            .map(QSeries::<C>::max_degree)
+        {
+            assert!(
+                entries
+                    .iter()
+                    .flat_map(|row| row.iter())
+                    .all(|entry| entry.max_degree() == max_degree),
+                "series-matrix entries must have equal q-series truncations"
+            );
+        }
         Self {
             rows,
             cols,
@@ -317,6 +338,12 @@ impl<C: Coeff> SeriesMatrix<C> {
             .first()
             .map(QSeries::<C>::max_degree)
             .unwrap_or_default();
+        assert!(
+            diagonal
+                .iter()
+                .all(|entry| entry.max_degree() == max_degree),
+            "series-matrix diagonal entries must have equal q-series truncations"
+        );
         let mut out = Self::zero(size, size, max_degree);
         for (idx, value) in diagonal.into_iter().enumerate() {
             out.entries[idx][idx] = value;
@@ -614,6 +641,27 @@ pub(crate) fn invert_mirror_map<C: Coeff>(mirror: &[C], q_degree: usize) -> Vec<
 mod tests {
     use super::*;
     use crate::algebra::Rational;
+
+    #[test]
+    #[should_panic(expected = "q-series must contain at least its constant coefficient")]
+    fn q_series_rejects_empty_coefficient_storage() {
+        let _ = QSeries::<RatFun>::from_coeffs(Vec::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "series-matrix entries must have equal q-series truncations")]
+    fn series_matrix_rejects_mixed_entry_truncations() {
+        let _ =
+            SeriesMatrix::<RatFun>::from_entries(vec![vec![QSeries::zero(0), QSeries::zero(1)]]);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "series-matrix diagonal entries must have equal q-series truncations"
+    )]
+    fn diagonal_series_matrix_rejects_mixed_truncations() {
+        let _ = SeriesMatrix::<RatFun>::diagonal(vec![QSeries::zero(0), QSeries::zero(1)]);
+    }
 
     #[test]
     fn inverse_multiplies_to_one() {

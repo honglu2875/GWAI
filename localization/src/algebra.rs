@@ -1011,11 +1011,27 @@ impl RatFun {
     }
 
     pub fn is_zero(&self) -> bool {
-        self.num.is_zero()
+        !self.den.is_zero() && self.num.is_zero()
     }
 
     pub fn is_one(&self) -> bool {
+        !self.den.is_zero() && self.num == self.den
+    }
+
+    pub fn is_structurally_one(&self) -> bool {
         self.num.is_one() && self.den.is_one()
+    }
+
+    /// Whether two stored fractions define the same rational function.
+    ///
+    /// [`PartialEq`] deliberately remains a cheap structural comparison: it
+    /// is useful when coefficient containers and caches need to distinguish
+    /// their exact stored forms.  Validation should use this method instead,
+    /// because light normalization does not cancel general polynomial factors.
+    pub fn equivalent(&self, rhs: &Self) -> bool {
+        !self.den.is_zero()
+            && !rhs.den.is_zero()
+            && (self == rhs || &self.num * &rhs.den == &rhs.num * &self.den)
     }
 
     pub fn as_rational(&self) -> Option<Rational> {
@@ -1180,6 +1196,14 @@ impl Coeff for RatFun {
 
     fn is_zero(&self) -> bool {
         self.is_zero()
+    }
+
+    fn is_one(&self) -> bool {
+        RatFun::is_one(self)
+    }
+
+    fn is_structurally_one(&self) -> bool {
+        RatFun::is_structurally_one(self)
     }
 
     fn neg(&self) -> Self {
@@ -1563,6 +1587,48 @@ mod tests {
         let expr = &mu.pow_usize(10) / &mu.pow_usize(9);
 
         assert_eq!(expr, mu);
+    }
+
+    #[test]
+    fn rational_function_equivalence_cancels_polynomial_factors() {
+        let x = RatFun::variable("x");
+        let y = RatFun::variable("y");
+        let difference_of_squares = &x.pow_usize(2) - &y.pow_usize(2);
+        let difference = &x - &y;
+        let quotient = &difference_of_squares / &difference;
+        let sum = &x + &y;
+
+        assert_ne!(
+            quotient, sum,
+            "light normalization should remain structural"
+        );
+        assert!(quotient.equivalent(&sum));
+        assert!(!quotient.equivalent(&x));
+    }
+
+    #[test]
+    fn rational_function_one_check_is_semantic() {
+        let x = RatFun::variable("x");
+        let y = RatFun::variable("y");
+        let sum = &x + &y;
+        let quotient = RatFun {
+            num: sum.num.clone(),
+            den: sum.num,
+        };
+        assert!(!quotient.is_structurally_one());
+        assert!(quotient.is_one());
+    }
+
+    #[test]
+    fn semantic_predicates_reject_publicly_constructed_zero_denominators() {
+        let invalid = RatFun {
+            num: SparsePoly::zero(),
+            den: SparsePoly::zero(),
+        };
+        assert!(!invalid.is_zero());
+        assert!(!invalid.is_one());
+        assert!(!invalid.equivalent(&RatFun::zero()));
+        assert!(!invalid.equivalent(&invalid));
     }
 
     #[test]

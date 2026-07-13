@@ -248,6 +248,24 @@ fn givental_graph_reproduces_degree_zero_classical_product() {
 }
 
 #[test]
+fn projective_request_rejects_wrong_target_class_before_dimension_pruning() {
+    let req = InvariantRequest::new(
+        1,
+        0,
+        0,
+        vec![
+            tau(0, CohomologyClass::one(2)),
+            tau(0, CohomologyClass::one(2)),
+            tau(0, CohomologyClass::one(2)),
+        ],
+    );
+
+    let err = compute_by_givental_graphs(&req).unwrap_err();
+    assert!(matches!(err, GwError::ConventionMismatch(_)));
+    assert!(err.to_string().contains("insertion 0 belongs to P^2"));
+}
+
+#[test]
 fn givental_graph_reproduces_genus_one_degree_zero_obstruction_values() {
     let cases = [
         (
@@ -486,6 +504,27 @@ fn nonequivariant_negative_virtual_dimension_is_zero() {
     assert_eq!(result.value, RatFun::zero());
     assert_eq!(result.engine, "givental-r-graph");
     assert!(result.notes[0].contains("virtual dimension -2"));
+}
+
+#[test]
+fn point_target_has_no_positive_degree_invariants() {
+    // The formal dimension equation for this stable profile suggests d=1,
+    // but P^0 is a point and has no positive curve classes.
+    let insertions = vec![
+        tau(1, CohomologyClass::one(0)),
+        tau(0, CohomologyClass::one(0)),
+        tau(0, CohomologyClass::one(0)),
+    ];
+    for equivariant in [false, true] {
+        let req = InvariantRequest {
+            equivariant,
+            ..InvariantRequest::new(0, 0, 1, insertions.clone())
+        };
+        let result = compute_by_givental_graphs(&req).unwrap();
+        assert_eq!(result.value, RatFun::zero());
+        assert_eq!(result.engine, "givental-effective-degree");
+        assert!(result.notes[0].contains("no effective curve class"));
+    }
 }
 
 #[test]
@@ -942,11 +981,28 @@ fn packed_resolvent_matches_invariant_wise_projective_resolver() {
 }
 
 #[test]
-fn zero_marking_packed_resolvent_checks_provider_dimension() {
-    // The public request is intentionally inconsistent: its claimed virtual
+fn point_target_positive_degree_packed_resolvent_is_empty() {
+    let req = ResolventRequest {
+        target_n: 0,
+        genus: 0,
+        degree: 1,
+        markings: 3,
+        virtual_dimension: 1,
+    };
+    for equivariant in [false, true] {
+        let result = compute_projective_resolvent_packed(&req, equivariant).unwrap();
+        assert!(result.value.is_zero());
+        assert_eq!(result.candidate_terms, 0);
+        assert_eq!(result.nonzero_terms, 0);
+        assert_eq!(result.engine, "packed-resolvent-ineffective-degree");
+    }
+}
+
+#[test]
+fn packed_resolvent_rejects_inconsistent_provider_dimension() {
+    // The request is intentionally inconsistent: its claimed virtual
     // dimension is zero, while P^5 at (g,d,m)=(2,0,0) has dimension -2.
-    // Both packed paths must filter the empty insertion instead of evaluating
-    // the negative-dimensional graph sum.
+    // Both packed paths must reject it before their no-marking shortcut.
     let req = ResolventRequest {
         target_n: 5,
         genus: 2,
@@ -955,29 +1011,46 @@ fn zero_marking_packed_resolvent_checks_provider_dimension() {
         virtual_dimension: 0,
     };
     let provider = ProjectiveSpaceProvider::new(5, false);
-    let expanded = compute_packed_resolvent_with_provider(
+    let expanded_err = compute_packed_resolvent_with_provider(
         &req,
         provider.clone(),
         "test-expanded-resolvent",
         "test",
         Ok::<RatFun, GwError>,
     )
-    .unwrap();
-    assert!(expanded.value.is_zero());
-    assert_eq!(expanded.candidate_terms, 1);
-    assert_eq!(expanded.nonzero_terms, 0);
+    .unwrap_err();
+    assert!(matches!(expanded_err, GwError::ConventionMismatch(_)));
+    assert!(expanded_err
+        .to_string()
+        .contains("provider virtual dimension -2"));
 
-    let generic = compute_packed_resolvent_with_coeff_provider::<RatFun, _, _>(
+    let generic_err = compute_packed_resolvent_with_coeff_provider::<RatFun, _, _>(
         &req,
         provider,
         "test-generic-resolvent",
         "test",
         Ok::<RatFun, GwError>,
     )
-    .unwrap();
-    assert!(generic.value.is_zero());
-    assert_eq!(generic.candidate_terms, 1);
-    assert_eq!(generic.nonzero_terms, 0);
+    .unwrap_err();
+    assert!(matches!(generic_err, GwError::ConventionMismatch(_)));
+    assert!(generic_err
+        .to_string()
+        .contains("provider virtual dimension -2"));
+}
+
+#[test]
+fn packed_resolvent_validates_dimension_before_negative_shortcut() {
+    let req = ResolventRequest {
+        target_n: 5,
+        genus: 2,
+        degree: 0,
+        markings: 0,
+        virtual_dimension: -1,
+    };
+
+    let err = compute_projective_resolvent_packed(&req, false).unwrap_err();
+    assert!(matches!(err, GwError::ConventionMismatch(_)));
+    assert!(err.to_string().contains("provider virtual dimension -2"));
 }
 
 fn assert_r_matrix_unitary_after_lambda_eval(

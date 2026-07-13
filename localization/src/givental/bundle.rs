@@ -94,7 +94,13 @@ impl ProjectiveBundleRay {
         weights_fiber: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
-        if twists.is_empty() || !twists.contains(&0) {
+        if n == 0 || twists.len() < 2 {
+            return Err(GwError::ConventionMismatch(
+                "projective-bundle ray reconstruction requires a positive-dimensional base P^n and bundle rank at least two; degenerate cases have Picard rank at most one and belong in a projective-space engine"
+                    .to_string(),
+            ));
+        }
+        if !twists.contains(&0) {
             return Err(GwError::ConventionMismatch(
                 "bundle twists must be normalized with min a_l = 0 (twist by O(-min) first)"
                     .to_string(),
@@ -2017,6 +2023,29 @@ mod tests {
 
     fn fiber_weights() -> Vec<Rational> {
         vec![Rational::from(11), Rational::from(23)]
+    }
+
+    #[test]
+    fn bundle_ray_rejects_picard_rank_one_degenerations() {
+        let rank_one = ProjectiveBundleRay::new(
+            1,
+            vec![0],
+            base_weights(),
+            vec![Rational::from(11)],
+            Rational::one(),
+        )
+        .unwrap_err();
+        assert!(matches!(rank_one, GwError::ConventionMismatch(_)));
+
+        let point_base = ProjectiveBundleRay::new(
+            0,
+            vec![0, 0],
+            vec![Rational::from(2)],
+            fiber_weights(),
+            Rational::one(),
+        )
+        .unwrap_err();
+        assert!(matches!(point_base, GwError::ConventionMismatch(_)));
     }
 
     #[test]

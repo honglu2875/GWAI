@@ -67,6 +67,12 @@ A bare class is shorthand for its primary insertion: `--insert H^2` means
 
 Pass multiple insertions by repeating `--insert`.
 
+Library callers accepting untrusted class data should use
+`CohomologyClass::try_new` or `CohomologyClass::try_h_power`. The legacy
+infallible constructors now panic on coefficients outside the `P^n`
+cohomology basis instead of silently discarding them; this is an intentional
+pre-1.0 API tightening.
+
 ## `psi`
 
 Computes pure Witten-Kontsevich psi intersections.
@@ -581,8 +587,13 @@ Useful flags:
   for negative split twists it means symbolic fiber parameters over an
   early-specialized base.
 
-If the series command produces warnings or skipped coefficients, the CLI writes
-them to a temporary file and prints the path on stderr.
+If a series or resolvent command skips coefficients or falls back from a packed
+path, the CLI writes those warnings to a temporary file and prints the path on
+stderr. Informational engine notes are not classified as warnings. If the
+temporary directory is unwritable, the warnings are printed directly to stderr
+without changing an otherwise successful exit status. The library-level
+`SeriesResult::is_complete()` reports whether any requested coefficient was
+skipped.
 
 ## Environment Variables
 

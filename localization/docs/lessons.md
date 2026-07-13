@@ -110,15 +110,19 @@ distinct rays plus a Vandermonde solve over ℚ recover every bidegree
 - **Do not expect mismatched bidegrees to reconstruct to zero.**  See the
   next lesson.
 
-### 6. Dimension-mismatched equivariant invariants are not zero
+### 6. Equivariant dimension mismatch has two different sides
 
-The equivariant pushforward lands in `H*_T(pt) = ℚ[λ]`; only the
-dimension-matched (degree-zero) part is a weight-independent constant.  An
-invariant whose insertions fail the virtual-dimension count is a *nonzero,
-weight-dependent* equivariant quantity whose non-equivariant limit vanishes.
-Concretely: a test asserting that raw equivariant values at "impossible"
-dimensions are zero will fail, and correctly so.  Dimension filtering is a
-step you apply to outputs, not a property of the equivariant computation.
+For a proper target the equivariant pushforward lands in
+`H*_T(pt) = ℚ[λ]`.  If the total insertion degree is below the virtual
+dimension, the answer would have negative parameter degree and is therefore
+zero.  Exact dimension gives a weight-independent scalar.  Excess insertion
+degree can instead give a nonzero weight polynomial whose non-equivariant
+limit vanishes.  Tests and candidate-degree pruning must distinguish these
+deficit, exact, and excess cases rather than treating every mismatch alike.
+
+Localized twisted theories require a separate policy: inverse Euler classes
+live in a localized coefficient ring where negative parameter degrees can
+occur, so the proper-target deficit argument cannot be applied blindly.
 
 ### 7. Free cross-validation oracles are everywhere — use them
 

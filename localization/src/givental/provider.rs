@@ -55,6 +55,16 @@ pub trait SemisimpleCohftProvider {
         None
     }
 
+    /// Whether the one-parameter Novikov degree represents an effective curve
+    /// class for this target.
+    ///
+    /// Most providers support every nonnegative degree.  Degenerate targets
+    /// can override this without disguising an empty curve class as a
+    /// virtual-dimension mismatch.
+    fn degree_is_effective(&self, _degree: usize) -> bool {
+        true
+    }
+
     /// Whether a correlator is forced to vanish by the grading of the output
     /// coefficient ring.
     ///
@@ -82,11 +92,13 @@ pub trait SemisimpleCohftProvider {
     ) -> Vec<usize> {
         if self.insertion_degree(insertions).is_some() {
             self.expected_degree_from_dimension(genus, insertions)
-                .filter(|degree| *degree <= degree_max)
+                .filter(|degree| *degree <= degree_max && self.degree_is_effective(*degree))
                 .into_iter()
                 .collect()
         } else {
-            (0..=degree_max).collect()
+            (0..=degree_max)
+                .filter(|degree| self.degree_is_effective(*degree))
+                .collect()
         }
     }
 
@@ -175,6 +187,10 @@ pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
         None
     }
 
+    fn coeff_degree_is_effective(&self, _degree: usize) -> bool {
+        true
+    }
+
     fn coeff_expected_degree_from_dimension(
         &self,
         _genus: usize,
@@ -191,11 +207,13 @@ pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
     ) -> Vec<usize> {
         if self.coeff_insertion_degree(insertions).is_some() {
             self.coeff_expected_degree_from_dimension(genus, insertions)
-                .filter(|degree| *degree <= degree_max)
+                .filter(|degree| *degree <= degree_max && self.coeff_degree_is_effective(*degree))
                 .into_iter()
                 .collect()
         } else {
-            (0..=degree_max).collect()
+            (0..=degree_max)
+                .filter(|degree| self.coeff_degree_is_effective(*degree))
+                .collect()
         }
     }
 
@@ -264,6 +282,10 @@ where
         markings: usize,
     ) -> Option<isize> {
         SemisimpleCohftProvider::virtual_dimension(self, genus, degree, markings)
+    }
+
+    fn coeff_degree_is_effective(&self, degree: usize) -> bool {
+        SemisimpleCohftProvider::degree_is_effective(self, degree)
     }
 
     fn coeff_expected_degree_from_dimension(
@@ -361,6 +383,29 @@ impl ProjectiveSpaceProvider {
     pub(crate) fn specialized_nonequivariant(&self) -> bool {
         !self.equivariant
     }
+
+    /// Validate that user-facing insertions belong to this projective target.
+    ///
+    /// This check must run before dimension pruning: a class from a different
+    /// projective space can otherwise have a well-defined pure power and be
+    /// silently reported as a dimension-forced zero before its flat-basis
+    /// shape is inspected.
+    pub(crate) fn validate_insertions(&self, insertions: &[Insertion]) -> Result<(), GwError> {
+        for (index, insertion) in insertions.iter().enumerate() {
+            let class = &insertion.class;
+            if class.n() != self.n || class.coeffs().len() != self.colors() {
+                return Err(GwError::ConventionMismatch(format!(
+                    "P^{} insertion {index} belongs to P^{} and has {} coefficients; expected a P^{} class with {} coefficients",
+                    self.n,
+                    class.n(),
+                    class.coeffs().len(),
+                    self.n,
+                    self.colors()
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
@@ -391,6 +436,10 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         )
     }
 
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        self.n != 0 || degree == 0
+    }
+
     fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
         if self.equivariant {
             // A proper equivariant pushforward has parameter degree
@@ -417,7 +466,8 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         if numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        Some((numerator / denominator) as usize)
+        let degree = (numerator / denominator) as usize;
+        self.degree_is_effective(degree).then_some(degree)
     }
 
     fn candidate_degrees_from_dimension(
@@ -428,9 +478,12 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
     ) -> Vec<usize> {
         if self.equivariant {
             let Some(total_degree) = self.insertion_degree(insertions) else {
-                return (0..=degree_max).collect();
+                return (0..=degree_max)
+                    .filter(|degree| self.degree_is_effective(*degree))
+                    .collect();
             };
             return (0..=degree_max)
+                .filter(|degree| self.degree_is_effective(*degree))
                 .filter(|degree| {
                     self.virtual_dimension(genus, *degree, insertions.len())
                         .is_none_or(|virtual_dimension| {
@@ -483,15 +536,8 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         insertion: &Self::Insertion,
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError> {
+        self.validate_insertions(std::slice::from_ref(insertion))?;
         let coeffs = insertion.class.coeffs();
-        if coeffs.len() != self.colors() {
-            return Err(GwError::ConventionMismatch(format!(
-                "P^{} insertion has {} coefficients, expected {}",
-                self.n,
-                coeffs.len(),
-                self.colors()
-            )));
-        }
         Ok(coeffs
             .iter()
             .map(|coeff| QSeries::constant(coeff.clone(), q_degree))
@@ -996,6 +1042,10 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
         markings: usize,
     ) -> Option<isize> {
         self.0.virtual_dimension(genus, degree, markings)
+    }
+
+    fn coeff_degree_is_effective(&self, degree: usize) -> bool {
+        self.0.degree_is_effective(degree)
     }
 
     fn coeff_expected_degree_from_dimension(

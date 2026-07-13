@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
 
 permissions:
   contents: read
@@ -21,10 +23,10 @@ jobs:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: rustfmt, clippy
 
@@ -36,11 +38,49 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Clippy, default features (deny warnings)
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Clippy, all features (deny warnings)
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test
+        run: cargo test --locked
 
       - name: Test optional GMP rational backend
-        run: cargo test --features gmp-rational
+        run: cargo test --locked --features gmp-rational
+
+      - name: Rustdoc, all features (deny warnings)
+        run: cargo doc --locked --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  latest-stable:
+    name: latest stable + ignored acceptance tests
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install latest stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: localization
+
+      - name: Test all features on latest stable
+        run: cargo test --locked --all-features
+
+      - name: Clippy all features on latest stable
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+
+      - name: Run ignored reference and acceptance tests, default features
+        run: cargo test --locked -- --ignored
+
+      - name: Run ignored reference and acceptance tests, all features
+        run: cargo test --locked --all-features -- --ignored

@@ -413,7 +413,7 @@ fn run_series(args: SeriesArgs) -> Result<(), GwError> {
             coefficient.value
         );
     }
-    if let Some(path) = write_warnings_file("series", &result.notes)? {
+    if let Some(path) = write_warnings_file("series", &result.notes) {
         eprintln!(
             "warnings written to {}; inspect this file if needed",
             path.display()
@@ -570,7 +570,7 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
                         result.candidate_terms, result.nonzero_terms
                     );
                     println!("F = {}", result.value);
-                    if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+                    if let Some(path) = write_warnings_file("resolvent", &result.notes) {
                         eprintln!(
                             "warnings written to {}; inspect this file if needed",
                             path.display()
@@ -584,7 +584,7 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
             let validation = if validate && used_packed {
                 let invariant_wise = compute_invariant_wise()?;
                 let packed_ratfun = result.value.to_ratfun_polynomial();
-                if packed_ratfun != invariant_wise.value {
+                if !packed_ratfun.equivalent(&invariant_wise.value) {
                     return Err(GwError::ValidationFailure(format!(
                         "packed resolvent output does not match invariant-wise resolver: packed `{packed_ratfun}`, invariant-wise `{}`",
                         invariant_wise.value
@@ -619,7 +619,7 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
             }
             println!("F = {}", result.value);
 
-            if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+            if let Some(path) = write_warnings_file("resolvent", &result.notes) {
                 eprintln!(
                     "warnings written to {}; inspect this file if needed",
                     path.display()
@@ -651,7 +651,7 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
 
     let validation = if validate && used_packed {
         let invariant_wise = compute_invariant_wise()?;
-        if result.value != invariant_wise.value {
+        if !result.value.equivalent(&invariant_wise.value) {
             return Err(GwError::ValidationFailure(format!(
                 "packed resolvent output does not match invariant-wise resolver: packed `{}`, invariant-wise `{}`",
                 result.value, invariant_wise.value
@@ -690,7 +690,7 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
     }
     println!("F = {}", result.value);
 
-    if let Some(path) = write_warnings_file("resolvent", &result.notes)? {
+    if let Some(path) = write_warnings_file("resolvent", &result.notes) {
         eprintln!(
             "warnings written to {}; inspect this file if needed",
             path.display()
@@ -872,7 +872,11 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
                     equivariant,
                     mode,
                 ) {
-                    Ok(result) => println!("q^{degree} [{label}] = {}", result.value),
+                    Ok(result) => {
+                        if args.include_zero || !result.value.is_zero() {
+                            println!("q^{degree} [{label}] = {}", result.value);
+                        }
+                    }
                     Err(GwError::UnsupportedInvariant(msg)) => {
                         warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
                     }
@@ -917,7 +921,7 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
             }
         }
     }
-    if let Some(path) = write_warnings_file("degree-series", &warnings)? {
+    if let Some(path) = write_warnings_file("degree-series", &warnings) {
         eprintln!(
             "warnings written to {}; inspect this file if needed",
             path.display()
@@ -962,7 +966,11 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
                     equivariant,
                     mode,
                 ) {
-                    Ok(result) => println!("g={genus} q^{degree} [{label}] = {}", result.value),
+                    Ok(result) => {
+                        if args.include_zero || !result.value.is_zero() {
+                            println!("g={genus} q^{degree} [{label}] = {}", result.value);
+                        }
+                    }
                     Err(GwError::UnsupportedInvariant(msg)) => {
                         warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
                     }
@@ -1007,7 +1015,7 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
             }
         }
     }
-    if let Some(path) = write_warnings_file("genus-series", &warnings)? {
+    if let Some(path) = write_warnings_file("genus-series", &warnings) {
         eprintln!(
             "warnings written to {}; inspect this file if needed",
             path.display()
@@ -1096,9 +1104,17 @@ struct BoundedInsertionScan {
     include_zero: bool,
 }
 
-fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<PathBuf>, GwError> {
+fn write_warnings_file(command: &str, warnings: &[String]) -> Option<PathBuf> {
+    let warnings = warnings
+        .iter()
+        .filter(|warning| {
+            warning.starts_with("skipped ")
+                || warning.contains(" unavailable:")
+                || warning.contains("fell back")
+        })
+        .collect::<Vec<_>>();
     if warnings.is_empty() {
-        return Ok(None);
+        return None;
     }
 
     let mut hasher = DefaultHasher::new();
@@ -1114,18 +1130,24 @@ fn write_warnings_file(command: &str, warnings: &[String]) -> Result<Option<Path
 
     let path = env::temp_dir().join(format!("gw-pn-{command}-warnings-{hash:016x}.txt"));
     let mut contents = String::new();
-    for warning in warnings {
+    for warning in &warnings {
         contents.push_str("warning: ");
         contents.push_str(warning);
         contents.push('\n');
     }
-    fs::write(&path, contents).map_err(|err| {
-        GwError::AlgebraFailure(format!(
-            "failed to write warnings to {}: {err}",
-            path.display()
-        ))
-    })?;
-    Ok(Some(path))
+    match fs::write(&path, contents) {
+        Ok(()) => Some(path),
+        Err(err) => {
+            eprintln!(
+                "warning: failed to write diagnostics to {}: {err}",
+                path.display()
+            );
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            None
+        }
+    }
 }
 
 fn parse_series_insertions(
@@ -1478,9 +1500,16 @@ fn parse_compute_mode(mode: Option<&str>) -> Result<ComputeMode, GwError> {
 }
 
 fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
+    let checked_h_power = |power| {
+        CohomologyClass::try_h_power(n, power).map_err(|_| {
+            GwError::ParseError(format!(
+                "invalid class `{raw}`: expected `1`, `H`, or `H^p` with 0 <= p <= n={n}"
+            ))
+        })
+    };
     match raw {
         "1" => Ok(CohomologyClass::one(n)),
-        "H" => Ok(CohomologyClass::h_power(n, 1)),
+        "H" => checked_h_power(1),
         _ => {
             let invalid = || {
                 GwError::ParseError(format!(
@@ -1492,7 +1521,7 @@ fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
                 .ok_or_else(invalid)?
                 .parse::<usize>()
                 .map_err(|_| invalid())?;
-            Ok(CohomologyClass::h_power(n, power))
+            checked_h_power(power)
         }
     }
 }
@@ -1606,6 +1635,21 @@ fn insertion_list_label(insertions: &[gw_pn::Insertion]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equivariant_p1_resolvent_validation_uses_semantic_coefficients() {
+        run_resolvent(ResolventArgs {
+            n: 1,
+            g: 1,
+            d: 0,
+            markings: 1,
+            twist: None,
+            mode: None,
+            equivariant: true,
+            validate: true,
+        })
+        .unwrap();
+    }
 
     #[test]
     fn bounded_scan_dimension_filter_respects_coefficient_ring() {
@@ -1745,6 +1789,13 @@ mod tests {
         // fall through to the bare-class parser.
         let err = parse_insertion(2, "tau3[H]").unwrap_err().to_string();
         assert!(err.contains("tauK(CLASS)"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn insertion_parser_rejects_out_of_basis_h_power() {
+        let err = parse_insertion(1, "H^2").unwrap_err().to_string();
+        assert!(err.contains("0 <= p <= n=1"), "unexpected error: {err}");
+        assert!(parse_insertion(0, "H").is_err());
     }
 
     #[test]

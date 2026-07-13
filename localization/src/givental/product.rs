@@ -57,6 +57,12 @@ impl ProductProjectiveRay {
         weights_y: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
+        if n == 0 || m == 0 {
+            return Err(GwError::ConventionMismatch(
+                "product ray reconstruction requires two positive-dimensional projective factors; a P^0 factor has no independent curve degree and must be reduced to the other projective-space factor"
+                    .to_string(),
+            ));
+        }
         if weights_x.len() != n + 1 || weights_y.len() != m + 1 {
             return Err(GwError::ConventionMismatch(format!(
                 "product weights must have lengths {} and {}",
@@ -630,6 +636,24 @@ mod tests {
 
     fn point_class(descendant_power: usize) -> ProductInsertion {
         ProductInsertion::new(descendant_power, 1, 1)
+    }
+
+    #[test]
+    fn product_ray_rejects_point_factors() {
+        let left_point =
+            ProductProjectiveRay::new(0, 1, vec![Rational::from(2)], weights_y(), Rational::one())
+                .unwrap_err();
+        assert!(matches!(left_point, GwError::ConventionMismatch(_)));
+
+        let right_point =
+            ProductProjectiveRay::new(1, 0, weights_x(), vec![Rational::from(11)], Rational::one())
+                .unwrap_err();
+        assert!(matches!(right_point, GwError::ConventionMismatch(_)));
+
+        let reconstructed =
+            reconstruct_bidegree_invariants(0, 1, &[Rational::from(2)], &weights_y(), 0, 1, &[])
+                .unwrap_err();
+        assert!(matches!(reconstructed, GwError::ConventionMismatch(_)));
     }
 
     /// Substitutes `q -> scale * q` in every entry of a series matrix.

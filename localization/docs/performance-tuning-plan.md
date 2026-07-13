@@ -78,8 +78,11 @@ mutation is the difference.
    `num` remains the default/fallback for pure-Rust builds.  No-cache release
    rows show roughly 1.2-5x speedups across sampled Givental, product, bundle,
    and twisted paths, with the largest wins in projective-bundle arithmetic.
-   License note: GMP is LGPL, dynamically linked; the feature gate keeps the
-   MIT/Apache default intact.
+   License note: the default bundled `gmp-mpfr-sys` build links GMP statically,
+   under GMP's LGPL terms.  The feature gate keeps the Apache-2.0 default free
+   of that dependency; distributors enabling `gmp-rational` must also satisfy
+   the upstream LGPL requirements for a statically linked library, including
+   the applicable relinking requirements.
 
 2. **Parallelism overhaul in the contraction engine** (`givental/graph.rs`):
    - Landed: default worker count is `available_parallelism()` capped by work items,

@@ -92,7 +92,7 @@ impl TwistedInvariantRequest {
         degree: usize,
         insertions: Vec<Insertion>,
     ) -> Result<Self, GwError> {
-        Ok(Self {
+        let request = Self {
             n,
             twist: NegativeSplitBundleTwist::new(degrees)?,
             genus,
@@ -100,13 +100,29 @@ impl TwistedInvariantRequest {
             insertions,
             equivariant: false,
             truncation: None,
-        })
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
+    pub fn validate(&self) -> Result<(), GwError> {
+        for (index, insertion) in self.insertions.iter().enumerate() {
+            if insertion.class.n() != self.n {
+                return Err(GwError::ConventionMismatch(format!(
+                    "twisted P^{} request insertion {index} belongs to P^{}",
+                    self.n,
+                    insertion.class.n()
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
 pub fn compute_negative_split_twisted(
     req: &TwistedInvariantRequest,
 ) -> Result<InvariantResult, GwError> {
+    req.validate()?;
     // Public local/twisted path: construct a semisimple provider from the
     // hypergeometric/Birkhoff/QRR calibration, run the generic Givental graph
     // evaluator, and either take the one-parameter lambda-line limit or keep the
@@ -116,6 +132,35 @@ pub fn compute_negative_split_twisted(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
                 .to_string(),
         ));
+    }
+    if req.n == 0 {
+        return Ok(InvariantResult {
+            value: RatFun::zero(),
+            engine: "twisted-negative-split-effective-degree",
+            notes: vec!["P^0 has no positive curve classes".to_string()],
+        });
+    }
+
+    // Nonconstant maps are stable without markings, but the CohFT graph
+    // reconstruction itself needs a stable pointed curve.  Add the minimum
+    // number of primary divisors and remove them again with the divisor
+    // equation: three in genus zero and one in genus one.
+    if req.insertions.is_empty() && req.genus <= 1 {
+        let divisor_markings = if req.genus == 0 { 3 } else { 1 };
+        let mut stabilized = req.clone();
+        stabilized.insertions =
+            vec![
+                crate::tau(0, crate::geometry::CohomologyClass::h_power(req.n, 1));
+                divisor_markings
+            ];
+        let mut result = compute_negative_split_twisted(&stabilized)?;
+        let divisor_factor = Rational::from(req.degree).pow_usize(divisor_markings);
+        result.value = &result.value / &RatFun::from_rational(divisor_factor);
+        result.notes.push(format!(
+            "unmarked genus-{} invariant reconstructed by adding {divisor_markings} hyperplane divisor marking(s) and applying the divisor equation",
+            req.genus
+        ));
+        return Ok(result);
     }
 
     let provider = if req.equivariant {
@@ -190,6 +235,7 @@ pub fn compute_negative_split_twisted(
 pub fn compute_negative_split_twisted_factored(
     req: &TwistedInvariantRequest,
 ) -> Result<FactoredRatFun, GwError> {
+    req.validate()?;
     if !req.equivariant {
         return Err(GwError::UnsupportedInvariant(
             "factored twisted mode is currently for fiber-equivariant computations; pass --equivariant"
@@ -201,6 +247,10 @@ pub fn compute_negative_split_twisted_factored(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
                 .to_string(),
         ));
+    }
+    if req.insertions.is_empty() && req.genus <= 1 {
+        return compute_negative_split_twisted(req)
+            .map(|result| FactoredRatFun::from_ratfun(result.value));
     }
 
     let provider = FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(
@@ -231,6 +281,12 @@ pub fn compute_negative_split_twisted_resolvent_packed(
     req: &ResolventRequest,
     equivariant: bool,
 ) -> Result<ResolventResult, GwError> {
+    if req.target_n != target_n {
+        return Err(GwError::ConventionMismatch(format!(
+            "twisted resolvent request targets P^{}, but the provider targets P^{target_n}",
+            req.target_n
+        )));
+    }
     if req.degree == 0 {
         return Err(GwError::UnsupportedInvariant(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
@@ -275,6 +331,12 @@ pub fn compute_negative_split_twisted_resolvent_packed_factored(
     degrees: Vec<usize>,
     req: &ResolventRequest,
 ) -> Result<ResolventResult<FactoredRatFun>, GwError> {
+    if req.target_n != target_n {
+        return Err(GwError::ConventionMismatch(format!(
+            "twisted resolvent request targets P^{}, but the provider targets P^{target_n}",
+            req.target_n
+        )));
+    }
     if req.degree == 0 {
         return Err(GwError::UnsupportedInvariant(
             "degree-zero local invariants are not implemented in the negative split-bundle path"
@@ -846,6 +908,10 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         self.inner.virtual_dimension(genus, degree, markings)
     }
 
+    fn coeff_degree_is_effective(&self, degree: usize) -> bool {
+        self.inner.degree_is_effective(degree)
+    }
+
     fn coeff_expected_degree_from_dimension(
         &self,
         genus: usize,
@@ -1045,6 +1111,10 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         )
     }
 
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        self.base.degree_is_effective(degree)
+    }
+
     fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
         if self.line_mode == TwistedLineMode::FiberEquivariant {
             // The fiber parameters can carry excess degree.  Keep the
@@ -1073,10 +1143,12 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
             return None;
         }
         let numerator = insertion_degree - constant_dimension;
-        if numerator < 0 || numerator % slope != 0 {
+        if numerator % slope != 0 {
             return None;
         }
-        Some((numerator / slope) as usize)
+        usize::try_from(numerator / slope)
+            .ok()
+            .filter(|degree| self.degree_is_effective(*degree))
     }
 
     fn candidate_degrees_from_dimension(
@@ -1086,15 +1158,21 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
         if self.line_mode == TwistedLineMode::FiberEquivariant {
-            return (0..=degree_max).collect();
+            return (0..=degree_max)
+                .filter(|degree| self.degree_is_effective(*degree))
+                .collect();
         }
-        self.twist.candidate_degrees(
-            self.base.n,
-            genus,
-            degree_max,
-            insertions.len(),
-            self.insertion_degree(insertions),
-        )
+        self.twist
+            .candidate_degrees(
+                self.base.n,
+                genus,
+                degree_max,
+                insertions.len(),
+                self.insertion_degree(insertions),
+            )
+            .into_iter()
+            .filter(|degree| self.degree_is_effective(*degree))
+            .collect()
     }
 
     fn descendant_s_matrix(

@@ -36,6 +36,12 @@ pub trait GwTarget: Send + Sync {
     /// datum entering virtual dimensions).
     fn c1_degree(&self) -> usize;
 
+    /// Whether a nonnegative Novikov degree represents an effective curve
+    /// class on this target.
+    fn degree_is_effective(&self, _degree: usize) -> bool {
+        true
+    }
+
     /// Classical eigenvalues of divisor multiplication — the restrictions of
     /// the divisor to the torus fixed points.  Must be pairwise distinct
     /// (semisimplicity of the classical ring); their differences also feed
@@ -166,6 +172,10 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
         )
     }
 
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        self.target.degree_is_effective(degree)
+    }
+
     fn expected_degree_from_dimension(
         &self,
         genus: usize,
@@ -180,7 +190,8 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
         if denominator <= 0 || numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        Some((numerator / denominator) as usize)
+        let degree = (numerator / denominator) as usize;
+        self.degree_is_effective(degree).then_some(degree)
     }
 
     fn descendant_s_matrix(
@@ -304,6 +315,10 @@ impl GwTarget for ProjectiveTarget {
         self.n + 1
     }
 
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        self.n != 0 || degree == 0
+    }
+
     fn classical_eigenvalue_seeds(&self) -> Vec<RatFun> {
         self.seeds.clone()
     }
@@ -386,6 +401,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn generic_projective_target_respects_point_effective_cone() {
+        let provider = TargetProvider::new(ProjectiveTarget::equivariant(0));
+        assert!(provider.degree_is_effective(0));
+        assert!(!provider.degree_is_effective(1));
+        let formally_degree_one = [
+            tau(1, CohomologyClass::one(0)),
+            tau(0, CohomologyClass::one(0)),
+            tau(0, CohomologyClass::one(0)),
+        ];
+        assert_eq!(
+            provider.expected_degree_from_dimension(0, &formally_degree_one),
+            None
+        );
+        assert!(provider
+            .candidate_degrees_from_dimension(0, 2, &formally_degree_one)
+            .is_empty());
     }
 
     #[test]

@@ -12,7 +12,7 @@ use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::{InvariantRequest, InvariantResult};
 
 pub fn assert_same_value(a: &RatFun, b: &RatFun) -> Result<(), GwError> {
-    if a == b {
+    if a.equivalent(b) {
         Ok(())
     } else {
         Err(GwError::ValidationFailure(format!("{a} != {b}")))
@@ -23,12 +23,20 @@ pub fn seed_compute(
     req: &InvariantRequest,
     engine: &'static str,
 ) -> Result<InvariantResult, GwError> {
+    req.validate()?;
     // These seed cases are mathematically closed and cheap.  The Givental
     // evaluator uses them only as scalar fallbacks for unsupported unstable
     // ranges; validation tests may call them explicitly.
     if let Some(total_degree) = req.insertion_degree() {
         let virtual_dimension = req.virtual_dimension();
-        if !req.equivariant && usize::try_from(virtual_dimension).ok() != Some(total_degree) {
+        let forced_zero = if req.equivariant {
+            usize::try_from(virtual_dimension)
+                .ok()
+                .is_some_and(|dimension| total_degree < dimension)
+        } else {
+            usize::try_from(virtual_dimension).ok() != Some(total_degree)
+        };
+        if forced_zero {
             return Ok(InvariantResult {
                 value: RatFun::zero(),
                 engine,
@@ -54,6 +62,17 @@ pub fn seed_compute(
             .iter()
             .all(|insertion| insertion.descendant_power == 0)
     {
+        if req.equivariant && req.degree > 0 {
+            let exact_dimension = req.insertion_degree().is_some_and(|total_degree| {
+                usize::try_from(req.virtual_dimension()).ok() == Some(total_degree)
+            });
+            if !exact_dimension {
+                return Err(GwError::UnsupportedInvariant(
+                    "positive-degree equivariant three-point closed-form seeds are only implemented in the exact-dimension sector; no seed is available for excess-degree classes"
+                        .to_string(),
+                ));
+            }
+        }
         return compute_genus_zero_three_point_primary(req, engine);
     }
 
@@ -61,10 +80,12 @@ pub fn seed_compute(
         return Ok(InvariantResult {
             value: RatFun::from_rational(value),
             engine,
-            notes: vec![
+            notes: vec![if req.insertions.is_empty() {
+                "Mbar_0,0(P^1,1) is a point, giving the unmarked degree-one invariant".to_string()
+            } else {
                 "genus-zero P^1 stationary one-descendant family computed from the J-function one-point term and divisor equation"
-                    .to_string(),
-            ],
+                    .to_string()
+            }],
         });
     }
 
@@ -131,6 +152,16 @@ fn compute_genus_zero_constant_maps(
     req: &InvariantRequest,
     engine: &'static str,
 ) -> Result<InvariantResult, GwError> {
+    if req.insertions.len() < 3 {
+        return Ok(InvariantResult {
+            value: RatFun::zero(),
+            engine,
+            notes: vec![
+                "genus-zero degree-zero maps with fewer than three markings have unstable constant domains, so the stable-map moduli space is empty"
+                    .to_string(),
+            ],
+        });
+    }
     // Degree-zero genus-zero maps factor as an ordinary P^n intersection times
     // the psi integral on Mbar_{0,n}.
     let classes = req
@@ -138,7 +169,16 @@ fn compute_genus_zero_constant_maps(
         .iter()
         .map(|insertion| &insertion.class)
         .collect::<Vec<_>>();
-    let class_integral = classical_product_integral(req.n, &classes);
+    let class_integral = if req.equivariant {
+        let target = crate::geometry::EquivariantProjectiveSpace::new(req.n);
+        let mut product = CohomologyClass::one(req.n);
+        for class in &classes {
+            product = product.multiply_classical_equivariant(class);
+        }
+        target.pairing(&product, &CohomologyClass::one(req.n))
+    } else {
+        classical_product_integral(req.n, &classes)
+    };
     let psi_powers = req
         .insertions
         .iter()
@@ -149,10 +189,13 @@ fn compute_genus_zero_constant_maps(
     Ok(InvariantResult {
         value,
         engine,
-        notes: vec![
+        notes: vec![if req.equivariant {
+            "genus-zero degree-zero invariant factorized into the equivariant classical P^n integral and psi integral"
+                .to_string()
+        } else {
             "genus-zero degree-zero invariant factorized into classical P^n intersection and psi integral"
-                .to_string(),
-        ],
+                .to_string()
+        }],
     })
 }
 
@@ -222,17 +265,21 @@ fn p1_stationary_one_descendant_divisor_family(req: &InvariantRequest) -> Option
     // From the P^1 J-function one-point stationary term plus repeated divisor
     // equation:
     // <tau_{2d-2}(H), H,...,H>_{0,d} = d^m/(d!)^2.
-    if req.equivariant
-        || req.n != 1
+    if req.n != 1
         || req.genus != 0
         || req.degree == 0
-        || req.insertions.is_empty()
         || !req
             .insertions
             .iter()
             .all(|insertion| insertion.class.pure_power() == Some(1))
     {
         return None;
+    }
+
+    // Mbar_0,0(P^1,1) is a point.  This is the base of the same divisor
+    // family; the dimension check above has already disposed of d > 1.
+    if req.insertions.is_empty() {
+        return (req.degree == 1).then(Rational::one);
     }
 
     let positive_descendants = req
@@ -377,6 +424,114 @@ mod tests {
             classical_product_integral(2, &[&h, &one, &one]),
             RatFun::zero()
         );
+    }
+
+    #[test]
+    fn validation_accepts_equivalent_rational_function_representations() {
+        let x = RatFun::variable("x");
+        let y = RatFun::variable("y");
+        let quotient = &(&x.pow_usize(2) - &y.pow_usize(2)) / &(&x - &y);
+        let sum = &x + &y;
+
+        assert_ne!(quotient, sum);
+        assert_same_value(&quotient, &sum).unwrap();
+    }
+
+    #[test]
+    fn equivariant_constant_map_seed_keeps_excess_class_degree() {
+        let mut req = InvariantRequest::new(
+            1,
+            0,
+            0,
+            vec![
+                crate::tau(0, CohomologyClass::h_power(1, 1)),
+                crate::tau(0, CohomologyClass::h_power(1, 1)),
+                crate::tau(0, CohomologyClass::one(1)),
+            ],
+        );
+        req.equivariant = true;
+        let result = seed_compute(&req, "test-seed").unwrap();
+        let expected = &crate::algebra::lambda(0) + &crate::algebra::lambda(1);
+        assert!(result.value.equivalent(&expected));
+
+        let mut deficit = InvariantRequest::new(1, 0, 2, Vec::new());
+        deficit.equivariant = true;
+        assert!(seed_compute(&deficit, "test-seed").unwrap().value.is_zero());
+    }
+
+    #[test]
+    fn equivariant_positive_degree_seed_rejects_excess_three_point_degree() {
+        let point = CohomologyClass::h_power(2, 2);
+        let mut excess = InvariantRequest::new(
+            2,
+            0,
+            1,
+            vec![
+                crate::tau(0, point.clone()),
+                crate::tau(0, point.clone()),
+                crate::tau(0, point),
+            ],
+        );
+        excess.equivariant = true;
+        let err = seed_compute(&excess, "test-seed").unwrap_err();
+        assert!(matches!(err, GwError::UnsupportedInvariant(_)));
+        assert!(err.to_string().contains("excess-degree"));
+
+        let mut exact = InvariantRequest::new(
+            2,
+            0,
+            1,
+            vec![
+                crate::tau(0, CohomologyClass::h_power(2, 2)),
+                crate::tau(0, CohomologyClass::h_power(2, 2)),
+                crate::tau(0, CohomologyClass::h_power(2, 1)),
+            ],
+        );
+        exact.equivariant = true;
+        assert_eq!(
+            seed_compute(&exact, "test-seed").unwrap().value,
+            RatFun::one()
+        );
+    }
+
+    #[test]
+    fn p1_degree_one_unstable_divisor_family_is_one_in_both_rings() {
+        for equivariant in [false, true] {
+            for markings in 0..=2 {
+                let mut req = InvariantRequest::new(
+                    1,
+                    0,
+                    1,
+                    vec![crate::tau(0, CohomologyClass::h_power(1, 1)); markings],
+                );
+                req.equivariant = equivariant;
+                let result = crate::compute(req).unwrap();
+                assert!(
+                    result.value.equivalent(&RatFun::one()),
+                    "equivariant={equivariant}, markings={markings}: {}",
+                    result.value
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unstable_constant_maps_have_an_explicit_empty_moduli_note() {
+        let req = InvariantRequest::new(
+            1,
+            0,
+            0,
+            vec![
+                crate::tau(0, CohomologyClass::one(1)),
+                crate::tau(0, CohomologyClass::one(1)),
+            ],
+        );
+        let result = crate::compute(req).unwrap();
+        assert!(result.value.is_zero());
+        assert!(result
+            .notes
+            .iter()
+            .any(|note| note.contains("unstable constant domains")));
     }
 
     #[test]

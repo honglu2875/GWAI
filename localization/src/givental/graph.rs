@@ -291,6 +291,18 @@ pub(crate) fn projective_space_graph_kernel(
 /// result labels.
 pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
     let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
+    provider.validate_insertions(&req.insertions)?;
+
+    if !provider.degree_is_effective(req.degree) {
+        return Ok(InvariantResult {
+            value: RatFun::zero(),
+            engine: "givental-effective-degree",
+            notes: vec![format!(
+                "P^{} has no effective curve class of degree {}",
+                req.n, req.degree
+            )],
+        });
+    }
 
     if let Some((virtual_dimension, total_degree)) =
         dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
@@ -411,6 +423,9 @@ pub fn compute_semisimple_graph_value<P>(
 where
     P: SemisimpleCohftProvider,
 {
+    if !provider.degree_is_effective(degree) {
+        return Ok(RatFun::zero());
+    }
     if let Some(value) = provider.direct_value(genus, degree, insertions, truncation)? {
         return Ok(value);
     }
@@ -436,6 +451,9 @@ where
     C: Coeff + Send + Sync,
     P: CoefficientSemisimpleCohftProvider<C>,
 {
+    if !provider.coeff_degree_is_effective(degree) {
+        return Ok(C::zero());
+    }
     if let Some(value) = provider.coeff_direct_value(genus, degree, insertions, truncation)? {
         return Ok(value);
     }
@@ -731,7 +749,20 @@ where
     });
     profile.add_graph_elapsed(graphs_started.elapsed());
     profile.finish();
-    Ok(total)
+    Ok(QSeries::from_coeffs(
+        total
+            .coeffs()
+            .iter()
+            .enumerate()
+            .map(|(degree, coefficient)| {
+                if provider.degree_is_effective(degree) {
+                    coefficient.clone()
+                } else {
+                    RatFun::zero()
+                }
+            })
+            .collect(),
+    ))
 }
 
 pub fn compute_semisimple_graph_series_with_coeff<C, P>(
@@ -861,7 +892,20 @@ where
         );
     }
     profile.finish();
-    Ok(total)
+    Ok(QSeries::from_coeffs(
+        total
+            .coeffs()
+            .iter()
+            .enumerate()
+            .map(|(degree, coefficient)| {
+                if provider.coeff_degree_is_effective(degree) {
+                    coefficient.clone()
+                } else {
+                    C::zero()
+                }
+            })
+            .collect(),
+    ))
 }
 
 const MASTER_SHARED_KERNEL_MAX_MARKINGS: usize = 2;
@@ -904,9 +948,10 @@ where
         })
         .collect::<Vec<_>>();
     let mut notes = vec![
-        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and nonequivariant profiles are dimension-pruned"
+        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and profiles forced to vanish by the provider's coefficient-ring grading are dimension-pruned"
             .to_string(),
     ];
+    let mut complete = true;
     let basis = crate::insertion_basis(req.n, req.max_descendant_power);
     let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
 
@@ -960,6 +1005,7 @@ where
                 match evaluator.prepare_contraction_task(current_ordinal, degree, &insertions) {
                     Ok(task) => contraction_tasks.push(task),
                     Err(GwError::UnsupportedInvariant(msg)) => {
+                        complete = false;
                         notes.push(format!(
                             "skipped q^{degree} {}: {msg}",
                             crate::insertion_monomial_label(&insertions)
@@ -978,6 +1024,7 @@ where
                 ) {
                     Ok(task) => restricted_contraction_tasks[insertions.len()][degree].push(task),
                     Err(GwError::UnsupportedInvariant(msg)) => {
+                        complete = false;
                         notes.push(format!(
                             "skipped q^{degree} {}: {msg}",
                             crate::insertion_monomial_label(&insertions)
@@ -1002,6 +1049,7 @@ where
                     }
                 }
                 Err(GwError::UnsupportedInvariant(msg)) => {
+                    complete = false;
                     notes.push(format!(
                         "skipped q^{degree} {}: {msg}",
                         crate::insertion_monomial_label(&insertions)
@@ -1036,6 +1084,7 @@ where
     Ok(Some(SeriesResult {
         coefficients,
         engine: "givental-master-series",
+        complete,
         notes,
     }))
 }
@@ -1060,6 +1109,24 @@ where
     P: SemisimpleCohftProvider<Insertion = Insertion>,
     N: FnMut(RatFun) -> Result<RatFun, GwError>,
 {
+    validate_packed_resolvent_virtual_dimension(
+        req,
+        provider.virtual_dimension(req.genus, req.degree, req.markings),
+    )?;
+
+    if !provider.degree_is_effective(req.degree) {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms: 0,
+            nonzero_terms: 0,
+            engine: "packed-resolvent-ineffective-degree",
+            notes: vec![format!(
+                "the target has no effective curve class of degree {}",
+                req.degree
+            )],
+        });
+    }
+
     if req.virtual_dimension < 0 {
         return Ok(ResolventResult {
             value: ResolventPolynomial::zero(),
@@ -1171,6 +1238,24 @@ where
     P: CoefficientSemisimpleCohftProvider<C, Insertion = Insertion>,
     N: FnMut(C) -> Result<C, GwError>,
 {
+    validate_packed_resolvent_virtual_dimension(
+        req,
+        provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
+    )?;
+
+    if !provider.coeff_degree_is_effective(req.degree) {
+        return Ok(ResolventResult {
+            value: ResolventPolynomial::zero(),
+            candidate_terms: 0,
+            nonzero_terms: 0,
+            engine: "packed-resolvent-ineffective-degree",
+            notes: vec![format!(
+                "the target has no effective curve class of degree {}",
+                req.degree
+            )],
+        });
+    }
+
     if req.virtual_dimension < 0 {
         return Ok(ResolventResult {
             value: ResolventPolynomial::zero(),
@@ -1343,6 +1428,21 @@ where
         engine,
         notes: vec![note.into()],
     })
+}
+
+fn validate_packed_resolvent_virtual_dimension(
+    req: &ResolventRequest,
+    provider_virtual_dimension: Option<isize>,
+) -> Result<(), GwError> {
+    if let Some(actual) = provider_virtual_dimension {
+        if req.virtual_dimension != actual {
+            return Err(GwError::ConventionMismatch(format!(
+                "packed resolvent virtual dimension {} does not match provider virtual dimension {actual} for (g,d,m)=({},{},{})",
+                req.virtual_dimension, req.genus, req.degree, req.markings
+            )));
+        }
+    }
+    Ok(())
 }
 
 pub fn compute_projective_resolvent_packed(

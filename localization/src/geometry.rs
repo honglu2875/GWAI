@@ -6,6 +6,7 @@
 //! Atiyah-Bott pairings are used throughout the Frobenius and calibration code.
 
 use crate::algebra::{lambda, q, RatFun, Rational};
+use crate::error::GwError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CohomologyClass {
@@ -14,14 +15,26 @@ pub struct CohomologyClass {
 }
 
 impl CohomologyClass {
-    pub fn new(n: usize, coeffs: Vec<RatFun>) -> Self {
+    /// Construct a class already expressed in the hyperplane basis.
+    pub fn try_new(n: usize, coeffs: Vec<RatFun>) -> Result<Self, GwError> {
+        if coeffs.len() > n + 1 {
+            return Err(GwError::ConventionMismatch(format!(
+                "P^{n} hyperplane-basis class has {} coefficients, but the basis has length {}",
+                coeffs.len(),
+                n + 1
+            )));
+        }
         let mut normalized = coeffs;
         normalized.resize(n + 1, RatFun::zero());
-        normalized.truncate(n + 1);
-        Self {
+        Ok(Self {
             n,
             coeffs: normalized,
-        }
+        })
+    }
+
+    pub fn new(n: usize, coeffs: Vec<RatFun>) -> Self {
+        Self::try_new(n, coeffs)
+            .unwrap_or_else(|err| panic!("invalid projective-space basis class: {err}"))
     }
 
     pub fn zero(n: usize) -> Self {
@@ -32,12 +45,26 @@ impl CohomologyClass {
         Self::h_power(n, 0)
     }
 
-    pub fn h_power(n: usize, power: usize) -> Self {
-        let mut coeffs = vec![RatFun::zero(); n + 1];
-        if power <= n {
-            coeffs[power] = RatFun::one();
+    /// Return the hyperplane-basis element `H^power`.
+    ///
+    /// Classes in this type are already reduced to the basis
+    /// `1, H, ..., H^n`; accepting a larger power here used to silently
+    /// construct the zero class.  Callers parsing untrusted input should use
+    /// this checked constructor rather than losing the class being requested.
+    pub fn try_h_power(n: usize, power: usize) -> Result<Self, GwError> {
+        if power > n {
+            return Err(GwError::ConventionMismatch(format!(
+                "H^{power} is outside the stored hyperplane basis 1,H,...,H^{n} for P^{n}"
+            )));
         }
-        Self::new(n, coeffs)
+        let mut coeffs = vec![RatFun::zero(); n + 1];
+        coeffs[power] = RatFun::one();
+        Ok(Self::new(n, coeffs))
+    }
+
+    pub fn h_power(n: usize, power: usize) -> Self {
+        Self::try_h_power(n, power)
+            .unwrap_or_else(|err| panic!("invalid projective-space basis class: {err}"))
     }
 
     pub fn n(&self) -> usize {
@@ -307,6 +334,21 @@ mod tests {
         let h = CohomologyClass::h_power(1, 1);
         let expected = &lambda(0) + &lambda(1);
         assert!((&p1.pairing(&h, &h) - &expected).is_zero());
+    }
+
+    #[test]
+    fn checked_h_power_rejects_out_of_basis_class() {
+        let err = CohomologyClass::try_h_power(1, 2).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("outside the stored hyperplane basis"));
+    }
+
+    #[test]
+    fn checked_constructor_rejects_truncated_coefficients() {
+        let err = CohomologyClass::try_new(1, vec![RatFun::one(), RatFun::zero(), RatFun::one()])
+            .unwrap_err();
+        assert!(err.to_string().contains("basis has length 2"));
     }
 
     #[test]
