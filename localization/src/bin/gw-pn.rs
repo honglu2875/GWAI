@@ -2,9 +2,9 @@ use clap::{Args, Parser, Subcommand};
 use gw_pn::constraints::virasoro::{
     evaluate_constraint_with_bounds as evaluate_virasoro_constraint,
     generate_constraint_with_term_limit, scan_constraints, CanonicalCorrelatorEvaluator,
-    CanonicalTheoryNotation, CorrelatorEvaluationBounds, Descendant, ProductProjectiveEvaluator,
-    ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator, ResidualOutcome, ResidualStatus,
-    TimeMonomial, VirasoroScanBounds,
+    CanonicalTheoryNotation, CorrelatorEvaluationBounds, Descendant,
+    NegativeSplitCompletionEvaluator, ProductProjectiveEvaluator, ProjectiveBundleEvaluator,
+    ProjectiveSpaceEvaluator, ResidualOutcome, ResidualStatus, TimeMonomial, VirasoroScanBounds,
 };
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
@@ -117,14 +117,28 @@ struct VirasoroTargetArgs {
     #[arg(long)]
     n: usize,
     /// Select P^n x P^m and give m
-    #[arg(long, conflicts_with_all = ["bundle_twists", "local_twist"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["bundle_twists", "local_twist", "local_completion_twist"]
+    )]
     product_m: Option<usize>,
     /// Select P(O(a_1)+...+O(a_r)) over P^n; require nonnegative twists with min 0
-    #[arg(long, allow_hyphen_values = true, conflicts_with = "local_twist")]
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        conflicts_with_all = ["local_twist", "local_completion_twist"]
+    )]
     bundle_twists: Option<String>,
     /// Select the negative-split local theory, e.g. -3 or -1,-1
-    #[arg(long, allow_hyphen_values = true)]
+    #[arg(
+        long,
+        allow_hyphen_values = true,
+        conflicts_with = "local_completion_twist"
+    )]
     local_twist: Option<String>,
+    /// Audit a negative-split theory through its compact projective completion
+    #[arg(long, allow_hyphen_values = true)]
+    local_completion_twist: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -522,6 +536,7 @@ enum CliVirasoroTheory {
     Product(ProductProjectiveEvaluator),
     Bundle(ProjectiveBundleEvaluator),
     Local(NegativeSplitTotalSpaceTheory),
+    LocalCompletion(Box<NegativeSplitCompletionEvaluator>),
 }
 
 impl CliVirasoroTheory {
@@ -531,6 +546,7 @@ impl CliVirasoroTheory {
             Self::Product(evaluator) => evaluator.theory(),
             Self::Bundle(evaluator) => evaluator.theory(),
             Self::Local(theory) => theory,
+            Self::LocalCompletion(evaluator) => evaluator.theory(),
         }
     }
 
@@ -539,6 +555,7 @@ impl CliVirasoroTheory {
             Self::Projective(evaluator) => Ok(evaluator),
             Self::Product(evaluator) => Ok(evaluator),
             Self::Bundle(evaluator) => Ok(evaluator),
+            Self::LocalCompletion(evaluator) => Ok(evaluator.as_ref()),
             Self::Local(_) => Err(GwError::UnsupportedInvariant(
                 "negative-split/local Virasoro checking requires the QRR-conjugated operator, twisted pairing, and degree-zero twisted sector; the ordinary compact operator is deliberately not substituted"
                     .to_string(),
@@ -775,6 +792,12 @@ fn build_virasoro_target(args: &VirasoroTargetArgs) -> Result<CliVirasoroTheory,
             NegativeSplitTotalSpaceTheory::new(args.n, degrees)?,
         ));
     }
+    if let Some(raw) = &args.local_completion_twist {
+        let degrees = parse_negative_twist(raw)?;
+        return Ok(CliVirasoroTheory::LocalCompletion(Box::new(
+            NegativeSplitCompletionEvaluator::new(args.n, degrees)?,
+        )));
+    }
     Ok(CliVirasoroTheory::Projective(
         ProjectiveSpaceEvaluator::try_new(args.n)?,
     ))
@@ -906,6 +929,21 @@ fn parse_virasoro_time(
                     .ok_or_else(|| {
                         GwError::ParseError(format!(
                             "bundle insertion `{raw}` is outside the canonical basis"
+                        ))
+                    })?;
+                Ok(Descendant::new(insertion.descendant_power, basis))
+            })
+            .collect::<Result<Vec<_>, GwError>>()?,
+        CliVirasoroTheory::LocalCompletion(evaluator) => raw_insertions
+            .iter()
+            .map(|raw| {
+                let insertion = parse_bundle_insertion(raw)?;
+                let basis = evaluator
+                    .compact_theory()
+                    .basis_id(insertion.h_power, insertion.xi_power)
+                    .ok_or_else(|| {
+                        GwError::ParseError(format!(
+                            "compact-completion insertion `{raw}` is outside the canonical bundle basis"
                         ))
                     })?;
                 Ok(Descendant::new(insertion.descendant_power, basis))
@@ -2274,6 +2312,19 @@ mod tests {
                 "--d-max",
                 "0",
             ],
+            vec![
+                "gw-pn",
+                "virasoro",
+                "formula",
+                "--n",
+                "1",
+                "--local-completion-twist",
+                "-1,-1",
+                "--d",
+                "1,-1",
+                "--insert",
+                "tau1(H*xi)",
+            ],
         ] {
             let cli = Cli::try_parse_from(argv).unwrap();
             assert!(matches!(cli.command, Commands::Virasoro(_)));
@@ -2314,6 +2365,7 @@ mod tests {
                 product_m: None,
                 bundle_twists: Some(twists.to_string()),
                 local_twist: None,
+                local_completion_twist: None,
             })
             .unwrap()
         };
@@ -2332,6 +2384,7 @@ mod tests {
             product_m: Some(2),
             bundle_twists: None,
             local_twist: None,
+            local_completion_twist: None,
         })
         .unwrap();
         assert_eq!(
@@ -2346,6 +2399,7 @@ mod tests {
             product_m: None,
             bundle_twists: Some("0,2".to_string()),
             local_twist: None,
+            local_completion_twist: None,
         })
         .unwrap();
         assert_eq!(
@@ -2357,12 +2411,51 @@ mod tests {
     }
 
     #[test]
+    fn local_completion_virasoro_uses_bundle_coordinates_and_notation() {
+        let completion = build_virasoro_target(&VirasoroTargetArgs {
+            n: 1,
+            product_m: None,
+            bundle_twists: None,
+            local_twist: None,
+            local_completion_twist: Some("-1,-1".to_string()),
+        })
+        .unwrap();
+        assert!(completion.evaluator().is_ok());
+        assert_eq!(
+            parse_virasoro_degree(&completion, Some("2,-2"))
+                .unwrap()
+                .coordinates(),
+            &[2, -2]
+        );
+
+        let time = parse_virasoro_time(&completion, &["tau1(H*xi)".to_string()]).unwrap();
+        let CliVirasoroTheory::LocalCompletion(evaluator) = &completion else {
+            panic!("expected compact-completion evaluator");
+        };
+        let expected_basis = evaluator.compact_theory().basis_id(1, 1).unwrap();
+        let factors = time.factors().collect::<Vec<_>>();
+        assert_eq!(factors.len(), 1);
+        assert_eq!(factors[0], (&Descendant::new(1, expected_basis), 1));
+
+        let formula = gw_pn::constraints::virasoro::generate_constraint(
+            completion.theory(),
+            0,
+            2,
+            CurveClass::new(vec![1, -1]),
+            TimeMonomial::one(),
+        )
+        .unwrap();
+        assert_eq!(formula.sector.degree.coordinates(), &[1, -1]);
+    }
+
+    #[test]
     fn local_virasoro_formula_fails_before_using_compact_operator() {
         let local = build_virasoro_target(&VirasoroTargetArgs {
             n: 2,
             product_m: None,
             bundle_twists: None,
             local_twist: Some("-3".to_string()),
+            local_completion_twist: None,
         })
         .unwrap();
         let error = gw_pn::constraints::virasoro::generate_constraint(

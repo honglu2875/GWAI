@@ -22,8 +22,8 @@ pub use ast::{
 };
 pub use evaluator::{
     evaluate_constraint, evaluate_constraint_with_bounds, CanonicalCorrelatorEvaluator,
-    CorrelatorEvaluationBounds, ProductProjectiveEvaluator, ProjectiveBundleEvaluator,
-    ProjectiveSpaceEvaluator,
+    CorrelatorEvaluationBounds, NegativeSplitCompletionEvaluator, ProductProjectiveEvaluator,
+    ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator,
 };
 pub use generator::{
     generate_constraint, generate_constraint_with_term_limit, getzler_bracket,

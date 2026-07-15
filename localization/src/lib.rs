@@ -208,6 +208,10 @@ pub const MAX_SERIES_STATE_SPACE_RANK: usize = 64;
 pub const MAX_SERIES_DEGREE: usize = 64;
 pub const MAX_SERIES_DESCENDANT_POWER: usize = 64;
 pub const MAX_SERIES_CANDIDATE_COEFFICIENTS: usize = 100_000;
+/// Work guard for the branching descendant divisor recursion used only when
+/// the underlying pointed curve is unstable.  Stable graph evaluation keeps
+/// the larger series descendant boundary above.
+pub const MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI: usize = 8;
 
 impl SeriesRequest {
     pub fn new(n: usize, genus: usize, degree_max: usize, max_markings: usize) -> Self {

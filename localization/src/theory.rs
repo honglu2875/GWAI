@@ -1521,6 +1521,124 @@ impl GwTheory for NegativeSplitTotalSpaceTheory {
     }
 }
 
+/// Compact projective-bundle geometry containing a negative split total space.
+///
+/// For `V = direct_sum_i O(-a_i)` over `P^n`, let `A = max_i a_i`.
+/// Tensoring `O + V` by `O(A)` gives the normalized line-projectivization
+///
+/// `P(O(A) + direct_sum_i O(A-a_i))`.
+///
+/// With the convention `xi = -c1(S)` used by [`ProjectiveBundleTheory`], the
+/// section corresponding to `O(A)` has `xi|_S = -A H`.  Consequently its
+/// degree-`d` curve class is `(d, -A d)`, and
+/// `H^h xi^j|_S = (-A)^j H^(h+j)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NegativeSplitProjectiveCompletion {
+    local_theory: NegativeSplitTotalSpaceTheory,
+    compact_theory: ProjectiveBundleTheory,
+    max_degree: usize,
+}
+
+impl NegativeSplitProjectiveCompletion {
+    pub fn new(local_theory: NegativeSplitTotalSpaceTheory) -> Result<Self, GwError> {
+        let max_degree = *local_theory
+            .degrees()
+            .iter()
+            .max()
+            .expect("negative split theory has at least one degree");
+        let twist_count = local_theory.degrees().len().checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split projective-completion rank overflow".to_string(),
+            )
+        })?;
+        let mut twists = Vec::new();
+        twists.try_reserve_exact(twist_count).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "cannot allocate negative-split projective-completion twists".to_string(),
+            )
+        })?;
+        twists.push(max_degree);
+        twists.extend(
+            local_theory
+                .degrees()
+                .iter()
+                .map(|degree| max_degree - degree),
+        );
+        let compact_theory = ProjectiveBundleTheory::new(local_theory.base_dimension(), twists)?;
+        Ok(Self {
+            local_theory,
+            compact_theory,
+            max_degree,
+        })
+    }
+
+    pub fn local_theory(&self) -> &NegativeSplitTotalSpaceTheory {
+        &self.local_theory
+    }
+
+    pub fn compact_theory(&self) -> &ProjectiveBundleTheory {
+        &self.compact_theory
+    }
+
+    pub fn max_degree(&self) -> usize {
+        self.max_degree
+    }
+
+    /// The compact curve class of a degree-`degree` map to the distinguished
+    /// section.
+    pub fn section_curve(&self, degree: usize) -> Result<CurveClass, GwError> {
+        let degree_i64 = i64::try_from(degree).map_err(|_| scan_bound_overflow())?;
+        let max_degree_i64 = i64::try_from(self.max_degree).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "projective-completion normalization degree does not fit the curve lattice"
+                    .to_string(),
+            )
+        })?;
+        let fiber_degree = max_degree_i64
+            .checked_mul(degree_i64)
+            .and_then(i64::checked_neg)
+            .ok_or_else(scan_bound_overflow)?;
+        self.compact_theory.try_curve(degree, fiber_degree)
+    }
+
+    /// Return the base degree exactly when `curve` is a class supported on the
+    /// distinguished section.
+    pub fn section_degree(&self, curve: &CurveClass) -> Option<usize> {
+        let (base_degree, fiber_degree) = self.compact_theory.bidegree(curve)?;
+        let base_degree_i64 = i64::try_from(base_degree).ok()?;
+        let max_degree_i64 = i64::try_from(self.max_degree).ok()?;
+        let expected_fiber_degree = max_degree_i64.checked_mul(base_degree_i64)?.checked_neg()?;
+        (fiber_degree == expected_fiber_degree).then_some(base_degree)
+    }
+
+    /// Restrict a compact-bundle basis element to the distinguished section.
+    ///
+    /// `Ok(None)` denotes the zero class, including powers `H^h xi^j` with
+    /// `h + j > n`.  Valid nonzero restrictions are returned as a local basis
+    /// id followed by its exact scalar coefficient; an invalid compact basis
+    /// id is an error rather than a false zero.
+    pub fn restrict_basis_to_section(
+        &self,
+        basis: BasisId,
+    ) -> Result<Option<(BasisId, Rational)>, GwError> {
+        let (h_power, xi_power) = self.compact_theory.basis_powers(basis).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "projective-completion insertion is outside the compact bundle basis".to_string(),
+            )
+        })?;
+        let local_power = h_power.checked_add(xi_power).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "projective-completion insertion degree overflow".to_string(),
+            )
+        })?;
+        if local_power > self.local_theory.base_dimension() {
+            return Ok(None);
+        }
+        let coefficient = (-Rational::from(self.max_degree)).pow_usize(xi_power);
+        Ok(Some((BasisId(local_power), coefficient)))
+    }
+}
+
 fn scan_bound_overflow() -> GwError {
     GwError::UnsupportedInvariant("curve-class scan bound is too large".to_string())
 }
@@ -1949,5 +2067,104 @@ mod tests {
         assert!(local.state_space().pairing.is_none());
         assert!(local.state_space().c1_action.is_none());
         assert!(local.characteristic_numbers().is_none());
+    }
+
+    #[test]
+    fn negative_split_completion_derives_normalized_bundle_geometry() {
+        let local = NegativeSplitTotalSpaceTheory::new(3, vec![4, 1, 2]).unwrap();
+        let completion = NegativeSplitProjectiveCompletion::new(local).unwrap();
+
+        assert_eq!(completion.local_theory().degrees(), &[1, 2, 4]);
+        assert_eq!(completion.max_degree(), 4);
+        assert_eq!(completion.compact_theory().twists(), &[0, 2, 3, 4]);
+        assert_eq!(completion.local_theory().target_dimension(), 6);
+        assert_eq!(completion.compact_theory().target_dimension(), 6);
+
+        let local_curve = CurveClass::new(vec![2]);
+        let section_curve = completion.section_curve(2).unwrap();
+        assert_eq!(section_curve, completion.compact_theory().curve(2, -8));
+        assert_eq!(completion.section_degree(&section_curve), Some(2));
+        assert_eq!(
+            completion.section_degree(&completion.compact_theory().curve(2, -7)),
+            None
+        );
+        assert_eq!(
+            completion.local_theory().c1_pairing(&local_curve).unwrap(),
+            -6
+        );
+        assert_eq!(
+            completion
+                .compact_theory()
+                .c1_pairing(&section_curve)
+                .unwrap(),
+            -6
+        );
+        assert_eq!(
+            completion
+                .local_theory()
+                .virtual_dimension(4, &local_curve, 3)
+                .unwrap(),
+            -12
+        );
+        assert_eq!(
+            completion
+                .compact_theory()
+                .virtual_dimension(4, &section_curve, 3)
+                .unwrap(),
+            -12
+        );
+    }
+
+    #[test]
+    fn negative_split_completion_restricts_insertions_with_exact_signs() {
+        let local = NegativeSplitTotalSpaceTheory::new(3, vec![1, 2, 4]).unwrap();
+        let completion = NegativeSplitProjectiveCompletion::new(local).unwrap();
+        let compact = completion.compact_theory();
+
+        let restriction =
+            |h, xi| completion.restrict_basis_to_section(compact.basis_id(h, xi).unwrap());
+        assert_eq!(restriction(0, 0), Ok(Some((BasisId(0), Rational::one()))));
+        assert_eq!(
+            restriction(0, 1),
+            Ok(Some((BasisId(1), Rational::from(-4))))
+        );
+        assert_eq!(
+            restriction(0, 2),
+            Ok(Some((BasisId(2), Rational::from(16))))
+        );
+        assert_eq!(
+            restriction(1, 2),
+            Ok(Some((BasisId(3), Rational::from(16))))
+        );
+        assert_eq!(
+            restriction(0, 3),
+            Ok(Some((BasisId(3), Rational::from(-64))))
+        );
+        assert_eq!(restriction(1, 3), Ok(None));
+        assert_eq!(
+            completion
+                .restrict_basis_to_section(BasisId(usize::MAX))
+                .unwrap_err(),
+            GwError::ConventionMismatch(
+                "projective-completion insertion is outside the compact bundle basis".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn negative_split_completion_is_canonical_under_degree_permutations() {
+        let left = NegativeSplitProjectiveCompletion::new(
+            NegativeSplitTotalSpaceTheory::new(2, vec![1, 3, 2]).unwrap(),
+        )
+        .unwrap();
+        let right = NegativeSplitProjectiveCompletion::new(
+            NegativeSplitTotalSpaceTheory::new(2, vec![3, 2, 1]).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(left, right);
+        assert_eq!(left.compact_theory().twists(), &[0, 1, 2, 3]);
+        assert_eq!(left.section_curve(3).unwrap().coordinates(), &[3, -9]);
+        assert_eq!(left.section_degree(&CurveClass::zero(2)), Some(0));
     }
 }

@@ -2048,6 +2048,40 @@ pub fn reconstruct_bundle_invariants_in_theory(
         crate::graphs::stable_graph_generation_bounds(genus, insertions.len())?;
     }
     let ray_count = checked_reconstruction_ray_count("bundle", total_degree)?;
+
+    // F_2 is deformation equivalent to P^1 x P^1 under
+    //   (d1, d2) -> (d1 + d2, d1).
+    // The native non-Fano Birkhoff calibration is known to fabricate
+    // nonzero higher-genus coefficients when the first product degree is
+    // negative.  Refuse an on-dimension coefficient in that chamber before
+    // doing any ray work.  The independent deformation oracle used in the
+    // acceptance tests remains an explicit path; native reconstruction must
+    // not silently substitute it or return its known-bad coefficient.
+    if n == 1 && twists == [0, 2] {
+        for shifted_fiber_degree in 0..=total_degree {
+            let d1 = total_degree - shifted_fiber_degree;
+            let curve = theory.curve_from_shifted(d1, shifted_fiber_degree)?;
+            let d2_i64 = curve.coordinate(1).expect("rank-two bundle class");
+            let product_first_degree = curve
+                .coordinate(0)
+                .expect("rank-two bundle class")
+                .checked_add(d2_i64)
+                .ok_or_else(|| {
+                    GwError::AlgebraFailure("F_2 deformation degree overflow".to_string())
+                })?;
+            if product_first_degree >= 0 {
+                continue;
+            }
+            let d2 = isize::try_from(d2_i64).map_err(|_| {
+                GwError::AlgebraFailure("bundle fiber degree does not fit in isize".to_string())
+            })?;
+            if bundle_dimension_matches_in_theory(theory, genus, d1, d2, insertions)? {
+                return Err(GwError::UnsupportedInvariant(format!(
+                    "native F_2 reconstruction is not validated in the deformation-negative chamber d1 + d2 < 0 (requested on-dimension class ({d1},{d2})); use an explicitly selected deformation oracle instead"
+                )));
+            }
+        }
+    }
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
@@ -2236,6 +2270,27 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, GwError::UnsupportedInvariant(_)));
         assert!(error.to_string().contains("stable-graph"));
+    }
+
+    #[test]
+    fn f2_native_reconstruction_rejects_deformation_negative_coefficients() {
+        let theory = ProjectiveBundleTheory::new(1, vec![0, 2]).unwrap();
+        // In shifted total degree one, (d1,d2)=(1,-2) maps to product
+        // bidegree (-1,1).  This insertion is on dimension for its genus-one
+        // coefficient, so the native path must reject it rather than expose
+        // the known-spurious nonzero calibration value.
+        let error = reconstruct_bundle_invariants_in_theory(
+            &theory,
+            &base_weights(),
+            &fiber_weights(),
+            1,
+            1,
+            &[BundleInsertion::new(0, 0, 1)],
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("deformation-negative"));
+        assert!(error.to_string().contains("(1,-2)"));
     }
 
     #[test]

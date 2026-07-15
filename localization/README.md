@@ -378,9 +378,13 @@ The compact target selector is one of:
 Bundle twists must use the canonical nonnegative presentation with minimum
 zero, for the same `xi`-coordinate reason described under `bundle` above.
 
-`--n N --local-twist ...` is also recognized, but currently returns the
-explicit QRR-required error described below rather than generating a compact
-constraint.
+Two negative-split selectors have deliberately different meanings:
+
+- `--n N --local-twist ...` names the local theory itself and returns the
+  explicit QRR-required error described below; and
+- `--n N --local-completion-twist ...` audits its distinguished section inside
+  a compact projective bundle.  It generates the ordinary compact-completion
+  equation, not a QRR-conjugated local Virasoro equation.
 
 Use `--d d` for projective space and the geometric bidegree `--d d1,d2` for
 products and bundles.  In particular, a bundle's `d2` may be negative; the
@@ -428,10 +432,44 @@ cargo run --quiet -- virasoro formula --n 1 --bundle-twists 0,1 \
 cargo run --quiet -- virasoro check --n 1 --bundle-twists 0,1 \
   --k 0 --g 1 --d 0,0
 
+# Nonlinear high-genus audit: F_1 exceptional class, with nonzero
+# genus-reduction and degree-splitting contributions.
+cargo run --quiet -- virasoro check --n 1 --bundle-twists 0,1 \
+  --k 2 --g 2 --d 1,-1 --show-formula
+
 cargo run --quiet -- virasoro scan --n 1 --bundle-twists 0,1 \
   --k-min -1 --k-max -1 --g-max 0 --d-max 0 \
   --markings-max 2 --descendant-max 0 --equation-limit 100
 ```
+
+Negative-split projective-completion example:
+
+```bash
+# V = O(-1) + O(-1), A = 1, and the section class is (d,-A d).
+cargo run --quiet -- virasoro formula --n 1 \
+  --local-completion-twist -1,-1 --k 1 --g 2 --d 1,-1 --insert 1
+
+cargo run --quiet -- virasoro check --n 1 \
+  --local-completion-twist -1,-1 --k 1 --g 2 --d 1,-1 --insert 1 \
+  --show-formula
+```
+
+For `V = direct sum_i O(-a_i)` and `A = max_i a_i`, this mode uses the
+normalized compactification
+`P(O(A) + direct sum_i O(A-a_i))`.  With `xi = -c1(S)`, the distinguished
+section satisfies `xi|_S = -A H` and has class `(d,-A d)`.  Positive-degree
+section dependencies are restricted by
+`H^h xi^j -> (-A)^j H^(h+j)` and evaluated by the local twisted provider;
+degree-zero dependencies are evaluated by the compact projective-bundle
+backend.  A positive nonsection class is unsupported and therefore makes a
+check incomplete rather than being treated as zero.  Insertions use bundle
+syntax such as `tau1(H*xi)`.
+
+This completion audit is particularly useful for testing high-genus twisted
+values, but it is not generic twisted Virasoro.  Arbitrary multiplicative
+twists still require the twisted pairing, degree-zero sector, and the
+Quantum-Riemann--Roch-conjugated operators.  See
+[docs/virasoro.md](docs/virasoro.md) for the precise boundary.
 
 The point scan above reports 90 verified-zero equations, of which 26 are
 backend-exercised and 64 are structural-only.  The two small product/bundle
@@ -520,7 +558,7 @@ with missing dependencies is still `Incomplete`, not `Nonzero`.  `check`
 exits successfully only for `VerifiedZero`; `scan` exits successfully only
 when every generated equation is verified zero.
 
-Negative-split/local targets are deliberately refused by this compact
+Direct negative-split/local targets are deliberately refused by the compact
 checker.  For example,
 
 ```bash
@@ -531,8 +569,10 @@ cargo run --quiet -- virasoro check --n 2 --local-twist -3 \
 reports that local Virasoro generation requires the twisted pairing and the
 Quantum Riemann--Roch-conjugated operator.  The CLI does not substitute an
 ordinary compact operator built from the noncompact total-space dimension and
-`c_1`.  See [docs/virasoro.md](docs/virasoro.md) for the QRR boundary and the
-precise Getzler convention.
+`c_1`.  The separately named `--local-completion-twist` mode instead makes its
+compact target explicit, so it does not change this refusal or claim to be a
+generic local operator.  See [docs/virasoro.md](docs/virasoro.md) for the QRR
+boundary and the precise Getzler convention.
 
 ## `formula`
 

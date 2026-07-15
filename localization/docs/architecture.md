@@ -344,7 +344,14 @@ evaluator adapter for the canonical local record, not a second source of
 state-space or curve-lattice semantics.  Ordinary invariant evaluation is
 available, but compact Virasoro checking is not: the correct local operator
 is obtained by Quantum Riemann--Roch conjugation and needs the twisted
-pairing and degree-zero sector.  See [virasoro.md](virasoro.md).
+pairing and degree-zero sector.  The explicitly separate
+`NegativeSplitCompletionEvaluator` is a compact-section audit adapter: its
+compact projective-bundle theory remains the source of Virasoro data and
+degree-zero invariants, while positive section classes `(d,-A d)` restrict by
+`xi|_S=-A H` and are evaluated by the local provider.  It rejects positive
+nonsection classes, invalid basis ids, and every local calibration except the
+nonequivariant inverse-Euler mode.  It does not claim to implement generic
+QRR-conjugated Virasoro.  See [virasoro.md](virasoro.md).
 
 ## The algebra stack
 

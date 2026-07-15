@@ -134,6 +134,93 @@ drop-in use of these operators: frozen equivariant parameters do not obey
 the conformal grading used by `L_0`.  It needs a separately specified
 extended Euler operator.
 
+## Negative-split projective-completion audits
+
+The CLI has an explicit `--local-completion-twist` mode for a narrower but
+useful audit of negative-split theories.  Let
+
+```text
+V = direct sum_i O(-a_i) over P^n,       A = max_i a_i.
+```
+
+It constructs the normalized compact projective bundle
+
+```text
+Y = P(O(A) + direct sum_i O(A-a_i)).
+```
+
+In the library's line-projectivization convention `xi = -c1(S)`, the section
+selected by `O(A)` obeys
+
+```text
+xi|_S = -A H,
+[degree-d section curve] = (d,-A d),
+H^h xi^j|_S = (-A)^j H^(h+j).
+```
+
+The universal generator therefore sees one ordinary compact target, `Y`, and
+prints a human-readable compact Virasoro equation in the `H,xi` basis.  Its
+mixed evaluator has one exact routing rule:
+
+- a positive dependency in class `(d,-A d)`, `d > 0`, is restricted to the
+  section by the formula above and sent to the negative-split twisted
+  provider;
+- a degree-zero dependency is sent to the compact projective-bundle backend,
+  because positive-degree concavity does not identify the degree-zero local
+  and compact theories; and
+- any other positive compact curve class is unsupported.  It remains a
+  missing dependency, so the report is `Incomplete`, never an assumed zero.
+
+Construction also fails closed unless the supplied local provider is in its
+nonequivariant inverse-Euler calibration.  Euler, alternate-QRR, symbolic-base,
+and fiber-equivariant modes are different theories and are not silently
+reinterpreted by this adapter.
+
+For example, the conifold completion can be rendered and checked with
+
+```bash
+cargo run --quiet -- virasoro formula --n 1 \
+  --local-completion-twist -1,-1 --k 1 --g 2 --d 1,-1 --insert 1
+
+cargo run --quiet -- virasoro check --n 1 \
+  --local-completion-twist -1,-1 --k 1 --g 2 --d 1,-1 --insert 1 \
+  --show-formula
+```
+
+Insertion parsing is the compact bundle notation: for example,
+`tau1(H*xi)` or bare `xi`.  Degree input is always the rank-two compact class,
+not the rank-one local degree.  A generic bounded compact scan will encounter
+nonsection classes and fail closed; focused `formula` and `check` requests in
+section classes are the intended high-genus audit interface.
+
+This construction is not the Virasoro conjecture for an arbitrary twisted
+theory.  The direct `--local-twist` selector remains refused by the ordinary
+compact generator.  Genuine twisted Virasoro operators require conjugating
+by Quantum Riemann--Roch and representing the twisted pairing and degree-zero
+sector; none of those data are silently replaced by the compact completion.
+See [Coates--Givental, *Quantum Riemann--Roch, Lefschetz and
+Serre*](https://arxiv.org/abs/math/0110142) for that conjugation framework.
+Ordinary Virasoro constraints for the compact toric-bundle target are covered
+by [Coates--Givental--Tseng, *Virasoro Constraints for Toric
+Bundles*](https://arxiv.org/abs/1508.06282).
+
+The regression suite evaluates these equations rather than merely checking
+their shape:
+
+- the native `F_1 = P(O + O(1))` backend checks `L_2`, genus two, class
+  `(1,-1)`.  Both genus-reduction and degree-splitting terms contribute
+  nontrivially, and requested genus-two descendants are nonzero;
+- the resolved-conifold completion checks an `L_1`, genus-two equation with
+  nonzero genus-two descendants; and
+- a non-Calabi--Yau twisted case, `O(-2) -> P^2`, checks an `L_2`, genus-two,
+  degree-one equation with 73 terms and 29 backend dependencies.
+
+The two `L_2` tests perturb a nonzero genus-two dependency and require the
+formerly zero residual to become nonzero.  Full descendant divisor recursion
+also has direct product, bundle, and twisted dilaton regressions.  The native
+`F_2` exceptional-class probe is separately required to fail closed in the
+backend's known deformation-negative calibration gap.
+
 ## Exact-check semantics
 
 `ResidualReport` has three outcomes:

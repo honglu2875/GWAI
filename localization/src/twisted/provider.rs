@@ -419,6 +419,144 @@ impl TwistedProjectiveSpaceProvider {
         })
     }
 
+    /// Whether this provider has exactly the calibration used by the compact
+    /// positive-section identity.
+    ///
+    /// Euler twists, the alternate positive-fiber QRR convention, symbolic
+    /// base-equivariant output, and fiber-equivariant output are distinct
+    /// theories and must not be routed through the nonequivariant
+    /// inverse-Euler completion adapter.
+    pub fn supports_compact_completion_audit(&self) -> bool {
+        self.line_mode == TwistedLineMode::EarlyRational
+            && self.calibration_mode == TwistedCalibrationMode::InverseEuler
+            && !self.base.is_equivariant()
+    }
+
+    pub(crate) fn validate_compact_completion_audit(&self) -> Result<(), GwError> {
+        if self.supports_compact_completion_audit() {
+            Ok(())
+        } else {
+            Err(GwError::ConventionMismatch(
+                "compact-section audit requires the nonequivariant inverse-Euler calibration"
+                    .to_string(),
+            ))
+        }
+    }
+
+    /// Evaluate one positive-degree, non-equivariant correlator using this
+    /// provider's already constructed hypergeometric/Birkhoff/QRR
+    /// calibration.
+    ///
+    /// This crate-visible entry point is used by independent audit adapters
+    /// which must reuse the provider rather than silently reconstructing a
+    /// second copy of its geometry and calibration.  Positive-degree stable
+    /// maps whose underlying pointed curve is unstable are handled, for
+    /// bounded descendants, by recursively adding divisor markings and
+    /// applying the full descendant divisor equation.
+    pub(crate) fn evaluate_nonequivariant_positive_degree(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: &[Insertion],
+    ) -> Result<RatFun, GwError> {
+        self.validate_compact_completion_audit()?;
+        if degree == 0 {
+            return Err(GwError::UnsupportedInvariant(
+                "degree-zero local invariants are not supplied by the positive-section twisted evaluator"
+                    .to_string(),
+            ));
+        }
+        for (index, insertion) in insertions.iter().enumerate() {
+            if insertion.class.n() != self.n() {
+                return Err(GwError::ConventionMismatch(format!(
+                    "twisted P^{} audit insertion {index} belongs to P^{}",
+                    self.n(),
+                    insertion.class.n()
+                )));
+            }
+        }
+        if twisted_dimension_mismatch(self, genus, degree, insertions).is_some() {
+            return Ok(RatFun::zero());
+        }
+
+        self.evaluate_nonequivariant_with_divisor_recursion(genus, degree, insertions.to_vec())
+    }
+
+    fn evaluate_nonequivariant_with_divisor_recursion(
+        &self,
+        genus: usize,
+        degree: usize,
+        insertions: Vec<Insertion>,
+    ) -> Result<RatFun, GwError> {
+        let pointed_curve_is_stable = match genus {
+            0 => insertions.len() >= 3,
+            1 => !insertions.is_empty(),
+            _ => true,
+        };
+        if pointed_curve_is_stable {
+            let raw = crate::givental::compute_semisimple_graph_value(
+                self,
+                genus,
+                degree,
+                &insertions,
+                None,
+            )?;
+            return match raw.as_rational() {
+                Some(value) => Ok(RatFun::from_rational(value)),
+                None => Ok(RatFun::from_rational(
+                    raw.nonequivariant_limit_line(0, &[Rational::one()])?,
+                )),
+            };
+        }
+
+        let total_descendant_power = insertions.iter().try_fold(0usize, |total, insertion| {
+            total
+                .checked_add(insertion.descendant_power)
+                .ok_or_else(|| {
+                    GwError::UnsupportedInvariant(
+                        "twisted divisor-recursion descendant degree overflow".to_string(),
+                    )
+                })
+        })?;
+        let maximum = crate::MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI;
+        if total_descendant_power > maximum {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "twisted unstable descendant degree {total_descendant_power} exceeds the divisor-recursion implementation bound {maximum}"
+            )));
+        }
+
+        let divisor = crate::tau(
+            0,
+            crate::geometry::CohomologyClass::try_h_power(self.n(), 1)?,
+        );
+        let mut with_divisor = insertions.clone();
+        with_divisor.push(divisor);
+        let mut numerator =
+            self.evaluate_nonequivariant_with_divisor_recursion(genus, degree, with_divisor)?;
+        for index in 0..insertions.len() {
+            if insertions[index].descendant_power == 0 {
+                continue;
+            }
+            let power = insertions[index].class.pure_power().ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "twisted divisor recursion currently requires homogeneous hyperplane-basis insertions"
+                        .to_string(),
+                )
+            })?;
+            if power == self.n() {
+                continue;
+            }
+            let mut correction = insertions.clone();
+            correction[index].descendant_power -= 1;
+            correction[index].class =
+                crate::geometry::CohomologyClass::try_h_power(self.n(), power + 1)?;
+            let correction_value =
+                self.evaluate_nonequivariant_with_divisor_recursion(genus, degree, correction)?;
+            numerator = &numerator - &correction_value;
+        }
+        Ok(&numerator / &RatFun::from_rational(Rational::from(degree)))
+    }
+
     pub fn fiber_equivariant(n: usize, degrees: Vec<usize>) -> Result<Self, GwError> {
         let mut out = Self::new(n, degrees, false)?;
         out.line_mode = TwistedLineMode::FiberEquivariant;
