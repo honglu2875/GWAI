@@ -1,9 +1,11 @@
-//! The geometric target interface and its generic provider.
+//! A calibration adapter and its generic semisimple provider.
 //!
-//! A [`GwTarget`] describes a space to the engine: its dimension and Fano
-//! index datum, the classical eigenvalue seeds of divisor multiplication at
-//! the torus fixed points, and the quantum/classical divisor multiplication
-//! matrices.  [`TargetProvider`] turns any such description into a
+//! A [`GwTarget`] combines one canonical [`GwTheory`] with the reconstruction
+//! data that are specific to a semisimple calibration: the classical
+//! eigenvalue seeds of divisor multiplication at the torus fixed points and
+//! the quantum/classical divisor multiplication matrices.  Geometry such as
+//! dimension, the effective cone, and first-Chern pairings is never restated
+//! by this adapter.  [`TargetProvider`] turns any such calibration into a
 //! [`SemisimpleCohftProvider`] by running the quantum-ring recipe: Newton
 //! root series -> Lagrange canonical frame -> Bernoulli asymptotics from the
 //! seed differences -> flatness recursion, and the descendant `S`-matrix from
@@ -22,25 +24,15 @@
 //! equal by tests.
 
 use super::*;
+use crate::theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
-/// Geometric description of a target space with semisimple, divisor-generated
-/// small quantum cohomology and isolated torus fixed points.
+/// Semisimple calibration data attached to one canonical target theory.
 pub trait GwTarget: Send + Sync {
+    /// The sole geometric authority used by the reconstruction adapter.
+    fn canonical_theory(&self) -> &dyn GwTheory;
+
     /// Unique identifier (including parameters) for calibration caches.
     fn cache_key(&self) -> String;
-
-    /// Complex dimension of the target.
-    fn dimension(&self) -> usize;
-
-    /// `c1(TX)` evaluated on the curve-class generator (the Fano index
-    /// datum entering virtual dimensions).
-    fn c1_degree(&self) -> usize;
-
-    /// Whether a nonnegative Novikov degree represents an effective curve
-    /// class on this target.
-    fn degree_is_effective(&self, _degree: usize) -> bool {
-        true
-    }
 
     /// Classical eigenvalues of divisor multiplication — the restrictions of
     /// the divisor to the torus fixed points.  Must be pairwise distinct
@@ -68,7 +60,21 @@ pub trait GwTarget: Send + Sync {
 /// Generic [`SemisimpleCohftProvider`] over any [`GwTarget`].
 #[derive(Debug, Clone)]
 pub struct TargetProvider<T> {
-    pub target: T,
+    target: T,
+}
+
+fn rank_one_curve(theory: &dyn GwTheory, degree: usize) -> Result<CurveClass, GwError> {
+    if theory.curve_class_space().rank() != 1 {
+        return Err(GwError::ConventionMismatch(
+            "the generic target calibration requires a rank-one curve lattice".to_string(),
+        ));
+    }
+    let degree = i64::try_from(degree).map_err(|_| {
+        GwError::UnsupportedInvariant(
+            "Novikov degree does not fit the canonical signed curve lattice".to_string(),
+        )
+    })?;
+    Ok(CurveClass::new(vec![degree]))
 }
 
 impl<T: GwTarget> TargetProvider<T> {
@@ -76,8 +82,16 @@ impl<T: GwTarget> TargetProvider<T> {
         Self { target }
     }
 
+    pub fn target(&self) -> &T {
+        &self.target
+    }
+
+    pub fn into_target(self) -> T {
+        self.target
+    }
+
     fn rank(&self) -> usize {
-        self.target.classical_eigenvalue_seeds().len()
+        self.target.canonical_theory().state_space().basis.len()
     }
 
     /// Monic characteristic polynomial of the quantum divisor multiplication,
@@ -85,6 +99,12 @@ impl<T: GwTarget> TargetProvider<T> {
     fn quantum_charpoly(&self, q_degree: usize) -> Result<Vec<QSeries>, GwError> {
         let matrix = self.target.divisor_multiplication(q_degree, true)?;
         let size = matrix.rows();
+        if size != self.rank() {
+            return Err(GwError::ConventionMismatch(format!(
+                "target divisor multiplication has rank {size}, but the canonical state space has rank {}",
+                self.rank()
+            )));
+        }
         for col in 0..size.saturating_sub(1) {
             for row in 0..size {
                 let expected = if row == col + 1 {
@@ -114,6 +134,13 @@ impl<T: GwTarget> TargetProvider<T> {
         z_order: usize,
     ) -> Result<SemisimpleCalibration, GwError> {
         let seeds = self.target.classical_eigenvalue_seeds();
+        if seeds.len() != self.rank() {
+            return Err(GwError::ConventionMismatch(format!(
+                "target calibration has {} eigenvalue seeds, but the canonical state space has rank {}",
+                seeds.len(),
+                self.rank()
+            )));
+        }
         let charpoly = self.quantum_charpoly(q_degree)?;
         let roots = seeds
             .iter()
@@ -164,16 +191,20 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
     }
 
     fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
-        let dimension = self.target.dimension() as isize;
-        Some(
-            (1 - genus as isize) * (dimension - 3)
-                + self.target.c1_degree() as isize * degree as isize
-                + markings as isize,
-        )
+        let theory = self.target.canonical_theory();
+        let curve = rank_one_curve(theory, degree).ok()?;
+        theory.virtual_dimension(genus, &curve, markings).ok()
     }
 
     fn degree_is_effective(&self, degree: usize) -> bool {
-        self.target.degree_is_effective(degree)
+        let theory = self.target.canonical_theory();
+        let Ok(curve) = rank_one_curve(theory, degree) else {
+            return false;
+        };
+        !matches!(
+            theory.effectivity(&curve),
+            Ok(CurveEffectivity::Ineffective) | Err(_)
+        )
     }
 
     fn expected_degree_from_dimension(
@@ -181,16 +212,19 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
-        let insertion_degree = self.insertion_degree(insertions)? as isize;
-        let dimension = self.target.dimension() as isize;
-        let dimension_without_degree =
-            (1 - genus as isize) * (dimension - 3) + insertions.len() as isize;
+        let theory = self.target.canonical_theory();
+        let zero = rank_one_curve(theory, 0).ok()?;
+        let dimension_without_degree = theory
+            .virtual_dimension(genus, &zero, insertions.len())
+            .ok()? as i128;
+        let insertion_degree = self.insertion_degree(insertions)? as i128;
+        let generator = rank_one_curve(theory, 1).ok()?;
+        let denominator = i128::from(theory.c1_pairing(&generator).ok()?);
         let numerator = insertion_degree - dimension_without_degree;
-        let denominator = self.target.c1_degree() as isize;
         if denominator <= 0 || numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        let degree = (numerator / denominator) as usize;
+        let degree = usize::try_from(numerator / denominator).ok()?;
         self.degree_is_effective(degree).then_some(degree)
     }
 
@@ -259,26 +293,53 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
 /// theory — the implementation is identical for both.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectiveTarget {
-    pub n: usize,
-    pub seeds: Vec<RatFun>,
+    theory: ProjectiveSpaceTheory,
+    seeds: Vec<RatFun>,
 }
 
 impl ProjectiveTarget {
     pub fn equivariant(n: usize) -> Self {
-        Self {
-            n,
-            seeds: (0..=n).map(crate::algebra::lambda).collect(),
-        }
+        Self::try_equivariant(n).expect("projective calibration construction failed")
+    }
+
+    pub fn try_equivariant(n: usize) -> Result<Self, GwError> {
+        let theory = ProjectiveSpaceTheory::try_new(n)?;
+        let seeds = (0..theory.state_space().basis.len())
+            .map(crate::algebra::lambda)
+            .collect();
+        Ok(Self { theory, seeds })
     }
 
     pub fn at_weights(n: usize, weights: &[Rational]) -> Self {
-        Self {
-            n,
-            seeds: weights
-                .iter()
-                .map(|weight| RatFun::from_rational(weight.clone()))
-                .collect(),
+        Self::try_at_weights(n, weights).expect("projective calibration weights are invalid")
+    }
+
+    pub fn try_at_weights(n: usize, weights: &[Rational]) -> Result<Self, GwError> {
+        let theory = ProjectiveSpaceTheory::try_new(n)?;
+        let expected = theory.state_space().basis.len();
+        if weights.len() != expected {
+            return Err(GwError::ConventionMismatch(format!(
+                "P^{n} calibration has {} weights, expected {expected}",
+                weights.len()
+            )));
         }
+        let seeds = weights
+            .iter()
+            .map(|weight| RatFun::from_rational(weight.clone()))
+            .collect();
+        Ok(Self { theory, seeds })
+    }
+
+    pub fn n(&self) -> usize {
+        self.theory.n()
+    }
+
+    pub fn theory(&self) -> &ProjectiveSpaceTheory {
+        &self.theory
+    }
+
+    pub fn seeds(&self) -> &[RatFun] {
+        &self.seeds
     }
 
     /// Coefficients of `prod_i (x - seed_i)` in ascending powers of `x`.
@@ -297,6 +358,10 @@ impl ProjectiveTarget {
 }
 
 impl GwTarget for ProjectiveTarget {
+    fn canonical_theory(&self) -> &dyn GwTheory {
+        &self.theory
+    }
+
     fn cache_key(&self) -> String {
         let seeds = self
             .seeds
@@ -304,19 +369,7 @@ impl GwTarget for ProjectiveTarget {
             .map(|seed| seed.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        format!("p{}[{}]", self.n, seeds)
-    }
-
-    fn dimension(&self) -> usize {
-        self.n
-    }
-
-    fn c1_degree(&self) -> usize {
-        self.n + 1
-    }
-
-    fn degree_is_effective(&self, degree: usize) -> bool {
-        self.n != 0 || degree == 0
+        format!("{}[{seeds}]", self.theory.theory_fingerprint())
     }
 
     fn classical_eigenvalue_seeds(&self) -> Vec<RatFun> {
@@ -330,10 +383,10 @@ impl GwTarget for ProjectiveTarget {
     ) -> Result<SeriesMatrix, GwError> {
         // Companion matrix for H-multiplication: H^{n+1} reduces via
         // prod_i(H - seed_i) = q (or 0 classically).
-        let size = self.n + 1;
+        let size = self.theory.state_space().basis.len();
         let relation = self.classical_relation_polynomial();
         let mut matrix = vec![vec![QSeries::zero(q_degree); size]; size];
-        for col in 0..self.n {
+        for col in 0..size.saturating_sub(1) {
             matrix[col + 1][col] = QSeries::one(q_degree);
         }
         for row in 0..size {
@@ -351,12 +404,13 @@ impl GwTarget for ProjectiveTarget {
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError> {
         let coeffs = class.coeffs();
-        if coeffs.len() != self.n + 1 {
+        let expected = self.theory.state_space().basis.len();
+        if coeffs.len() != expected {
             return Err(GwError::ConventionMismatch(format!(
                 "P^{} insertion has {} coefficients, expected {}",
-                self.n,
+                self.n(),
                 coeffs.len(),
-                self.n + 1
+                expected
             )));
         }
         Ok(coeffs
@@ -502,5 +556,63 @@ mod tests {
             provider.expected_degree_from_dimension(0, &insertions),
             reference.expected_degree_from_dimension(0, &insertions)
         );
+    }
+
+    #[test]
+    fn target_adapter_uses_its_canonical_theory_for_all_geometry() {
+        let target = ProjectiveTarget::equivariant(2);
+        assert_eq!(target.n(), 2);
+        assert_eq!(
+            target.canonical_theory().theory_fingerprint(),
+            target.theory().theory_fingerprint()
+        );
+
+        let provider = TargetProvider::new(target);
+        for degree in 0..=3 {
+            let curve = provider.target().theory().curve(degree);
+            assert_eq!(
+                provider.virtual_dimension(2, degree, 4),
+                Some(
+                    provider
+                        .target()
+                        .theory()
+                        .virtual_dimension(2, &curve, 4)
+                        .unwrap()
+                )
+            );
+            assert_eq!(
+                provider.degree_is_effective(degree),
+                provider.target().theory().effectivity(&curve).unwrap()
+                    != CurveEffectivity::Ineffective
+            );
+        }
+    }
+
+    #[test]
+    fn projective_target_rejects_mismatched_calibration_rank() {
+        let error = ProjectiveTarget::try_at_weights(2, &[Rational::from(1)]).unwrap_err();
+        assert!(matches!(error, GwError::ConventionMismatch(_)));
+    }
+
+    #[test]
+    fn provider_rank_is_canonical_and_mismatched_calibration_is_rejected() {
+        let mut target = ProjectiveTarget::equivariant(2);
+        target.seeds.pop();
+        let provider = TargetProvider::new(target);
+        assert_eq!(provider.colors(), 3);
+        assert!(matches!(
+            provider.graph_kernel(0, 1, 0),
+            Err(GwError::ConventionMismatch(message))
+                if message.contains("canonical state space has rank 3")
+        ));
+    }
+
+    #[test]
+    fn target_adapter_rejects_unrepresentable_novikov_degree_without_panicking() {
+        let provider = TargetProvider::new(ProjectiveTarget::equivariant(1));
+        if usize::BITS > i64::BITS {
+            assert_eq!(provider.virtual_dimension(0, usize::MAX, 0), None);
+            assert!(!provider.degree_is_effective(usize::MAX));
+        }
     }
 }

@@ -5,7 +5,10 @@ use std::f64::consts::PI;
 use std::time::Instant;
 
 use crate::error::GwError;
-use crate::graphs::{stable_graphs, StableEdge, StableGraph};
+use crate::graphs::{
+    is_stable_moduli_range, stable_graph_dimension, stable_graph_generation_bounds,
+    try_stable_graphs, StableEdge, StableGraph,
+};
 
 use super::basis::basis_glossary;
 use super::expansion::FormulaExpansion;
@@ -36,12 +39,26 @@ impl FormulaRequest {
         }
     }
 
+    /// Fallible stable-curve dimension for untrusted request bounds.
+    pub fn try_graph_dimension(&self) -> Result<usize, GwError> {
+        stable_graph_dimension(self.genus, self.markings)
+    }
+
+    /// Stable-curve dimension after [`Self::validate`].
     pub fn graph_dimension(&self) -> usize {
-        3 * self.genus + self.markings - 3
+        self.try_graph_dimension()
+            .expect("validated formula request has a representable stable-graph dimension")
+    }
+
+    pub fn try_inverse_r_order(&self) -> Result<usize, GwError> {
+        self.try_graph_dimension()?
+            .checked_add(1)
+            .ok_or_else(|| GwError::UnsupportedInvariant("formula R-order overflow".to_string()))
     }
 
     pub fn inverse_r_order(&self) -> usize {
-        self.graph_dimension() + 1
+        self.try_inverse_r_order()
+            .expect("validated formula request has a representable R-order")
     }
 
     pub fn edge_power_max(&self) -> usize {
@@ -49,7 +66,7 @@ impl FormulaRequest {
     }
 
     pub fn translation_power_max(&self) -> usize {
-        self.graph_dimension() + 1
+        self.inverse_r_order()
     }
 
     pub fn descendant_s_order(&self) -> usize {
@@ -66,9 +83,20 @@ impl FormulaRequest {
                 "formula skeleton needs at least one canonical color".to_string(),
             ));
         }
-        if 2 * self.genus + self.markings <= 2 {
+        if !is_stable_moduli_range(self.genus, self.markings) {
             return Err(GwError::UnsupportedInvariant(
                 "formula skeleton is implemented for stable (g,m) ranges only".to_string(),
+            ));
+        }
+        self.try_graph_dimension()?;
+        self.try_inverse_r_order()?;
+        stable_graph_generation_bounds(self.genus, self.markings)?;
+        if self
+            .q_degree
+            .is_some_and(|degree| degree.checked_add(1).is_none())
+        {
+            return Err(GwError::UnsupportedInvariant(
+                "formula q-series truncation order overflow".to_string(),
             ));
         }
         Ok(())
@@ -154,7 +182,7 @@ pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton
     request.validate()?;
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let stable_started = Instant::now();
-    let stable_graphs = stable_graphs(request.genus, request.markings);
+    let stable_graphs = try_stable_graphs(request.genus, request.markings)?;
     if profile_enabled {
         eprintln!(
             "GW_PROFILE formula_stable_graphs={:.3}s genus={} markings={} graphs={}",
@@ -169,30 +197,32 @@ pub fn build_formula_skeleton(request: FormulaRequest) -> Result<FormulaSkeleton
     let graphs = stable_graphs
         .into_iter()
         .enumerate()
-        .map(|(index, graph)| {
+        .map(|(index, graph)| -> Result<GraphFormulaSkeleton, GwError> {
             let automorphism_order = graph.automorphism_order();
             let vertices = graph
                 .vertices
                 .iter()
                 .enumerate()
-                .map(|(vertex_index, vertex)| {
-                    let valence = graph.valence(vertex_index);
-                    VertexFormulaSlot {
-                        index: vertex_index,
-                        genus: vertex.genus,
-                        valence,
-                        psi_dimension_cap: 3 * vertex.genus + valence - 3,
-                    }
-                })
-                .collect();
-            GraphFormulaSkeleton {
+                .map(
+                    |(vertex_index, vertex)| -> Result<VertexFormulaSlot, GwError> {
+                        let valence = graph.valence(vertex_index);
+                        Ok(VertexFormulaSlot {
+                            index: vertex_index,
+                            genus: vertex.genus,
+                            valence,
+                            psi_dimension_cap: stable_graph_dimension(vertex.genus, valence)?,
+                        })
+                    },
+                )
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(GraphFormulaSkeleton {
                 index,
                 graph,
                 automorphism_order,
                 vertices,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     if profile_enabled {
         eprintln!(
             "GW_PROFILE formula_skeleton_wrap={:.3}s",
@@ -1748,8 +1778,14 @@ fn parenthesized_signed_sum_tex(terms: &[(char, String)]) -> String {
 }
 
 fn vertex_expanded_terms(genus: usize, color: &str, base_powers: &[usize]) -> Vec<String> {
-    let dimension = 3 * genus + base_powers.len() - 3;
-    let power_sum = base_powers.iter().sum::<usize>();
+    let dimension = stable_graph_dimension(genus, base_powers.len())
+        .expect("formula skeleton expansion uses a stable vertex");
+    let Some(power_sum) = base_powers
+        .iter()
+        .try_fold(0usize, |sum, power| sum.checked_add(*power))
+    else {
+        return Vec::new();
+    };
     if power_sum > dimension {
         return Vec::new();
     }
@@ -1800,8 +1836,14 @@ fn vertex_expanded_factor_terms_tex(
     color: &str,
     base_powers: &[usize],
 ) -> Vec<Vec<String>> {
-    let dimension = 3 * genus + base_powers.len() - 3;
-    let power_sum = base_powers.iter().sum::<usize>();
+    let dimension = stable_graph_dimension(genus, base_powers.len())
+        .expect("formula skeleton expansion uses a stable vertex");
+    let Some(power_sum) = base_powers
+        .iter()
+        .try_fold(0usize, |sum, power| sum.checked_add(*power))
+    else {
+        return Vec::new();
+    };
     if power_sum > dimension {
         return Vec::new();
     }
@@ -2095,6 +2137,23 @@ mod tests {
         assert_eq!(req.edge_power_max(), 4);
         assert_eq!(req.translation_power_max(), 5);
         assert_eq!(req.z_order(), 5);
+    }
+
+    #[test]
+    fn formula_request_rejects_extreme_genus_before_graph_generation() {
+        let req = FormulaRequest::new(usize::MAX, 0, 1);
+        assert!(matches!(
+            req.try_graph_dimension(),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+        let error = build_formula_skeleton(req).unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("stable-graph dimension"));
+
+        let representable_but_unbounded = FormulaRequest::new(isize::MAX as usize / 2 + 1, 0, 1);
+        let error = build_formula_skeleton(representable_but_unbounded).unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("built-in envelope"));
     }
 
     #[test]

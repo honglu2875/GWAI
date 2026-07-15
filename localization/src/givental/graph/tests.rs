@@ -1,5 +1,19 @@
 use super::super::*;
 use super::*;
+
+#[test]
+fn stable_range_predicate_is_overflow_free_at_extreme_genus() {
+    assert!(!is_stable_cohft_range(0, 2));
+    assert!(is_stable_cohft_range(0, 3));
+    assert!(!is_stable_cohft_range(1, 0));
+    assert!(is_stable_cohft_range(1, 1));
+    assert!(is_stable_cohft_range(2, 0));
+    assert!(is_stable_cohft_range(usize::MAX, usize::MAX));
+    assert!(matches!(
+        crate::graphs::stable_graph_dimension(usize::MAX, 0),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+}
 use crate::factored::FactoredRatFun;
 use crate::geometry::CohomologyClass;
 use crate::{tau, ComputeMode, InvariantRequest};

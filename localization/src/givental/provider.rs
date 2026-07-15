@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::factored::FactoredRatFun;
+use crate::theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
 /// Semisimple calibration data in a canonical idempotent frame.
 ///
@@ -355,21 +356,60 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectiveSpaceProvider {
-    pub n: usize,
     /// `true` keeps the symbolic equivariant lambda parameters.  `false` uses
     /// the current fast non-equivariant path, namely early specialization to a
     /// generic lambda line.
-    pub equivariant: bool,
-    pub weights: Vec<Rational>,
+    pub(crate) equivariant: bool,
+    pub(crate) weights: Vec<Rational>,
+    theory: ProjectiveSpaceTheory,
 }
 
 impl ProjectiveSpaceProvider {
     pub fn new(n: usize, equivariant: bool) -> Self {
-        Self {
-            n,
+        Self::try_new(n, equivariant)
+            .expect("projective-space provider dimension must be representable")
+    }
+
+    pub fn try_new(n: usize, equivariant: bool) -> Result<Self, GwError> {
+        let theory = ProjectiveSpaceTheory::try_new(n)?;
+        let size = theory.state_space().basis.len();
+        let mut weights = Vec::new();
+        weights.try_reserve_exact(size).map_err(|_| {
+            GwError::UnsupportedInvariant(format!(
+                "cannot allocate {size} projective-space provider weights"
+            ))
+        })?;
+        weights.extend((1..=size).map(Rational::from));
+        Ok(Self {
             equivariant,
-            weights: (1..=n + 1).map(Rational::from).collect(),
+            weights,
+            theory,
+        })
+    }
+
+    /// Construct with caller-selected rational lambda-line weights while
+    /// keeping the canonical theory immutable.  The weights are calibration
+    /// data and must be distinct so the fixed-point frame is semisimple.
+    pub fn try_with_weights(
+        n: usize,
+        equivariant: bool,
+        weights: Vec<Rational>,
+    ) -> Result<Self, GwError> {
+        let mut provider = Self::try_new(n, equivariant)?;
+        if weights.len() != provider.colors() {
+            return Err(GwError::ConventionMismatch(format!(
+                "P^{n} provider expects {} lambda-line weights, got {}",
+                provider.colors(),
+                weights.len()
+            )));
         }
+        for left in 0..weights.len() {
+            if weights[left + 1..].contains(&weights[left]) {
+                return Err(GwError::NonSemisimplePoint);
+            }
+        }
+        provider.weights = weights;
+        Ok(provider)
     }
 
     pub fn symbolic_equivariant(n: usize) -> Self {
@@ -380,8 +420,27 @@ impl ProjectiveSpaceProvider {
         Self::new(n, false)
     }
 
+    pub fn n(&self) -> usize {
+        self.theory.n()
+    }
+
+    pub fn is_equivariant(&self) -> bool {
+        self.equivariant
+    }
+
+    pub fn weights(&self) -> &[Rational] {
+        &self.weights
+    }
+
     pub(crate) fn specialized_nonequivariant(&self) -> bool {
         !self.equivariant
+    }
+
+    /// Canonical ordinary target data shared with validation and constraint
+    /// layers.  Equivariant calibration choices do not change the underlying
+    /// projective-space curve lattice or virtual dimension.
+    pub fn canonical_theory(&self) -> &ProjectiveSpaceTheory {
+        &self.theory
     }
 
     /// Validate that user-facing insertions belong to this projective target.
@@ -393,13 +452,13 @@ impl ProjectiveSpaceProvider {
     pub(crate) fn validate_insertions(&self, insertions: &[Insertion]) -> Result<(), GwError> {
         for (index, insertion) in insertions.iter().enumerate() {
             let class = &insertion.class;
-            if class.n() != self.n || class.coeffs().len() != self.colors() {
+            if class.n() != self.n() || class.coeffs().len() != self.colors() {
                 return Err(GwError::ConventionMismatch(format!(
                     "P^{} insertion {index} belongs to P^{} and has {} coefficients; expected a P^{} class with {} coefficients",
-                    self.n,
+                    self.n(),
                     class.n(),
                     class.coeffs().len(),
-                    self.n,
+                    self.n(),
                     self.colors()
                 )));
             }
@@ -412,7 +471,7 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
     type Insertion = Insertion;
 
     fn colors(&self) -> usize {
-        self.n + 1
+        self.theory.state_space().basis.len()
     }
 
     fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
@@ -429,15 +488,19 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
     }
 
     fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
-        Some(
-            (1 - genus as isize) * (self.n as isize - 3)
-                + (self.n + 1) as isize * degree as isize
-                + markings as isize,
-        )
+        let degree = i64::try_from(degree).ok()?;
+        self.canonical_theory()
+            .virtual_dimension(genus, &CurveClass::new(vec![degree]), markings)
+            .ok()
     }
 
     fn degree_is_effective(&self, degree: usize) -> bool {
-        self.n != 0 || degree == 0
+        let Ok(degree) = i64::try_from(degree) else {
+            return false;
+        };
+        self.canonical_theory()
+            .effectivity(&CurveClass::new(vec![degree]))
+            .is_ok_and(|effectivity| effectivity == CurveEffectivity::Effective)
     }
 
     fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
@@ -458,16 +521,24 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
-        let insertion_degree = self.insertion_degree(insertions)? as isize;
-        let dimension_without_degree =
-            (1 - genus as isize) * (self.n as isize - 3) + insertions.len() as isize;
-        let numerator = insertion_degree - dimension_without_degree;
-        let denominator = (self.n + 1) as isize;
-        if numerator < 0 || numerator % denominator != 0 {
+        let theory = self.canonical_theory();
+        let insertion_degree = isize::try_from(self.insertion_degree(insertions)?).ok()?;
+        let dimension_without_degree = theory
+            .virtual_dimension(genus, &CurveClass::new(vec![0]), insertions.len())
+            .ok()?;
+        let numerator = insertion_degree.checked_sub(dimension_without_degree)?;
+        let denominator =
+            isize::try_from(theory.c1_pairing(&CurveClass::new(vec![1])).ok()?).ok()?;
+        if denominator <= 0 || numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        let degree = (numerator / denominator) as usize;
-        self.degree_is_effective(degree).then_some(degree)
+        let degree = usize::try_from(numerator / denominator).ok()?;
+        let curve_degree = i64::try_from(degree).ok()?;
+        (theory
+            .effectivity(&CurveClass::new(vec![curve_degree]))
+            .ok()?
+            == CurveEffectivity::Effective)
+            .then_some(degree)
     }
 
     fn candidate_degrees_from_dimension(
@@ -504,10 +575,10 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError> {
         if self.equivariant {
-            projective_space_descendant_s_matrix(self.n, q_degree, z_order)
+            projective_space_descendant_s_matrix(self.n(), q_degree, z_order)
         } else {
             projective_space_descendant_s_matrix_at_lambda_weights(
-                self.n,
+                self.n(),
                 q_degree,
                 z_order,
                 &self.weights,
@@ -522,7 +593,7 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         projective_space_graph_kernel(
-            self.n,
+            self.n(),
             q_degree,
             r_order,
             graph_dimension,
@@ -552,7 +623,7 @@ impl SemisimpleCohftProvider for ProjectiveSpaceProvider {
         truncation: Option<&Truncation>,
     ) -> Result<Option<RatFun>, GwError> {
         let req = InvariantRequest {
-            n: self.n,
+            n: self.n(),
             genus,
             degree,
             insertions: insertions.to_vec(),
@@ -1070,7 +1141,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
         r_order: usize,
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
-        projective_space_factored_graph_kernel(self.0.n, q_degree, r_order, graph_dimension)
+        projective_space_factored_graph_kernel(self.0.n(), q_degree, r_order, graph_dimension)
     }
 
     fn coeff_insertion_vector(
@@ -1097,5 +1168,31 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
             .0
             .scalar_fallback_value(genus, degree, insertions, truncation)?
             .map(FactoredRatFun::from_ratfun))
+    }
+}
+
+#[cfg(test)]
+mod canonical_provider_tests {
+    use super::*;
+
+    #[test]
+    fn checked_custom_weights_preserve_theory_and_semisimplicity() {
+        let provider = ProjectiveSpaceProvider::try_with_weights(
+            1,
+            false,
+            vec![Rational::from(3), Rational::from(7)],
+        )
+        .unwrap();
+        assert_eq!(provider.n(), 1);
+        assert_eq!(provider.weights(), &[Rational::from(3), Rational::from(7)]);
+        assert!(ProjectiveSpaceProvider::try_with_weights(
+            1,
+            false,
+            vec![Rational::one(), Rational::one()]
+        )
+        .is_err());
+        assert!(
+            ProjectiveSpaceProvider::try_with_weights(1, false, vec![Rational::one()]).is_err()
+        );
     }
 }

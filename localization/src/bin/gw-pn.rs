@@ -1,14 +1,26 @@
 use clap::{Args, Parser, Subcommand};
+use gw_pn::constraints::virasoro::{
+    evaluate_constraint_with_bounds as evaluate_virasoro_constraint,
+    generate_constraint_with_term_limit, scan_constraints, CanonicalCorrelatorEvaluator,
+    CanonicalTheoryNotation, CorrelatorEvaluationBounds, Descendant, ProductProjectiveEvaluator,
+    ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator, ResidualOutcome, ResidualStatus,
+    TimeMonomial, VirasoroScanBounds,
+};
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
 use gw_pn::geometry::CohomologyClass;
 use gw_pn::givental::{
-    bidegree_dimension_matches, reconstruct_bidegree_invariants, reconstruct_bundle_invariants,
+    bidegree_dimension_matches_in_theory, bundle_dimension_matches_in_theory,
+    reconstruct_bidegree_invariants_in_theory, reconstruct_bundle_invariants_in_theory,
     BundleInsertion, ProductInsertion,
 };
 use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
 use gw_pn::testsuite::run_builtin_tests;
+use gw_pn::theory::{
+    BasisId, CurveClass, GwTheory, NegativeSplitTotalSpaceTheory, ProductProjectiveTheory,
+    ProjectiveBundleTheory, ProjectiveSpaceTheory,
+};
 use gw_pn::twisted::{
     compute_negative_split_twisted, compute_negative_split_twisted_factored,
     compute_negative_split_twisted_resolvent_packed,
@@ -34,6 +46,9 @@ const EXAMPLES: &str = "Examples:
   gw-pn twisted --n 2 --twist -1 --g 0 --d 1 --insert 'tau1(H^2)' --insert 'tau0(H)' --equivariant
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex
+  gw-pn virasoro formula --n 0 --k 1 --g 0 --d 0 --insert 1 --insert 1 --insert 1 --insert 1
+  gw-pn virasoro check --n 0 --k 0 --g 1 --d 0
+  gw-pn virasoro scan --n 0 --k-max 1 --g-max 1 --d-max 0 --markings-max 4
   gw-pn resolvent --n 2 --g 0 --d 1 --markings 3
   gw-pn degree-series --n 2 --twist -3 --g 2 --d-max 3
   gw-pn genus-series --n 2 --twist -3 --d 1 --g-max 3
@@ -42,7 +57,7 @@ const EXAMPLES: &str = "Examples:
 #[derive(Debug, Parser)]
 #[command(
     name = "gw-pn",
-    about = "Exact computations for Gromov-Witten invariants of projective space",
+    about = "Exact Gromov-Witten computations and Virasoro audits for projective targets",
     arg_required_else_help = true,
     after_help = EXAMPLES
 )]
@@ -76,6 +91,132 @@ enum Commands {
     /// Run the built-in validation suite
     #[command(alias = "test")]
     Tests,
+    /// Generate and exactly audit Virasoro coefficient constraints
+    Virasoro(VirasoroArgs),
+}
+
+#[derive(Debug, Args)]
+struct VirasoroArgs {
+    #[command(subcommand)]
+    command: VirasoroCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum VirasoroCommands {
+    /// Render one canonical-theory-derived coefficient equation without evaluating it
+    Formula(VirasoroFormulaArgs),
+    /// Evaluate every correlator in one equation and compute its exact residual
+    Check(VirasoroCheckArgs),
+    /// Audit a bounded family of coefficient equations
+    Scan(VirasoroScanArgs),
+}
+
+#[derive(Debug, Args, Clone)]
+struct VirasoroTargetArgs {
+    /// Dimension of P^n, or of the base P^n for a product/bundle/local target
+    #[arg(long)]
+    n: usize,
+    /// Select P^n x P^m and give m
+    #[arg(long, conflicts_with_all = ["bundle_twists", "local_twist"])]
+    product_m: Option<usize>,
+    /// Select P(O(a_1)+...+O(a_r)) over P^n; require nonnegative twists with min 0
+    #[arg(long, allow_hyphen_values = true, conflicts_with = "local_twist")]
+    bundle_twists: Option<String>,
+    /// Select the negative-split local theory, e.g. -3 or -1,-1
+    #[arg(long, allow_hyphen_values = true)]
+    local_twist: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct VirasoroFormulaArgs {
+    #[command(flatten)]
+    target: VirasoroTargetArgs,
+    /// Operator index -1..=64
+    #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
+    k: i32,
+    #[arg(long, default_value_t = 0, visible_alias = "genus")]
+    g: usize,
+    /// Geometric degree: d for P^n/local, d1,d2 for products/bundles
+    #[arg(long, visible_alias = "degree")]
+    d: Option<String>,
+    /// Target-specific insertion syntax; repeat for multiple markings
+    #[arg(long)]
+    insert: Vec<String>,
+    /// text or tex
+    #[arg(long, default_value = "text")]
+    format: String,
+    /// Maximum unaggregated terms in the generated coefficient equation
+    #[arg(long, default_value_t = 1_000_000)]
+    term_limit: usize,
+}
+
+#[derive(Debug, Args)]
+struct VirasoroCheckArgs {
+    #[command(flatten)]
+    target: VirasoroTargetArgs,
+    /// Operator index -1..=64
+    #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
+    k: i32,
+    #[arg(long, default_value_t = 0, visible_alias = "genus")]
+    g: usize,
+    #[arg(long, visible_alias = "degree")]
+    d: Option<String>,
+    #[arg(long)]
+    insert: Vec<String>,
+    /// Print the generated human-readable equation before its residual
+    #[arg(long)]
+    show_formula: bool,
+    /// Maximum unaggregated terms in the generated coefficient equation
+    #[arg(long, default_value_t = 1_000_000)]
+    term_limit: usize,
+    /// Maximum unique correlator dependencies evaluated
+    #[arg(long, default_value_t = 100_000)]
+    dependency_limit: usize,
+    /// Maximum missing-dependency diagnostics to print
+    #[arg(long, default_value_t = 20)]
+    show_missing: usize,
+}
+
+#[derive(Debug, Args)]
+struct VirasoroScanArgs {
+    #[command(flatten)]
+    target: VirasoroTargetArgs,
+    /// Minimum operator index, in -1..=64
+    #[arg(long, default_value_t = -1, allow_hyphen_values = true)]
+    k_min: i32,
+    /// Maximum operator index, in -1..=64
+    #[arg(long, default_value_t = 1, allow_hyphen_values = true)]
+    k_max: i32,
+    #[arg(long, default_value_t = 1)]
+    g_max: usize,
+    /// Bound in the canonical theory's effective/admissible grading
+    #[arg(long, default_value_t = 1)]
+    d_max: usize,
+    /// Maximum external markings in scanned profiles (hard cap: 20)
+    #[arg(long, default_value_t = 2)]
+    markings_max: usize,
+    #[arg(long, default_value_t = 1)]
+    descendant_max: usize,
+    #[arg(long, default_value_t = 10_000)]
+    equation_limit: usize,
+    /// Maximum unaggregated terms in any generated coefficient equation
+    #[arg(long, default_value_t = 1_000_000)]
+    term_limit: usize,
+    /// Maximum generated AST terms retained across the complete scan
+    #[arg(long, default_value_t = 1_000_000)]
+    total_term_limit: usize,
+    /// Maximum markings in any correlator dependency (default: markings-max + 2)
+    #[arg(long)]
+    dependency_markings_max: Option<usize>,
+    /// Maximum individual psi power in any dependency (default derived from k/descendant bounds)
+    #[arg(long)]
+    dependency_descendant_max: Option<usize>,
+    /// Maximum unique correlator dependencies evaluated per equation
+    #[arg(long, default_value_t = 100_000)]
+    dependency_limit: usize,
+    /// Maximum non-passing equations to print
+    #[arg(long, default_value_t = 20)]
+    show_failures: usize,
 }
 
 #[derive(Debug, Args)]
@@ -119,8 +260,9 @@ struct ProductArgs {
   gw-pn bundle --n 1 --twists 0,1 --g 0 --d 0 --insert H --insert xi --insert 1
   gw-pn bundle --n 1 --twists 0,1 --g 0 --d 1 --insert xi --insert xi --insert xi
 
-The bundle is P(O(a_1)+...+O(a_m)) over P^n; --twists are the a_l (any
-integers, internally normalized so min a_l = 0 since P(E) = P(E tensor L)).
+The bundle is P(O(a_1)+...+O(a_m)) over P^n.  --twists must be nonnegative
+and include 0.  Tensor-normalize other presentations explicitly: although
+P(E)=P(E tensor L), that operation changes xi and its curve coordinate.
 Insertions are tauK(CLASS) with CLASS a *-product of H^p and xi^q factors
 (or 1); a bare CLASS means tau0.  --d is the SHIFTED total degree
 d1 + (d2 + (max a) d1); the command reports every curve class (d1, d2) in
@@ -130,7 +272,7 @@ struct BundleArgs {
     /// Dimension of the base P^n
     #[arg(long)]
     n: usize,
-    /// Comma-separated bundle twists a_1,...,a_m (integers)
+    /// Comma-separated nonnegative bundle twists a_1,...,a_m, including 0
     #[arg(long, allow_hyphen_values = true)]
     twists: String,
     #[arg(long, visible_alias = "genus")]
@@ -347,6 +489,7 @@ fn run(command: Commands) -> Result<(), GwError> {
         Commands::Product(args) => run_product(args),
         Commands::Bundle(args) => run_bundle(args),
         Commands::Tests => run_tests(),
+        Commands::Virasoro(args) => run_virasoro(args),
     }
 }
 
@@ -372,6 +515,422 @@ fn run_tests() -> Result<(), GwError> {
             report.failed()
         )))
     }
+}
+
+enum CliVirasoroTheory {
+    Projective(ProjectiveSpaceEvaluator),
+    Product(ProductProjectiveEvaluator),
+    Bundle(ProjectiveBundleEvaluator),
+    Local(NegativeSplitTotalSpaceTheory),
+}
+
+impl CliVirasoroTheory {
+    fn theory(&self) -> &dyn GwTheory {
+        match self {
+            Self::Projective(evaluator) => evaluator.theory(),
+            Self::Product(evaluator) => evaluator.theory(),
+            Self::Bundle(evaluator) => evaluator.theory(),
+            Self::Local(theory) => theory,
+        }
+    }
+
+    fn evaluator(&self) -> Result<&dyn CanonicalCorrelatorEvaluator, GwError> {
+        match self {
+            Self::Projective(evaluator) => Ok(evaluator),
+            Self::Product(evaluator) => Ok(evaluator),
+            Self::Bundle(evaluator) => Ok(evaluator),
+            Self::Local(_) => Err(GwError::UnsupportedInvariant(
+                "negative-split/local Virasoro checking requires the QRR-conjugated operator, twisted pairing, and degree-zero twisted sector; the ordinary compact operator is deliberately not substituted"
+                    .to_string(),
+            )),
+        }
+    }
+}
+
+fn run_virasoro(args: VirasoroArgs) -> Result<(), GwError> {
+    match args.command {
+        VirasoroCommands::Formula(args) => run_virasoro_formula(args),
+        VirasoroCommands::Check(args) => run_virasoro_check(args),
+        VirasoroCommands::Scan(args) => run_virasoro_scan(args),
+    }
+}
+
+fn run_virasoro_formula(args: VirasoroFormulaArgs) -> Result<(), GwError> {
+    let target = build_virasoro_target(&args.target)?;
+    let degree = parse_virasoro_degree(&target, args.d.as_deref())?;
+    let time = parse_virasoro_time(&target, &args.insert)?;
+    let constraint = generate_constraint_with_term_limit(
+        target.theory(),
+        args.k,
+        args.g,
+        degree,
+        time,
+        args.term_limit,
+    )?;
+    let notation = CanonicalTheoryNotation::new(target.theory());
+    match args.format.trim().to_ascii_lowercase().as_str() {
+        "text" | "txt" => print!("{}", constraint.render_text_with(&notation)),
+        "tex" | "latex" => print!("{}", constraint.render_tex_with(&notation)),
+        other => {
+            return Err(GwError::ParseError(format!(
+                "unknown Virasoro formula format `{other}`; expected text or tex"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn run_virasoro_check(args: VirasoroCheckArgs) -> Result<(), GwError> {
+    let target = build_virasoro_target(&args.target)?;
+    let degree = parse_virasoro_degree(&target, args.d.as_deref())?;
+    let time = parse_virasoro_time(&target, &args.insert)?;
+    let constraint = generate_constraint_with_term_limit(
+        target.theory(),
+        args.k,
+        args.g,
+        degree,
+        time,
+        args.term_limit,
+    )?;
+    if args.show_formula {
+        let notation = CanonicalTheoryNotation::new(target.theory());
+        println!("{}", constraint.render_text_with(&notation));
+    }
+    let report = evaluate_virasoro_constraint(
+        target.evaluator()?,
+        &constraint,
+        CorrelatorEvaluationBounds {
+            dependency_limit: args.dependency_limit,
+            ..CorrelatorEvaluationBounds::unbounded()
+        },
+    );
+    print_virasoro_outcome(report.outcome());
+    println!(
+        "terms: {}/{} evaluated; dependencies: backend={} structural-zero={} missing={}",
+        report.evaluated_term_count(),
+        report.total_term_count(),
+        report.backend_correlator_count(),
+        report.structural_zero_correlator_count(),
+        report.missing_correlator_count()
+    );
+    for missing in report.missing_correlators().iter().take(args.show_missing) {
+        println!(
+            "missing: g={} beta={} {} ({:?})",
+            missing.correlator.genus,
+            missing.correlator.degree,
+            virasoro_insertion_label(target.theory(), missing.correlator.insertions()),
+            missing.reason
+        );
+    }
+    if report.missing_correlator_count() > args.show_missing {
+        println!(
+            "missing: ... {} additional retained diagnostics not shown",
+            report.missing_correlator_count() - args.show_missing
+        );
+    }
+    for note in report.notes() {
+        println!("note: {note}");
+    }
+    match report.status() {
+        ResidualStatus::VerifiedZero => Ok(()),
+        ResidualStatus::Nonzero => Err(GwError::ValidationFailure(
+            "Virasoro constraint has a nonzero exact residual".to_string(),
+        )),
+        ResidualStatus::Incomplete => Err(GwError::ValidationFailure(
+            "Virasoro constraint is incomplete; unsupported dependencies are not zeros".to_string(),
+        )),
+    }
+}
+
+fn run_virasoro_scan(args: VirasoroScanArgs) -> Result<(), GwError> {
+    let target = build_virasoro_target(&args.target)?;
+    let evaluator = target.evaluator()?;
+    let dependency_markings_max = match args.dependency_markings_max {
+        Some(bound) => bound,
+        None => args.markings_max.checked_add(2).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "dependency marking bound derived from --markings-max overflowed".to_string(),
+            )
+        })?,
+    };
+    let dependency_descendant_max = match args.dependency_descendant_max {
+        Some(bound) => bound,
+        None if args.k_max < 0 => args.descendant_max,
+        None => {
+            let k_max = usize::try_from(args.k_max).map_err(|_| {
+                GwError::UnsupportedInvariant("invalid Virasoro operator bound".to_string())
+            })?;
+            let shifted_external = args.descendant_max.checked_add(k_max).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "dependency descendant bound derived from scan bounds overflowed".to_string(),
+                )
+            })?;
+            let pure_descendant = k_max.checked_add(1).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "dependency descendant bound derived from --k-max overflowed".to_string(),
+                )
+            })?;
+            shifted_external.max(pure_descendant)
+        }
+    };
+    let report = scan_constraints(
+        evaluator,
+        VirasoroScanBounds {
+            operator_min: args.k_min,
+            operator_max: args.k_max,
+            genus_max: args.g_max,
+            degree_grading_max: args.d_max,
+            markings_max: args.markings_max,
+            descendant_max: args.descendant_max,
+            equation_limit: args.equation_limit,
+            generated_term_limit: args.term_limit,
+            total_generated_term_limit: args.total_term_limit,
+            correlator_bounds: CorrelatorEvaluationBounds {
+                max_genus: Some(args.g_max),
+                max_markings: Some(dependency_markings_max),
+                max_descendant_power: Some(dependency_descendant_max),
+                dependency_limit: args.dependency_limit,
+            },
+        },
+    )?;
+    println!(
+        "Virasoro scan: total={} terms={} verified-zero={} nonzero={} incomplete={}",
+        report.total(),
+        report.generated_term_count(),
+        report.verified_zero_count(),
+        report.nonzero_count(),
+        report.incomplete_count()
+    );
+    println!(
+        "coverage: backend-exercised={} structural-only={} vacuous={} unresolved-only={}",
+        report.backend_exercised_count(),
+        report.structural_only_count(),
+        report.vacuous_count(),
+        report.unresolved_only_count()
+    );
+    let mut shown = 0usize;
+    for entry in report.entries() {
+        if entry.report.status() == ResidualStatus::VerifiedZero || shown >= args.show_failures {
+            continue;
+        }
+        println!(
+            "{:?}: L_{} g={} beta={} time-degree={} missing={}",
+            entry.report.status(),
+            entry.constraint.operator.index,
+            entry.constraint.sector.genus,
+            entry.constraint.sector.degree,
+            entry
+                .constraint
+                .time_coefficient
+                .total_degree()
+                .unwrap_or(usize::MAX),
+            entry.report.missing_correlator_count()
+        );
+        shown += 1;
+    }
+    if report.is_success() {
+        Ok(())
+    } else {
+        Err(GwError::ValidationFailure(format!(
+            "Virasoro scan did not close: {} nonzero and {} incomplete equations",
+            report.nonzero_count(),
+            report.incomplete_count()
+        )))
+    }
+}
+
+fn print_virasoro_outcome(outcome: &ResidualOutcome<gw_pn::algebra::RatFun>) {
+    match outcome {
+        ResidualOutcome::VerifiedZero { exact_residual } => {
+            println!("status: verified-zero\nexact residual: {exact_residual}")
+        }
+        ResidualOutcome::Nonzero { exact_residual } => {
+            println!("status: NONZERO\nexact residual: {exact_residual}")
+        }
+        ResidualOutcome::Incomplete { exact_partial_sum } => {
+            println!("status: INCOMPLETE");
+            if let Some(partial) = exact_partial_sum {
+                println!("exact partial sum: {partial}");
+            }
+        }
+    }
+}
+
+fn build_virasoro_target(args: &VirasoroTargetArgs) -> Result<CliVirasoroTheory, GwError> {
+    if let Some(m) = args.product_m {
+        return Ok(CliVirasoroTheory::Product(ProductProjectiveEvaluator::new(
+            args.n, m,
+        )?));
+    }
+    if let Some(raw) = &args.bundle_twists {
+        let twists = parse_canonical_bundle_twists(raw)?;
+        let theory = ProjectiveBundleTheory::new(args.n, twists)?;
+        return Ok(CliVirasoroTheory::Bundle(ProjectiveBundleEvaluator::new(
+            theory,
+        )?));
+    }
+    if let Some(raw) = &args.local_twist {
+        let degrees = parse_negative_twist(raw)?;
+        return Ok(CliVirasoroTheory::Local(
+            NegativeSplitTotalSpaceTheory::new(args.n, degrees)?,
+        ));
+    }
+    Ok(CliVirasoroTheory::Projective(
+        ProjectiveSpaceEvaluator::try_new(args.n)?,
+    ))
+}
+
+fn parse_canonical_bundle_twists(raw: &str) -> Result<Vec<usize>, GwError> {
+    let values = raw
+        .split(',')
+        .map(|part| {
+            part.trim().parse::<i128>().map_err(|_| {
+                GwError::ParseError(format!("invalid bundle twist `{part}` in `{raw}`"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    canonical_bundle_twist_values(&values)
+}
+
+fn canonical_bundle_twist_values(values: &[i128]) -> Result<Vec<usize>, GwError> {
+    if values.is_empty() {
+        return Err(GwError::ParseError(
+            "bundle twists must be nonempty".to_string(),
+        ));
+    }
+    let twists = values
+        .iter()
+        .copied()
+        .map(|value| {
+            if value < 0 {
+                return Err(GwError::ParseError(
+                    "bundle twists must already be normalized as nonnegative integers with minimum 0; tensoring E changes the labelled xi class and xi.beta coordinate, so normalize the presentation explicitly"
+                        .to_string(),
+                ));
+            }
+            usize::try_from(value).map_err(|_| {
+                GwError::ParseError(
+                    "bundle twist does not fit in usize".to_string(),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if !twists.contains(&0) {
+        return Err(GwError::ParseError(
+            "bundle twists must already be normalized with minimum 0; tensoring E changes the labelled xi class and xi.beta coordinate, so normalize the presentation explicitly"
+                .to_string(),
+        ));
+    }
+    Ok(twists)
+}
+
+fn parse_virasoro_degree(
+    target: &CliVirasoroTheory,
+    raw: Option<&str>,
+) -> Result<CurveClass, GwError> {
+    let expected_rank = target.theory().curve_class_space().rank();
+    let raw = raw.unwrap_or(if expected_rank == 1 { "0" } else { "0,0" });
+    let coordinates = raw
+        .split(',')
+        .map(|part| {
+            part.trim().parse::<i64>().map_err(|_| {
+                GwError::ParseError(format!("invalid curve coordinate `{part}` in `{raw}`"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if coordinates.len() != expected_rank {
+        return Err(GwError::ParseError(format!(
+            "theory {} expects {expected_rank} curve coordinate(s), got {} in `{raw}`",
+            target.theory().theory_id(),
+            coordinates.len()
+        )));
+    }
+    let curve = CurveClass::new(coordinates);
+    target.theory().curve_class_space().validate(&curve)?;
+    Ok(curve)
+}
+
+fn parse_virasoro_time(
+    target: &CliVirasoroTheory,
+    raw_insertions: &[String],
+) -> Result<TimeMonomial<BasisId>, GwError> {
+    let descendants = match target {
+        CliVirasoroTheory::Projective(evaluator) => {
+            parse_insertions(evaluator.projective_theory().n(), raw_insertions)?
+                .into_iter()
+                .map(|insertion| {
+                    let power = insertion.class.pure_power().ok_or_else(|| {
+                        GwError::ConventionMismatch(
+                            "Virasoro CLI requires homogeneous basis insertions".to_string(),
+                        )
+                    })?;
+                    Ok(Descendant::new(insertion.descendant_power, BasisId(power)))
+                })
+                .collect::<Result<Vec<_>, GwError>>()?
+        }
+        CliVirasoroTheory::Local(theory) => {
+            parse_insertions(theory.base_dimension(), raw_insertions)?
+                .into_iter()
+                .map(|insertion| {
+                    let power = insertion.class.pure_power().ok_or_else(|| {
+                        GwError::ConventionMismatch(
+                            "Virasoro CLI requires homogeneous basis insertions".to_string(),
+                        )
+                    })?;
+                    Ok(Descendant::new(insertion.descendant_power, BasisId(power)))
+                })
+                .collect::<Result<Vec<_>, GwError>>()?
+        }
+        CliVirasoroTheory::Product(evaluator) => raw_insertions
+            .iter()
+            .map(|raw| {
+                let insertion = parse_product_insertion(raw)?;
+                let basis = evaluator
+                    .product_theory()
+                    .basis_id(insertion.h1_power, insertion.h2_power)
+                    .ok_or_else(|| {
+                        GwError::ParseError(format!(
+                            "product insertion `{raw}` is outside the canonical basis"
+                        ))
+                    })?;
+                Ok(Descendant::new(insertion.descendant_power, basis))
+            })
+            .collect::<Result<Vec<_>, GwError>>()?,
+        CliVirasoroTheory::Bundle(evaluator) => raw_insertions
+            .iter()
+            .map(|raw| {
+                let insertion = parse_bundle_insertion(raw)?;
+                let basis = evaluator
+                    .bundle_theory()
+                    .basis_id(insertion.h_power, insertion.xi_power)
+                    .ok_or_else(|| {
+                        GwError::ParseError(format!(
+                            "bundle insertion `{raw}` is outside the canonical basis"
+                        ))
+                    })?;
+                Ok(Descendant::new(insertion.descendant_power, basis))
+            })
+            .collect::<Result<Vec<_>, GwError>>()?,
+    };
+    Ok(TimeMonomial::from_descendants(descendants))
+}
+
+fn virasoro_insertion_label(theory: &dyn GwTheory, insertions: &[Descendant<BasisId>]) -> String {
+    if insertions.is_empty() {
+        return "<no insertions>".to_string();
+    }
+    insertions
+        .iter()
+        .map(|insertion| {
+            let class = theory
+                .state_space()
+                .element(insertion.class)
+                .map(|element| element.label.as_str())
+                .unwrap_or("<unknown class>");
+            format!("tau{}({class})", insertion.psi_power)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn run_psi(args: PsiArgs) -> Result<(), GwError> {
@@ -463,7 +1022,9 @@ fn run_formula(args: FormulaArgs) -> Result<(), GwError> {
             ))
         }
         (Some(colors), None) => colors,
-        (None, Some(n)) => n + 1,
+        (None, Some(n)) => n.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("formula state-space size is too large".to_string())
+        })?,
         (None, None) => return Err(GwError::ParseError("missing --colors or --n".to_string())),
     };
     let twist = parse_negative_twist_opt(args.twist.as_deref())?;
@@ -514,10 +1075,9 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
     let mode = parse_compute_mode(args.mode.as_deref())?;
     let equivariant = args.equivariant;
     let validate = args.validate;
-    let virtual_dimension = match twist_model.as_ref() {
-        Some(twist) => twist.virtual_dimension(n, genus, degree, markings),
-        None => ordinary_virtual_dimension(n, genus, degree, markings),
-    };
+    let dimension_theory = canonical_dimension_theory(n, twist_model.as_ref())?;
+    let virtual_dimension =
+        checked_virtual_dimension(dimension_theory.as_ref(), genus, degree, markings)?;
 
     let req = ResolventRequest {
         target_n: n,
@@ -885,16 +1445,17 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
             }
         }
         InsertionSelection::Bounded(scan) => {
+            let dimension_theory = canonical_dimension_theory(n, twist_model.as_ref())?;
             for degree in degree_min..=degree_max {
                 for insertions in &scan.profiles {
                     if !dimension_compatible(
-                        n,
-                        twist_model.as_ref(),
+                        dimension_theory.as_ref(),
                         genus,
                         degree,
                         insertions,
                         equivariant,
-                    ) {
+                        twist_model.is_some(),
+                    )? {
                         continue;
                     }
                     let label = insertion_list_label(insertions);
@@ -979,16 +1540,17 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
             }
         }
         InsertionSelection::Bounded(scan) => {
+            let dimension_theory = canonical_dimension_theory(n, twist_model.as_ref())?;
             for genus in genus_min..=genus_max {
                 for insertions in &scan.profiles {
                     if !dimension_compatible(
-                        n,
-                        twist_model.as_ref(),
+                        dimension_theory.as_ref(),
                         genus,
                         degree,
                         insertions,
                         equivariant,
-                    ) {
+                        twist_model.is_some(),
+                    )? {
                         continue;
                     }
                     let label = insertion_list_label(insertions);
@@ -1054,7 +1616,7 @@ fn run_compute(args: ComputeArgs) -> Result<(), GwError> {
     let result = compute(req)?;
     println!("{}", result.value);
     if args.nonequivariant_limit {
-        let weights = default_lambda_line_weights(n);
+        let weights = default_lambda_line_weights(n)?;
         let limit = result.nonequivariant_limit_line(n, &weights)?;
         println!("nonequivariant_limit: {limit}");
     }
@@ -1178,16 +1740,32 @@ fn parse_series_insertions(
 }
 
 fn run_product(args: ProductArgs) -> Result<(), GwError> {
+    let theory = ProductProjectiveTheory::new(args.n, args.m)?;
+    let (n, m) = theory.dimensions();
     let weights_x = match args.weights_x.as_deref() {
-        Some(raw) => parse_integer_weights(raw, args.n + 1)?,
+        Some(raw) => parse_integer_weights(raw, n + 1)?,
         // Defaults chosen so all pairwise sums lambda_i + mu_j are distinct.
-        None => (0..=args.n).map(|i| Rational::from(i + 1)).collect(),
+        None => (0..=n).map(|i| Rational::from(i + 1)).collect(),
     };
     let weights_y = match args.weights_y.as_deref() {
-        Some(raw) => parse_integer_weights(raw, args.m + 1)?,
-        None => (0..=args.m)
-            .map(|j| Rational::from((args.n + 2) * (j + 1)))
-            .collect(),
+        Some(raw) => parse_integer_weights(raw, m + 1)?,
+        None => {
+            let stride = n.checked_add(2).ok_or_else(|| {
+                GwError::UnsupportedInvariant("product default weight overflow".to_string())
+            })?;
+            (0..=m)
+                .map(|j| {
+                    stride
+                        .checked_mul(j + 1)
+                        .map(Rational::from)
+                        .ok_or_else(|| {
+                            GwError::UnsupportedInvariant(
+                                "product default weight overflow".to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
     };
     let insertions = args
         .insert
@@ -1195,9 +1773,8 @@ fn run_product(args: ProductArgs) -> Result<(), GwError> {
         .map(|raw| parse_product_insertion(raw))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let invariants = reconstruct_bidegree_invariants(
-        args.n,
-        args.m,
+    let invariants = reconstruct_bidegree_invariants_in_theory(
+        &theory,
         &weights_x,
         &weights_y,
         args.g,
@@ -1206,7 +1783,7 @@ fn run_product(args: ProductArgs) -> Result<(), GwError> {
     )?;
     for (d2, value) in invariants.iter().enumerate() {
         let d1 = args.d - d2;
-        if bidegree_dimension_matches(args.n, args.m, args.g, d1, d2, &insertions) {
+        if bidegree_dimension_matches_in_theory(&theory, args.g, d1, d2, &insertions)? {
             println!("N[({d1},{d2})] = {value}");
         } else {
             println!("N[({d1},{d2})] = 0 (dimension mismatch)");
@@ -1214,7 +1791,9 @@ fn run_product(args: ProductArgs) -> Result<(), GwError> {
     }
     println!(
         "note: reconstructed exactly from {} Novikov rays at rational equivariant weights",
-        args.d + 1
+        args.d.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("product reconstruction degree is too large".to_string())
+        })?
     );
     Ok(())
 }
@@ -1232,26 +1811,49 @@ fn run_bundle(args: BundleArgs) -> Result<(), GwError> {
     if raw_twists.is_empty() {
         return Err(GwError::ParseError("--twists must be nonempty".to_string()));
     }
-    // Normalize min a_l = 0: P(E) = P(E tensor L).
-    let minimum = *raw_twists.iter().min().expect("nonempty");
-    let twists = raw_twists
-        .iter()
-        .map(|value| (value - minimum) as usize)
-        .collect::<Vec<_>>();
+    let twists_in_input_order = canonical_bundle_twist_values(&raw_twists)?;
+    let theory = ProjectiveBundleTheory::new(args.n, twists_in_input_order.clone())?;
+    let twists = theory.twists();
+    let base_size = theory.base_dimension().checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("bundle base dimension is too large".to_string())
+    })?;
 
     let weights_base = match args.weights_base.as_deref() {
-        Some(raw) => parse_integer_weights(raw, args.n + 1)?,
-        None => (0..=args.n).map(|i| Rational::from(i + 1)).collect(),
+        Some(raw) => parse_integer_weights(raw, base_size)?,
+        None => (0..base_size).map(|i| Rational::from(i + 1)).collect(),
     };
-    // Fiber weight defaults must keep all grading eigenvalues distinct; a
-    // wide, twist-aware spacing suffices for small cases.
     let weights_fiber = match args.weights_fiber.as_deref() {
-        Some(raw) => parse_integer_weights(raw, twists.len())?,
-        None => twists
-            .iter()
-            .enumerate()
-            .map(|(l, &a)| Rational::from((args.n + 3) * (l + 1) + a * (args.n + 1)))
-            .collect(),
+        Some(raw) => {
+            let raw_weights = parse_integer_weights(raw, twists_in_input_order.len())?;
+            let mut paired = twists_in_input_order
+                .into_iter()
+                .zip(raw_weights)
+                .collect::<Vec<_>>();
+            paired.sort_by_key(|(twist, _)| *twist);
+            paired.into_iter().map(|(_, weight)| weight).collect()
+        }
+        None => {
+            let maximum = twists.iter().copied().max().expect("nonempty twists");
+            let stride = maximum
+                .checked_add(1)
+                .and_then(|value| value.checked_mul(base_size))
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| {
+                    GwError::UnsupportedInvariant("bundle default weight overflow".to_string())
+                })?;
+            (0..twists.len())
+                .map(|index| {
+                    stride
+                        .checked_mul(index)
+                        .map(Rational::from)
+                        .ok_or_else(|| {
+                            GwError::UnsupportedInvariant(
+                                "bundle default weight overflow".to_string(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
     };
 
     let insertions = args
@@ -1260,31 +1862,17 @@ fn run_bundle(args: BundleArgs) -> Result<(), GwError> {
         .map(|raw| parse_bundle_insertion(raw))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let invariants = reconstruct_bundle_invariants(
-        args.n,
-        &twists,
+    let invariants = reconstruct_bundle_invariants_in_theory(
+        &theory,
         &weights_base,
         &weights_fiber,
         args.g,
         args.d,
         &insertions,
     )?;
-    if minimum != 0 {
-        println!(
-            "note: twists normalized to {twists:?} (subtracted min a_l = {minimum}); \
-             invariants are unchanged"
-        );
-    }
     for (d1, d2, value) in &invariants {
         if value.to_string() == "0"
-            && !gw_pn::givental::bundle_dimension_matches(
-                args.n,
-                &twists,
-                args.g,
-                *d1,
-                *d2,
-                &insertions,
-            )
+            && !bundle_dimension_matches_in_theory(&theory, args.g, *d1, *d2, &insertions)?
         {
             println!("N[({d1},{d2})] = 0 (dimension mismatch)");
         } else {
@@ -1293,7 +1881,9 @@ fn run_bundle(args: BundleArgs) -> Result<(), GwError> {
     }
     println!(
         "note: reconstructed exactly from {} Novikov rays at rational equivariant weights",
-        args.d + 1
+        args.d.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("bundle reconstruction degree is too large".to_string())
+        })?
     );
     Ok(())
 }
@@ -1526,14 +2116,16 @@ fn parse_class(n: usize, raw: &str) -> Result<CohomologyClass, GwError> {
     }
 }
 
-fn default_lambda_line_weights(n: usize) -> Vec<Rational> {
-    let mut weights = Vec::with_capacity(n + 1);
-    let mut value = 1usize;
-    for _ in 0..=n {
-        weights.push(Rational::from(value));
-        value = value.saturating_mul(2);
-    }
-    weights
+fn default_lambda_line_weights(n: usize) -> Result<Vec<Rational>, GwError> {
+    let size = n.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("projective default weight count overflow".to_string())
+    })?;
+    let mut weights = Vec::new();
+    weights.try_reserve_exact(size).map_err(|_| {
+        GwError::UnsupportedInvariant(format!("cannot allocate {size} projective default weights"))
+    })?;
+    weights.extend((1..=size).map(Rational::from));
+    Ok(weights)
 }
 
 fn bounded_insertion_profiles(
@@ -1574,34 +2166,52 @@ fn collect_insertion_profiles(
 }
 
 fn dimension_compatible(
-    n: usize,
-    twist: Option<&NegativeSplitBundleTwist>,
+    theory: &dyn GwTheory,
     genus: usize,
     degree: usize,
     insertions: &[gw_pn::Insertion],
     equivariant: bool,
-) -> bool {
+    localized_twist: bool,
+) -> Result<bool, GwError> {
     let Some(total_degree) = insertion_degree(insertions) else {
-        return true;
+        return Ok(true);
     };
-    let virtual_dimension = match twist {
-        Some(twist) => twist.virtual_dimension(n, genus, degree, insertions.len()),
-        None => ordinary_virtual_dimension(n, genus, degree, insertions.len()),
-    };
+    let virtual_dimension = checked_virtual_dimension(theory, genus, degree, insertions.len())?;
     if equivariant {
         // Fiber-equivariant twists are represented over a localized
         // coefficient ring, so retain every bounded profile.  Ordinary
         // equivariant pushforwards only vanish in negative parameter degree.
-        return twist.is_some()
+        return Ok(localized_twist
             || usize::try_from(virtual_dimension)
                 .ok()
-                .is_none_or(|dimension| total_degree >= dimension);
+                .is_none_or(|dimension| total_degree >= dimension));
     }
-    usize::try_from(virtual_dimension).ok() == Some(total_degree)
+    Ok(usize::try_from(virtual_dimension).ok() == Some(total_degree))
 }
 
-fn ordinary_virtual_dimension(n: usize, genus: usize, degree: usize, markings: usize) -> isize {
-    (1 - genus as isize) * (n as isize - 3) + (n + 1) as isize * degree as isize + markings as isize
+fn checked_virtual_dimension(
+    theory: &dyn GwTheory,
+    genus: usize,
+    degree: usize,
+    markings: usize,
+) -> Result<isize, GwError> {
+    let degree = i64::try_from(degree)
+        .map_err(|_| GwError::UnsupportedInvariant("curve degree is too large".to_string()))?;
+    let curve = CurveClass::new(vec![degree]);
+    theory.virtual_dimension(genus, &curve, markings)
+}
+
+fn canonical_dimension_theory(
+    n: usize,
+    twist: Option<&NegativeSplitBundleTwist>,
+) -> Result<Box<dyn GwTheory>, GwError> {
+    match twist {
+        Some(twist) if twist.rank() > 0 => Ok(Box::new(NegativeSplitTotalSpaceTheory::new(
+            n,
+            twist.degrees().to_vec(),
+        )?)),
+        _ => Ok(Box::new(ProjectiveSpaceTheory::try_new(n)?)),
+    }
 }
 
 fn insertion_degree(insertions: &[gw_pn::Insertion]) -> Option<usize> {
@@ -1637,6 +2247,137 @@ mod tests {
     use super::*;
 
     #[test]
+    fn virasoro_cli_parses_formula_check_and_scan() {
+        for argv in [
+            vec![
+                "gw-pn", "virasoro", "formula", "--n", "0", "--k", "1", "--d", "0",
+            ],
+            vec![
+                "gw-pn",
+                "virasoro",
+                "check",
+                "--n",
+                "1",
+                "--product-m",
+                "1",
+                "--d",
+                "0,0",
+            ],
+            vec![
+                "gw-pn",
+                "virasoro",
+                "scan",
+                "--n",
+                "1",
+                "--bundle-twists",
+                "0,2",
+                "--d-max",
+                "0",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(argv).unwrap();
+            assert!(matches!(cli.command, Commands::Virasoro(_)));
+        }
+
+        let cli = Cli::try_parse_from([
+            "gw-pn",
+            "virasoro",
+            "formula",
+            "--n",
+            "0",
+            "--term-limit",
+            "17",
+        ])
+        .unwrap();
+        let Commands::Virasoro(VirasoroArgs {
+            command: VirasoroCommands::Formula(formula),
+        }) = cli.command
+        else {
+            panic!("expected Virasoro formula command");
+        };
+        assert_eq!(formula.term_limit, 17);
+    }
+
+    #[test]
+    fn bundle_twists_require_canonical_normalization_and_permute_canonically() {
+        let extreme = format!("{},{}", i128::MIN, i128::MAX);
+        assert!(matches!(
+            parse_canonical_bundle_twists(&extreme),
+            Err(GwError::ParseError(_))
+        ));
+        assert!(parse_canonical_bundle_twists("-2,0").is_err());
+        assert!(parse_canonical_bundle_twists("2,3").is_err());
+
+        let target = |twists: &str| {
+            build_virasoro_target(&VirasoroTargetArgs {
+                n: 1,
+                product_m: None,
+                bundle_twists: Some(twists.to_string()),
+                local_twist: None,
+            })
+            .unwrap()
+        };
+        let left = target("0,1");
+        let right = target("1,0");
+        assert_eq!(
+            left.theory().theory_fingerprint(),
+            right.theory().theory_fingerprint()
+        );
+    }
+
+    #[test]
+    fn virasoro_target_selection_uses_physical_multidegrees() {
+        let product = build_virasoro_target(&VirasoroTargetArgs {
+            n: 1,
+            product_m: Some(2),
+            bundle_twists: None,
+            local_twist: None,
+        })
+        .unwrap();
+        assert_eq!(
+            parse_virasoro_degree(&product, Some("2,3"))
+                .unwrap()
+                .coordinates(),
+            &[2, 3]
+        );
+
+        let bundle = build_virasoro_target(&VirasoroTargetArgs {
+            n: 1,
+            product_m: None,
+            bundle_twists: Some("0,2".to_string()),
+            local_twist: None,
+        })
+        .unwrap();
+        assert_eq!(
+            parse_virasoro_degree(&bundle, Some("1,-2"))
+                .unwrap()
+                .coordinates(),
+            &[1, -2]
+        );
+    }
+
+    #[test]
+    fn local_virasoro_formula_fails_before_using_compact_operator() {
+        let local = build_virasoro_target(&VirasoroTargetArgs {
+            n: 2,
+            product_m: None,
+            bundle_twists: None,
+            local_twist: Some("-3".to_string()),
+        })
+        .unwrap();
+        let error = gw_pn::constraints::virasoro::generate_constraint(
+            local.theory(),
+            0,
+            1,
+            CurveClass::new(vec![0]),
+            TimeMonomial::one(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("QRR"));
+    }
+
+    #[test]
     fn equivariant_p1_resolvent_validation_uses_semantic_coefficients() {
         run_resolvent(ResolventArgs {
             n: 1,
@@ -1658,11 +2399,13 @@ mod tests {
             tau(0, CohomologyClass::h_power(1, 1)),
             tau(0, CohomologyClass::h_power(1, 1)),
         ];
-        assert!(!dimension_compatible(1, None, 0, 0, &insertions, false));
-        assert!(dimension_compatible(1, None, 0, 0, &insertions, true));
+        let p1 = ProjectiveSpaceTheory::new(1);
+        assert!(!dimension_compatible(&p1, 0, 0, &insertions, false, false).unwrap());
+        assert!(dimension_compatible(&p1, 0, 0, &insertions, true, false).unwrap());
 
-        assert!(!dimension_compatible(5, None, 2, 0, &[], false));
-        assert!(dimension_compatible(5, None, 2, 0, &[], true));
+        let p5 = ProjectiveSpaceTheory::new(5);
+        assert!(!dimension_compatible(&p5, 2, 0, &[], false, false).unwrap());
+        assert!(dimension_compatible(&p5, 2, 0, &[], true, false).unwrap());
     }
 
     #[test]

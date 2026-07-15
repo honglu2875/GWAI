@@ -11,6 +11,73 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 
+use crate::error::GwError;
+
+/// Maximum `2g - 2 + n` accepted by the built-in stable-graph generator.
+/// Complexity eight retains the documented frontier probes while preventing
+/// untrusted bounds from entering an effectively unbounded enumeration.
+pub const MAX_STABLE_GRAPH_COMPLEXITY: usize = 8;
+/// Independent cap on labelled legs, whose assignments multiply graph counts.
+pub const MAX_STABLE_GRAPH_MARKINGS: usize = 8;
+
+/// Stability of a vertex (or complete connected curve) without evaluating
+/// the potentially overflowing expression `2g + n > 2`.
+pub(crate) fn is_stable_moduli_range(genus: usize, markings: usize) -> bool {
+    match genus {
+        0 => markings >= 3,
+        1 => markings >= 1,
+        _ => true,
+    }
+}
+
+/// Complex dimension `3g - 3 + n` of a stable moduli space.
+pub(crate) fn stable_graph_dimension(genus: usize, markings: usize) -> Result<usize, GwError> {
+    if !is_stable_moduli_range(genus, markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "stable-graph dimension is defined here only for stable (g,n) ranges".to_string(),
+        ));
+    }
+    genus
+        .checked_mul(3)
+        .and_then(|value| value.checked_add(markings))
+        .and_then(|value| value.checked_sub(3))
+        .ok_or_else(|| {
+            GwError::UnsupportedInvariant(format!(
+                "stable-graph dimension is not representable for (g,n)=({genus},{markings})"
+            ))
+        })
+}
+
+/// Validate the finite work envelope and derive the maximum vertex count for
+/// the built-in stable-graph enumeration.
+pub fn stable_graph_generation_bounds(
+    genus: usize,
+    markings: usize,
+) -> Result<StableGraphBounds, GwError> {
+    if !is_stable_moduli_range(genus, markings) {
+        return Err(GwError::UnsupportedInvariant(
+            "stable-graph generation requires a stable (g,n) range".to_string(),
+        ));
+    }
+    let complexity = genus
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(markings))
+        .and_then(|value| value.checked_sub(2))
+        .ok_or_else(|| {
+            GwError::UnsupportedInvariant(format!(
+                "stable-graph complexity is not representable for (g,n)=({genus},{markings})"
+            ))
+        })?;
+    if complexity > MAX_STABLE_GRAPH_COMPLEXITY || markings > MAX_STABLE_GRAPH_MARKINGS {
+        return Err(GwError::UnsupportedInvariant(format!(
+            "stable-graph generation for (g,n)=({genus},{markings}) exceeds the built-in envelope 2g-2+n <= {MAX_STABLE_GRAPH_COMPLEXITY}, n <= {MAX_STABLE_GRAPH_MARKINGS}"
+        )));
+    }
+    Ok(StableGraphBounds {
+        max_vertices: complexity.max(1),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StableVertex {
     pub genus: usize,
@@ -117,7 +184,7 @@ impl StableGraph {
         self.vertices
             .iter()
             .enumerate()
-            .all(|(idx, vertex)| 2 * vertex.genus + self.valence(idx) > 2)
+            .all(|(idx, vertex)| is_stable_moduli_range(vertex.genus, self.valence(idx)))
     }
 
     pub fn canonical_label(&self) -> String {
@@ -415,13 +482,20 @@ pub struct StableGraphBounds {
 }
 
 pub fn stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
+    try_stable_graphs(genus, legs)
+        .expect("stable_graphs input exceeds the built-in finite generation envelope")
+}
+
+/// Fallible stable-graph enumeration for untrusted genus and marking bounds.
+pub fn try_stable_graphs(genus: usize, legs: usize) -> Result<Vec<StableGraph>, GwError> {
+    let bounds = stable_graph_generation_bounds(genus, legs)?;
     // The universal Givental sum only needs stable graphs for fixed (g,n), so
     // cache them independently of target, degree, and insertions — in memory
     // for this process, and on disk for expensive tables so high-genus runs
     // pay generation once per machine rather than once per invocation.
     static CACHE: OnceLock<StableGraphCache> = OnceLock::new();
     let cache = CACHE.get_or_init(StableGraphCache::new);
-    cache.get_or_generate(genus, legs)
+    Ok(cache.get_or_generate(genus, legs, bounds))
 }
 
 struct StableGraphCache {
@@ -443,7 +517,12 @@ impl StableGraphCache {
         }
     }
 
-    fn get_or_generate(&self, genus: usize, legs: usize) -> Vec<StableGraph> {
+    fn get_or_generate(
+        &self,
+        genus: usize,
+        legs: usize,
+        bounds: StableGraphBounds,
+    ) -> Vec<StableGraph> {
         let key = (genus, legs);
         let mut entries = self.entries.lock().unwrap();
         loop {
@@ -460,7 +539,7 @@ impl StableGraphCache {
         }
         drop(entries);
 
-        let graphs = generate_or_load_stable_graphs(genus, legs);
+        let graphs = generate_or_load_stable_graphs(genus, legs, bounds);
 
         let mut entries = self.entries.lock().unwrap();
         entries.insert(key, StableGraphCacheEntry::Ready(graphs.clone()));
@@ -469,25 +548,17 @@ impl StableGraphCache {
     }
 }
 
-fn generate_or_load_stable_graphs(genus: usize, legs: usize) -> Vec<StableGraph> {
+fn generate_or_load_stable_graphs(
+    genus: usize,
+    legs: usize,
+    bounds: StableGraphBounds,
+) -> Vec<StableGraph> {
     if let Some(graphs) = load_stable_graphs_from_disk(genus, legs) {
         return graphs;
     }
 
-    let stable_complexity = 2isize * genus as isize - 2 + legs as isize;
-    let max_vertices = if stable_complexity > 0 {
-        stable_complexity as usize
-    } else {
-        1
-    };
     let started = std::time::Instant::now();
-    let graphs = stable_graphs_with_bounds(
-        genus,
-        legs,
-        StableGraphBounds {
-            max_vertices: max_vertices.max(1),
-        },
-    );
+    let graphs = stable_graphs_with_bounds(genus, legs, bounds);
     if started.elapsed() >= DISK_CACHE_MIN_GENERATION_TIME {
         store_stable_graphs_to_disk(genus, legs, &graphs);
     }
@@ -1270,6 +1341,33 @@ impl RollbackDisjointSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stability_check_does_not_overflow_for_extreme_vertex_genus() {
+        let graph = StableGraph {
+            vertices: vec![StableVertex { genus: usize::MAX }],
+            edges: Vec::new(),
+            legs: Vec::new(),
+        };
+        assert!(graph.is_stable());
+    }
+
+    #[test]
+    fn fallible_generation_enforces_the_finite_work_envelope() {
+        assert!(stable_graph_generation_bounds(4, 2).is_ok());
+        assert!(matches!(
+            stable_graph_generation_bounds(5, 1),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+        assert!(matches!(
+            stable_graph_generation_bounds(0, 9),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+        assert!(matches!(
+            try_stable_graphs(usize::MAX, 0),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+    }
 
     fn permutations(n: usize) -> Vec<Vec<usize>> {
         fn rec(start: usize, values: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {

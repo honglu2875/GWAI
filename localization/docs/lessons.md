@@ -323,9 +323,10 @@ non-effective, so the shifted degree `d₂' = d₂ + A d₁ ≥ 0` is a valid
 nonnegative grading covering the cone.  Two normalizations make this clean
 and are worth internalizing:
 
-- **`P(E) ≅ P(E ⊗ L)`**: twisting all summands by a line bundle changes
-  nothing, so normalize `min a_l = 0` up front.  Fewer cases, and the shift
-  `A` is then just `max a_l`.
+- **`P(E) ≅ P(E ⊗ L)`**: twisting all summands by a line bundle preserves the
+  variety but shifts the labelled tautological class and its curve coordinate.
+  Normalize `min a_l = 0` together with that coordinate change.  This leaves
+  fewer cases, and the shift `A` is then just `max a_l`.
 - Choosing the grading divisor `D = ξ + (A+1)H` (rather than `ξ` alone)
   guarantees the classical eigenvalues `D|_{(i,j)}` are distinct at generic
   weights, so the ring is cyclic over `D` and the entire single-generator

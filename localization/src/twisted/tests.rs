@@ -9,6 +9,65 @@ fn negative_split_degrees_must_be_positive() {
     assert!(NegativeSplitBundleTwist::new(vec![3]).is_ok());
     assert!(NegativeSplitBundleTwist::new(vec![1, 1]).is_ok());
     assert!(NegativeSplitBundleTwist::new(vec![0]).is_err());
+    assert!(matches!(
+        NegativeSplitBundleTwist::new(vec![usize::MAX, 1]),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert_eq!(
+        NegativeSplitBundleTwist::new(vec![3, 1, 2])
+            .unwrap()
+            .degrees(),
+        &[1, 2, 3]
+    );
+}
+
+#[test]
+fn twist_geometry_helpers_delegate_to_the_canonical_theory() {
+    use crate::theory::{CurveClass, GwTheory, NegativeSplitTotalSpaceTheory};
+
+    let twist = NegativeSplitBundleTwist::new(vec![1, 2]).unwrap();
+    let theory = NegativeSplitTotalSpaceTheory::new(2, vec![1, 2]).unwrap();
+    assert_eq!(
+        twist.try_total_space_dimension(2).unwrap(),
+        theory.target_dimension()
+    );
+    for genus in 0..=2 {
+        for degree in 0..=3 {
+            assert_eq!(
+                twist.try_virtual_dimension(2, genus, degree, 4).unwrap(),
+                theory
+                    .virtual_dimension(
+                        genus,
+                        &CurveClass::new(vec![i64::try_from(degree).unwrap()]),
+                        4,
+                    )
+                    .unwrap()
+            );
+        }
+    }
+}
+
+#[test]
+fn twisted_provider_rejects_unrepresentable_canonical_geometry() {
+    assert!(matches!(
+        TwistedProjectiveSpaceProvider::new(1, vec![usize::MAX], false),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        TwistedProjectiveSpaceProvider::new(usize::MAX, vec![1], false),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+}
+
+#[test]
+fn default_twisted_weights_avoid_spurious_nonsemisimple_poles() {
+    let provider = TwistedProjectiveSpaceProvider::new(2, vec![3, 3], false).unwrap();
+    let insertions = vec![
+        tau(0, CohomologyClass::h_power(2, 1)),
+        tau(0, CohomologyClass::one(2)),
+        tau(0, CohomologyClass::one(2)),
+    ];
+    crate::givental::compute_semisimple_graph_value(&provider, 0, 1, &insertions, None).unwrap();
 }
 
 #[test]
@@ -1048,7 +1107,7 @@ fn fiber_equivariant_resolvent_uses_factored_packed_path() {
         let rational_provider = TwistedProjectiveSpaceProvider::rational_lambda_line_with_weights(
             1,
             vec![1, 1],
-            twisted_default_base_weights(1),
+            vec![Rational::from(1), Rational::from(2)],
             vec![Rational::from(mu0), Rational::from(mu1)],
         )
         .unwrap();

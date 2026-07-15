@@ -1,7 +1,8 @@
 # gw-pn
 
 Experimental exact computations for Gromov-Witten invariants of projective
-spaces and negative split-bundle twists.
+spaces, products, projective bundles, and negative split-bundle twists, with
+exact symbolic Virasoro auditing for the compact theories.
 
 Run commands through Cargo from the repository root:
 
@@ -21,7 +22,9 @@ spelled-out aliases (`--genus` for `--g`, `--degree` for `--d`, and so on).
 A code-pointer map of the layers below is in
 [docs/architecture.md](docs/architecture.md); non-obvious findings and design
 lessons from building this engine are collected in
-[docs/lessons.md](docs/lessons.md).
+[docs/lessons.md](docs/lessons.md).  The Virasoro convention, coefficient
+extraction, and support boundary are documented separately in
+[docs/virasoro.md](docs/virasoro.md).
 
 ## Quick Checks
 
@@ -327,8 +330,11 @@ the defaults are chosen so all fixed-point eigenvalue sums stay distinct.
 ## `bundle`
 
 Computes invariants of a projective bundle `P(O(a_1) + ... + O(a_m))` over
-`P^n` from its toric I-function.  `--twists` are the `a_l` (any integers,
-normalized internally so `min a_l = 0`, since `P(E) = P(E ⊗ L)`).  `--d` is
+`P^n` from its toric I-function.  `--twists` are nonnegative `a_l` and must
+include zero.  An isomorphic presentation `P(E ⊗ L)` must be normalized by
+the caller because tensoring changes the labelled tautological class `xi` and
+the coordinate `xi . beta`; silently retaining those labels would request a
+different invariant.  `--d` is
 the *shifted* total degree `d1 + (d2 + (max a) d1)`, and the command reports
 every curve class `(d1, d2)` in that slice — `d2 = xi . beta` may be negative
 (the exceptional section of a Hirzebruch surface has `d2 < 0`).
@@ -353,6 +359,180 @@ Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
 cases, rank-three negative-direction checks against `P^1 x P^2`, and a
 zero-twist `P(O + O)` calibration check against the product engine through
 higher `R` order.
+
+## `virasoro`
+
+Generates and exactly audits finite coefficients of the corrected
+Eguchi--Hori--Xiong/Getzler Virasoro equations.  This is separate from the
+top-level `formula` command: `virasoro formula` displays a constraint on the
+total descendant partition function, while `formula` displays a stable-graph
+contraction skeleton.
+
+The compact target selector is one of:
+
+- `--n N` for `P^N`;
+- `--n N --product-m M` for `P^N x P^M`; or
+- `--n N --bundle-twists a_1,...,a_r` for
+  `P(O(a_1)+...+O(a_r)) -> P^N`.
+
+Bundle twists must use the canonical nonnegative presentation with minimum
+zero, for the same `xi`-coordinate reason described under `bundle` above.
+
+`--n N --local-twist ...` is also recognized, but currently returns the
+explicit QRR-required error described below rather than generating a compact
+constraint.
+
+Use `--d d` for projective space and the geometric bidegree `--d d1,d2` for
+products and bundles.  In particular, a bundle's `d2` may be negative; the
+constraint generator receives the reconstructed geometric class, not a
+Novikov-ray coefficient or shifted total degree.  Insertions use the same
+homogeneous basis syntax as the corresponding computation command.
+
+`P^n` examples:
+
+```bash
+# Render a non-linear L_1 coefficient for point theory.
+cargo run --quiet -- virasoro formula --n 0 --k 1 --g 0 --d 0 \
+  --insert 1 --insert 1 --insert 1 --insert 1
+
+# Display and exactly check the genus-one L_0 anomaly equation.
+cargo run --quiet -- virasoro check --n 0 --k 0 --g 1 --d 0 --show-formula
+
+# This bounded scan closes with 90 verified-zero equations.
+cargo run --quiet -- virasoro scan --n 0 --k-max 1 --g-max 1 --d-max 0 \
+  --markings-max 4 --term-limit 1000000 \
+  --dependency-markings-max 6 --dependency-descendant-max 2 \
+  --dependency-limit 100000
+```
+
+Product examples:
+
+```bash
+cargo run --quiet -- virasoro formula --n 1 --product-m 1 \
+  --k 0 --g 1 --d 0,0 --format tex
+
+cargo run --quiet -- virasoro check --n 1 --product-m 1 \
+  --k 0 --g 1 --d 0,0
+
+cargo run --quiet -- virasoro scan --n 1 --product-m 1 \
+  --k-min -1 --k-max -1 --g-max 0 --d-max 0 \
+  --markings-max 2 --descendant-max 0 --equation-limit 100
+```
+
+Projective-bundle examples:
+
+```bash
+cargo run --quiet -- virasoro formula --n 1 --bundle-twists 0,1 \
+  --k 0 --g 1 --d 0,0
+
+cargo run --quiet -- virasoro check --n 1 --bundle-twists 0,1 \
+  --k 0 --g 1 --d 0,0
+
+cargo run --quiet -- virasoro scan --n 1 --bundle-twists 0,1 \
+  --k-min -1 --k-max -1 --g-max 0 --d-max 0 \
+  --markings-max 2 --descendant-max 0 --equation-limit 100
+```
+
+The point scan above reports 90 verified-zero equations, of which 26 are
+backend-exercised and 64 are structural-only.  The two small product/bundle
+scans each report 15 verified-zero equations, with 4 backend-exercised and 11
+structural-only.  `--d-max` on a scan bounds the canonical theory's
+theory-owned admissible grading: `d1+d2` for products and the shifted cone
+grading for bundles.  The bundle's theory-owned shifted cone is a
+conservative admissible support cone: a class outside it is certified
+ineffective, while a class inside it has unknown effectivity and is queried
+from the backend unless another structural rule applies.  Membership is
+never interpreted as either a nonzero invariant or a zero invariant.
+Standard compact operator generation caps `k` at `64`, independently
+bounding bracket-polynomial and state-space matrix work when few terms are
+emitted.  A single equation is also capped at 64 external markings so that
+correlator-key payload cannot grow quadratically behind a small term count.
+Exact product and bundle reconstruction is separately capped at 64 Novikov
+rays (total reconstruction degree at most 63).  A dependency beyond that
+frontier is reported as unsupported/incomplete instead of allocating a dense
+unbounded interpolation system or spawning an unbounded thread family.
+The shared stable-graph generator accepts `2g-2+n <= 8` and at most eight
+labelled markings.  Formula and backend requests beyond that explicit work
+envelope fail before graph-cache lookup, calibration, or worker creation.
+
+Both `virasoro formula` and `virasoro check` expose `--term-limit` (default
+`1000000`).  A check also accepts `--dependency-limit` (default `100000`) and
+`--show-missing` (default `20`); the display limit does not change which
+dependencies are required for a decisive result.
+
+Scans have independent construction, retention, and evaluation envelopes:
+
+- `--markings-max` bounds external markings in generated profiles and has a
+  hard scan cap of `20`, because nonlinear equations enumerate labelled
+  marking partitions;
+- `--equation-limit` (default `10000`) bounds the complete Cartesian product
+  of operators, genera, theory-owned curve classes, and external descendant
+  profiles;
+- `--term-limit` bounds the estimated unaggregated terms in each generated
+  coefficient equation before marking partitions or matrix powers are
+  materialized (default `1000000`);
+- `--total-term-limit` bounds generated AST terms retained across the entire
+  scan (default `1000000`);
+- `--dependency-markings-max` bounds markings in each correlator dependency
+  (default `--markings-max + 2`);
+- `--dependency-descendant-max` bounds every individual psi power in a
+  dependency (by default it is derived from `--k-max` and
+  `--descendant-max`); and
+- `--dependency-limit` bounds the number of canonical unique correlator
+  dependencies considered per equation (default `100000`).
+
+Exceeding the per-equation term budget rejects generation before the large
+equation is allocated.  Dependency bounds are fail-closed instead: retained
+keys outside a property bound are recorded as `OutsideBounds`; when the
+unique closure exceeds `--dependency-limit`, one canonical omitted witness
+is recorded and the report is explicitly marked truncated.  That equation is
+`Incomplete`, never silently completed with a zero.
+
+In addition to outcome counts, a scan prints four disjoint coverage counts:
+
+- `backend-exercised`: at least one dependency was resolved by a computation
+  backend; this category can still contain an incomplete equation;
+- `structural-only`: a non-vacuous equation closed using only constants and
+  canonical-theory-certified structural zeros, with no backend call;
+- `vacuous`: no terms remained after exact symbolic aggregation; and
+- `unresolved-only`: the equation was non-vacuous and incomplete, but no
+  backend value was obtained.
+
+These are coverage categories, not pass/fail categories.  A green scan can be
+dominated by structural-only or vacuous equations and therefore provide very
+little evidence about the reconstruction backend.  Treat it as a strong
+backend audit only when `backend-exercised` coverage is meaningful in the
+intended genera, curve classes, and descendant ranges.
+
+An exact check has three API outcomes:
+
+- `VerifiedZero` (CLI: `verified-zero`): every required correlator was
+  evaluated or proved to be a structural zero, and the exact residual is
+  zero;
+- `Nonzero` (CLI: `NONZERO`): every dependency is known and the exact
+  residual is nonzero; or
+- `Incomplete` (CLI: `INCOMPLETE`): at least one correlator is unsupported,
+  has `OutsideBounds` from the dependency envelope, or failed to evaluate.
+  The displayed exact partial sum is diagnostic only.
+
+Missing coefficients are never replaced by zero, and a nonzero partial sum
+with missing dependencies is still `Incomplete`, not `Nonzero`.  `check`
+exits successfully only for `VerifiedZero`; `scan` exits successfully only
+when every generated equation is verified zero.
+
+Negative-split/local targets are deliberately refused by this compact
+checker.  For example,
+
+```bash
+cargo run --quiet -- virasoro check --n 2 --local-twist -3 \
+  --k 0 --g 1 --d 0
+```
+
+reports that local Virasoro generation requires the twisted pairing and the
+Quantum Riemann--Roch-conjugated operator.  The CLI does not substitute an
+ordinary compact operator built from the noncompact total-space dimension and
+`c_1`.  See [docs/virasoro.md](docs/virasoro.md) for the QRR boundary and the
+precise Getzler convention.
 
 ## `formula`
 
@@ -587,6 +767,11 @@ Useful flags:
   for negative split twists it means symbolic fiber parameters over an
   early-specialized base.
 
+The library validates a finite sparse-series envelope before allocation:
+state-space rank at most 64, `d-max <= 64`, at most eight markings, individual
+descendant power at most 64, and at most 100,000 candidate coefficients under
+the conservative profile-by-degree count.
+
 If a series or resolvent command skips coefficients or falls back from a packed
 path, the CLI writes those warnings to a temporary file and prints the path on
 stderr. Informational engine notes are not classified as warnings. If the
@@ -629,55 +814,43 @@ rows, local Calabi-Yau tables, and the legacy direct stable-map localization
 code. They are used by tests and diagnostics rather than as production
 computation shortcuts.
 
-## Architecture: Targets, Recipes, and the CohFT Engine
+## Architecture: Canonical Theories, Evaluators, and the CohFT Engine
 
-The computation core is a semisimple-CohFT evaluator: it consumes a
-calibration (canonical frame data plus `R`-matrix) and a descendant
-`S`-matrix, and contracts stable graphs without inspecting target geometry.
-Three layers sit above it:
+`theory::GwTheory` is the sole canonical source of target geometry.  It owns
+the homogeneous state space and unit, Poincare pairing, complex grading,
+`c_1` action, numerical curve lattice, effectivity/admissible cone and degree
+splittings, virtual dimension, and characteristic numbers.  The concrete
+canonical theories are `ProjectiveSpaceTheory`, `ProductProjectiveTheory`,
+`ProjectiveBundleTheory`, and the deliberately incomplete
+`NegativeSplitTotalSpaceTheory`.
 
-- **`givental::target::GwTarget`** describes a space: dimension, Fano-index
-  datum, classical eigenvalue seeds at the torus fixed points, the
-  quantum/classical divisor multiplication, and the insertion dictionary.
-  `TargetProvider<T>` turns any implementation into an engine-facing
-  provider.  `ProjectiveTarget` is the reference implementation and is held
-  equal to the production `P^n` path by tests.
-- **`givental::recipe`** holds the target-agnostic constructions: Newton
-  root series and Lagrange frames from a quantum ring, the Dubrovin
-  connection and `R`-flatness recursion with Bernoulli asymptotics derived
-  from fixed-point weight differences, and two descendant `S`-matrix
-  recipes — `descendant_s_from_divisor_qde` (from a quantum ring) and
-  `descendant_s_from_i_function` (mirror map plus Birkhoff factorization of
-  a cohomology-valued hypergeometric series, in the engine's metric-adjoint
-  convention).  The two recipes cross-validate on untwisted `P^1`, where a
-  rank-zero twist makes both available for the same theory.  The H-Laurent
-  machinery the second recipe composes still lives in the `twisted` module;
-  relocating it is mechanical follow-up.
-- Providers may also supply calibrations directly
-  (`GiventalGraphKernel::from_parts`) for experiments that bypass both
-  recipes.
+Universal identities consume only `GwTheory`.  In particular, the Virasoro
+generator does not inspect a Givental calibration or reverse-engineer target
+data from an evaluator.  It produces a backend-independent symbolic
+constraint; a `CanonicalCorrelatorEvaluator` then maps its canonical
+`BasisId` and `CurveClass` keys to a computation backend.
 
-The `GwTarget` interface itself covers one Novikov variable and
-divisor-generated rings; Picard-rank-two targets run on the same
-single-variable engine through exact Novikov ray specialization
-`(q1, q2) = (t, b t)` — a ring homomorphism, so each ray runs unchanged and
-`total_degree + 1` rays determine every bidegree by a rational Vandermonde
-solve.  Two rank-two targets ship:
+The Givental providers, `givental::target::GwTarget`, and product/bundle ray
+objects are therefore evaluator and calibration adapters, not competing
+descriptions of a theory.  They own algorithm-specific data such as fixed
+point weights, I-functions, quantum multiplication, canonical frames,
+`R`/`S` matrices, and ray interpolation.  Each production adapter exposes or
+privately owns its canonical `GwTheory` and exposes it by shared reference;
+compatibility is checked at that boundary.  In particular, `GwTarget` must
+return its canonical theory and cannot independently restate dimension,
+first-Chern degree, or effectivity.
 
-- `P^n x P^m` (`givental::product`), validated against Behrend's product
-  formula `R_{P^1 x P^1} = R_{P^1} (x) R_{P^1}` entrywise; see the `product`
-  subcommand.
-- projective bundles `P(O(a_1) + ... + O(a_m))` over `P^n`
-  (`givental::bundle`) from their toric I-function, with bidegree Birkhoff
-  projection plus bidegree mirror-coordinate correction before ray
-  reconstruction, and a shifted grading that handles negative curve classes
-  (the exceptional section of a Hirzebruch surface); see the `bundle`
-  subcommand and
-  [docs/lessons.md](docs/lessons.md) §§15–17.
+Below the adapter boundary, the semisimple-CohFT engine consumes a
+calibration and descendant `S`-matrix and contracts stable graphs without
+inspecting target geometry.  `givental::recipe` constructs those calibrations
+from a quantum ring or I-function, while `GiventalGraphKernel::from_parts`
+accepts a direct calibration for experiments.  Picard-rank-two evaluators
+specialize `(q1,q2)=(t,bt)` and reconstruct geometric bidegrees exactly by a
+rational Vandermonde solve; the canonical theory, not the ray, remains the
+authority for curve classes and their splittings.
 
-The twisted theories are equivalent in spirit to a second family of targets
-and will migrate onto the same interface once the I-function recipe is fully
-extracted.
+See [docs/architecture.md](docs/architecture.md) for the full layer map and
+[docs/virasoro.md](docs/virasoro.md) for the constraint convention.
 
 ## Performance Notes
 
@@ -698,11 +871,13 @@ under two seconds.
   reconstruction point and cannot carry symbolic equivariant weights; a
   native layer would share one run across all bidegrees).
 - Relocate the H-Laurent / mirror-map / Birkhoff machinery from the twisted
-  module into `givental` (the recipe entry points are already the seam), and
-  migrate the twisted theories themselves onto the target interface.  With
-  the I-function recipe in place, further toric targets (complete
-  intersections, more general toric varieties) register the same way the
-  projective bundles do.
+  module into `givental` (the recipe entry points are already the seam).
+  With the I-function recipe in place, further toric evaluators (complete
+  intersections, more general toric varieties) can be paired with canonical
+  `GwTheory` descriptions in the same way as projective bundles.
+- Add the twisted pairing, degree-zero twisted sector, and independently
+  generated QRR-conjugated Virasoro operators needed to audit
+  negative-split/local theories without misusing the compact operator.
 - Route the twisted and series/master equivariant paths through the same
   factored kernel construction the ordinary equivariant path now uses.
 - Speed up high-genus stable-graph generation further: the remaining cost is

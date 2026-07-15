@@ -5,6 +5,18 @@ execution frontier.  The reusable harness is `scripts/run-perf-frontiers.sh`
 wrapping `scripts/perf_frontiers.py`; it writes timestamped and `latest.*`
 Markdown, CSV, and JSONL results under `target/perf-frontiers/`.
 
+Exact product and projective-bundle interpolation currently has an explicit
+64-ray ceiling (total reconstruction degree at most 63).  The implementation
+still uses a dense Vandermonde solve and one scoped worker per ray; larger
+requests fail before warmup, allocation, or thread spawning.  Raising this
+ceiling should follow a bounded worker pool and a more scalable interpolation
+strategy, not merely a larger constant.
+
+Stable-graph generation likewise has an explicit built-in envelope
+`2g-2+n <= 8` with at most eight labelled markings.  The complexity-eight
+`g=4,m=2` and `g=5,m=0` probes below remain deliberate boundary cases; larger
+formula/backend requests now fail before graph enumeration or cache lookup.
+
 Recommended tuning workflow:
 
 ```sh
@@ -45,7 +57,7 @@ scripts/run-perf-frontiers.sh --suite extended --case formula_g4_m1 --timeout 90
 
 # New frontier probes after graph generation stopped dominating the sampled suite.
 GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-formula-g4m2-20260706 timeout 90s target/debug/gw-pn formula --g 4 --markings 2 --n 2 --d 2 --max-descendant 1 --no-glossary
-GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-rank3-bundle-d4-20260706 timeout 90s target/debug/gw-pn bundle --n 1 --twists 2,1,-3 --g 0 --d 4 --insert 'H*xi^2' --insert H --insert H --weights-base 1,2 --weights-fiber 0,10,30
+GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-rank3-bundle-d4-20260706 timeout 90s target/debug/gw-pn bundle --n 1 --twists 5,4,0 --g 0 --d 4 --insert 'H*xi^2' --insert H --insert H --weights-base 1,2 --weights-fiber 0,10,30
 ```
 
 Raw local artifacts from these runs:

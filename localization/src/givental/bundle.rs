@@ -42,6 +42,7 @@
 //! `P^1 x P^2` in negative shifted-fiber directions.
 
 use super::*;
+use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
 use crate::twisted::{BidegreeLaurentFactor, HLaurentSeries, LaurentCoeffMatrix};
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
@@ -69,11 +70,10 @@ impl BundleInsertion {
 /// `(t, ray * t)` in the shifted grading, at rational equivariant weights.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectiveBundleRay {
-    pub n: usize,
-    pub twists: Vec<usize>,
-    pub weights_base: Vec<Rational>,
-    pub weights_fiber: Vec<Rational>,
-    pub ray: Rational,
+    theory: ProjectiveBundleTheory,
+    weights_base: Vec<Rational>,
+    weights_fiber: Vec<Rational>,
+    ray: Rational,
 }
 
 #[derive(Debug, Clone)]
@@ -94,33 +94,39 @@ impl ProjectiveBundleRay {
         weights_fiber: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
-        if n == 0 || twists.len() < 2 {
-            return Err(GwError::ConventionMismatch(
-                "projective-bundle ray reconstruction requires a positive-dimensional base P^n and bundle rank at least two; degenerate cases have Picard rank at most one and belong in a projective-space engine"
-                    .to_string(),
-            ));
-        }
-        if !twists.contains(&0) {
-            return Err(GwError::ConventionMismatch(
-                "bundle twists must be normalized with min a_l = 0 (twist by O(-min) first)"
-                    .to_string(),
-            ));
-        }
-        if weights_base.len() != n + 1 || weights_fiber.len() != twists.len() {
+        let expected_base = n.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("bundle base dimension is too large".to_string())
+        })?;
+        expected_base.checked_mul(twists.len()).ok_or_else(|| {
+            GwError::UnsupportedInvariant("bundle state-space size overflow".to_string())
+        })?;
+        if weights_base.len() != expected_base || weights_fiber.len() != twists.len() {
             return Err(GwError::ConventionMismatch(format!(
                 "bundle weights must have lengths {} and {}",
-                n + 1,
+                expected_base,
                 twists.len()
             )));
         }
+        // Direct-sum order is not geometry, but each equivariant fiber weight
+        // belongs to one summand.  Canonicalize the zipped data before the
+        // theory performs its own order-independent validation so the weight
+        // specialization stays attached to the correct twist.
+        let mut summands = twists.into_iter().zip(weights_fiber).collect::<Vec<_>>();
+        summands.sort_by_key(|(twist, _)| *twist);
+        let (twists, weights_fiber): (Vec<_>, Vec<_>) = summands.into_iter().unzip();
+        let theory = ProjectiveBundleTheory::new(n, twists)?;
         let target = Self {
-            n,
-            twists,
+            theory,
             weights_base,
             weights_fiber,
             ray,
         };
-        let seeds = target.grading_seeds();
+        // Validate the fixed-point grading before constructing the Lagrange
+        // frame.  `classical_data()` divides by pairwise seed and Euler-class
+        // differences, so discovering a collision through that path would
+        // panic in exact rational arithmetic instead of returning the
+        // intended non-semisimple error.
+        let seeds = target.raw_grading_seeds();
         for left in 0..seeds.len() {
             for right in left + 1..seeds.len() {
                 if seeds[left] == seeds[right] {
@@ -131,12 +137,45 @@ impl ProjectiveBundleRay {
         Ok(target)
     }
 
-    fn rank(&self) -> usize {
-        self.twists.len()
+    /// Ordinary geometric data before Novikov-ray specialization.
+    pub fn canonical_theory(&self) -> &ProjectiveBundleTheory {
+        &self.theory
     }
 
-    fn size(&self) -> usize {
-        (self.n + 1) * self.rank()
+    /// Dimension of the projective-space base.
+    pub fn base_dimension(&self) -> usize {
+        self.theory.base_dimension()
+    }
+
+    /// Canonically ordered bundle twists.
+    pub fn twists(&self) -> &[usize] {
+        self.theory.twists()
+    }
+
+    /// Rank of the vector bundle being projectivized.
+    pub fn rank(&self) -> usize {
+        self.theory.rank()
+    }
+
+    /// Dimension of the canonical cohomology state space.
+    pub fn size(&self) -> usize {
+        self.theory.state_space().basis.len()
+    }
+
+    /// Equivariant weights of the base fixed points.
+    pub fn base_weights(&self) -> &[Rational] {
+        &self.weights_base
+    }
+
+    /// Equivariant fiber weights, in the same canonical summand order as
+    /// [`Self::twists`].
+    pub fn fiber_weights(&self) -> &[Rational] {
+        &self.weights_fiber
+    }
+
+    /// Novikov-ray specialization in the shifted fiber grading.
+    pub fn ray(&self) -> &Rational {
+        &self.ray
     }
 
     fn point(&self, i: usize, j: usize) -> usize {
@@ -144,7 +183,7 @@ impl ProjectiveBundleRay {
     }
 
     fn big_a(&self) -> usize {
-        *self.twists.iter().max().expect("twists nonempty")
+        *self.twists().iter().max().expect("twists nonempty")
     }
 
     fn raw_fiber_weight(
@@ -157,15 +196,34 @@ impl ProjectiveBundleRay {
         Rational::from(twists[l] as i128) * weights_base[i].clone() + weights_fiber[l].clone()
     }
 
+    fn raw_grading_seeds(&self) -> Vec<Rational> {
+        let shift = Rational::from((self.big_a() + 1) as i128);
+        let mut seeds = Vec::with_capacity(self.size());
+        for i in 0..=self.base_dimension() {
+            for j in 0..self.rank() {
+                seeds.push(
+                    -Self::raw_fiber_weight(
+                        self.twists(),
+                        &self.weights_base,
+                        &self.weights_fiber,
+                        i,
+                        j,
+                    ) + shift.clone() * self.weights_base[i].clone(),
+                );
+            }
+        }
+        seeds
+    }
+
     fn build_classical_data(&self) -> ProjectiveBundleClassicalData {
         let rank = self.rank();
         let size = self.size();
         let big_a = self.big_a();
-        let mut fiber_weights = vec![vec![Rational::zero(); rank]; self.n + 1];
+        let mut fiber_weights = vec![vec![Rational::zero(); rank]; self.base_dimension() + 1];
         for (i, row) in fiber_weights.iter_mut().enumerate() {
             for (l, value) in row.iter_mut().enumerate() {
                 *value = Self::raw_fiber_weight(
-                    &self.twists,
+                    self.twists(),
                     &self.weights_base,
                     &self.weights_fiber,
                     i,
@@ -177,7 +235,7 @@ impl ProjectiveBundleRay {
         let mut xi_restrictions = vec![Rational::zero(); size];
         let mut grading_seeds = vec![Rational::zero(); size];
         let shift = Rational::from((big_a + 1) as i128);
-        for i in 0..=self.n {
+        for i in 0..=self.base_dimension() {
             for j in 0..rank {
                 let point = self.point(i, j);
                 xi_restrictions[point] = -fiber_weights[i][j].clone();
@@ -187,10 +245,10 @@ impl ProjectiveBundleRay {
         }
 
         let mut eulers = vec![Rational::one(); size];
-        for i in 0..=self.n {
+        for i in 0..=self.base_dimension() {
             for j in 0..rank {
                 let mut euler = Rational::one();
-                for k in 0..=self.n {
+                for k in 0..=self.base_dimension() {
                     if k != i {
                         euler =
                             euler * (self.weights_base[i].clone() - self.weights_base[k].clone());
@@ -279,7 +337,7 @@ impl ProjectiveBundleRay {
         let size = self.size();
         let data = self.classical_data();
         let mut vector = vec![Rational::zero(); size];
-        for i in 0..=self.n {
+        for i in 0..=self.base_dimension() {
             for j in 0..self.rank() {
                 let restriction = self.weights_base[i].pow_usize(h_power)
                     * data.xi_restrictions[self.point(i, j)].pow_usize(xi_power);
@@ -295,8 +353,8 @@ impl ProjectiveBundleRay {
     fn cache_key(&self) -> String {
         format!(
             "p{}bundle[{:?};{};{}]@{}",
-            self.n,
-            self.twists,
+            self.base_dimension(),
+            self.twists(),
             self.weights_base
                 .iter()
                 .map(Rational::to_string)
@@ -314,8 +372,8 @@ impl ProjectiveBundleRay {
     fn rayless_cache_key(&self) -> String {
         format!(
             "p{}bundle[{:?};{};{}]",
-            self.n,
-            self.twists,
+            self.base_dimension(),
+            self.twists(),
             self.weights_base
                 .iter()
                 .map(Rational::to_string)
@@ -378,13 +436,13 @@ impl ProjectiveBundleRay {
     ) -> ZLaurent {
         let mut out = zl_one();
         for k in 1..=d1 {
-            for i_prime in 0..=self.n {
+            for i_prime in 0..=self.base_dimension() {
                 let constant = self.weights_base[i].clone() - self.weights_base[i_prime].clone();
                 out = zl_mul_inverse_affine(&out, &constant, k, min_z);
             }
         }
         for l in 0..self.rank() {
-            let fiber_degree = d2 + (self.twists[l] * d1) as isize;
+            let fiber_degree = d2 + (self.twists()[l] * d1) as isize;
             let value = data.fiber_weights[i][l].clone() - data.fiber_weights[i][j].clone();
             if fiber_degree >= 0 {
                 for k in 1..=(fiber_degree as usize) {
@@ -407,7 +465,7 @@ impl ProjectiveBundleRay {
         let size = self.size();
         let d2 = d2p as isize - (self.big_a() * d1) as isize;
         let data = self.classical_data();
-        let restrictions = (0..=self.n)
+        let restrictions = (0..=self.base_dimension())
             .flat_map(|i| (0..self.rank()).map(move |j| (i, j)))
             .map(|(i, j)| self.i_restriction_with_data(&data, i, j, d1, d2, min_z))
             .collect::<Vec<_>>();
@@ -1596,12 +1654,21 @@ impl ProjectiveBundleRay {
 /// Engine-facing provider for one ray of the bundle theory.
 #[derive(Debug, Clone)]
 pub struct BundleRayProvider {
-    pub target: ProjectiveBundleRay,
+    target: ProjectiveBundleRay,
 }
 
 impl BundleRayProvider {
     pub fn new(target: ProjectiveBundleRay) -> Self {
         Self { target }
+    }
+
+    pub fn canonical_theory(&self) -> &ProjectiveBundleTheory {
+        self.target.canonical_theory()
+    }
+
+    /// Read-only access to the calibrated ray specialization.
+    pub fn target(&self) -> &ProjectiveBundleRay {
+        &self.target
     }
 }
 
@@ -1694,10 +1761,10 @@ impl SemisimpleCohftProvider for BundleRayProvider {
 
         let asymptotics_started = Instant::now();
         let mut classical_diagonal = Vec::with_capacity(self.target.size());
-        for i in 0..=self.target.n {
+        for i in 0..=self.target.base_dimension() {
             for j in 0..self.target.rank() {
                 let mut differences = Vec::new();
-                for k in 0..=self.target.n {
+                for k in 0..=self.target.base_dimension() {
                     if k != i {
                         differences.push(RatFun::from_rational(
                             self.target.weights_base[k].clone()
@@ -1858,17 +1925,49 @@ pub fn bundle_dimension_matches(
     d2: isize,
     insertions: &[BundleInsertion],
 ) -> bool {
-    let rank = twists.len();
-    let dimension = (n + rank - 1) as isize;
-    let twist_sum: usize = twists.iter().sum();
-    let insertion_degree: usize = insertions
+    try_bundle_dimension_matches(n, twists, genus, d1, d2, insertions).unwrap_or(false)
+}
+
+/// Fallible form of [`bundle_dimension_matches`], preserving validation
+/// errors for untrusted target dimensions and degrees.
+pub fn try_bundle_dimension_matches(
+    n: usize,
+    twists: &[usize],
+    genus: usize,
+    d1: usize,
+    d2: isize,
+    insertions: &[BundleInsertion],
+) -> Result<bool, GwError> {
+    let theory = ProjectiveBundleTheory::new(n, twists.to_vec())?;
+    bundle_dimension_matches_in_theory(&theory, genus, d1, d2, insertions)
+}
+
+/// Checked dimension match using an existing canonical bundle theory.
+pub fn bundle_dimension_matches_in_theory(
+    theory: &ProjectiveBundleTheory,
+    genus: usize,
+    d1: usize,
+    d2: isize,
+    insertions: &[BundleInsertion],
+) -> Result<bool, GwError> {
+    let insertion_degree = insertions
         .iter()
-        .map(|insertion| insertion.descendant_power + insertion.h_power + insertion.xi_power)
-        .sum();
-    let c1_pairing = (n + 1 + twist_sum) as isize * d1 as isize + rank as isize * d2;
+        .try_fold(0usize, |total, insertion| {
+            total
+                .checked_add(insertion.descendant_power)
+                .and_then(|value| value.checked_add(insertion.h_power))
+                .and_then(|value| value.checked_add(insertion.xi_power))
+        })
+        .ok_or_else(|| GwError::AlgebraFailure("bundle insertion degree overflow".to_string()))?;
+    let d1 = i64::try_from(d1).map_err(|_| {
+        GwError::AlgebraFailure("bundle base degree does not fit in i64".to_string())
+    })?;
+    let d2 = i64::try_from(d2).map_err(|_| {
+        GwError::AlgebraFailure("bundle fiber degree does not fit in i64".to_string())
+    })?;
     let virtual_dimension =
-        (1 - genus as isize) * (dimension - 3) + c1_pairing + insertions.len() as isize;
-    insertion_degree as isize == virtual_dimension
+        theory.virtual_dimension(genus, &CurveClass::new(vec![d1, d2]), insertions.len())?;
+    Ok(usize::try_from(virtual_dimension).ok() == Some(insertion_degree))
 }
 
 fn rayless_precompute_z_orders(genus: usize, insertions: &[BundleInsertion]) -> Vec<usize> {
@@ -1876,7 +1975,7 @@ fn rayless_precompute_z_orders(genus: usize, insertions: &[BundleInsertion]) -> 
     if genus == 0 && genus_zero_three_primary_bundle_layout(insertions) {
         z_orders.push(1);
     }
-    if 2 * genus + insertions.len() > 2 {
+    if is_stable_cohft_range(genus, insertions.len()) {
         z_orders.push(1);
         if let Some(max_descendant) = insertions
             .iter()
@@ -1907,11 +2006,48 @@ pub fn reconstruct_bundle_invariants(
     total_degree: usize,
     insertions: &[BundleInsertion],
 ) -> Result<Vec<(usize, isize, Rational)>, GwError> {
-    let big_a = *twists
+    if weights_fiber.len() != twists.len() {
+        return Err(GwError::ConventionMismatch(format!(
+            "bundle fiber weights must have length {}",
+            twists.len()
+        )));
+    }
+    let mut summands = twists
         .iter()
-        .max()
-        .ok_or_else(|| GwError::ConventionMismatch("bundle twists must be nonempty".to_string()))?;
-    let ray_count = total_degree + 1;
+        .copied()
+        .zip(weights_fiber.iter().cloned())
+        .collect::<Vec<_>>();
+    summands.sort_by_key(|(twist, _)| *twist);
+    let (twists, weights_fiber): (Vec<_>, Vec<_>) = summands.into_iter().unzip();
+    let theory = ProjectiveBundleTheory::new(n, twists)?;
+    reconstruct_bundle_invariants_in_theory(
+        &theory,
+        weights_base,
+        &weights_fiber,
+        genus,
+        total_degree,
+        insertions,
+    )
+}
+
+/// Reconstruct using an already validated canonical theory.  `weights_fiber`
+/// must follow [`ProjectiveBundleTheory::twists`], whose summand order is
+/// canonicalized, so evaluator caches and fingerprints share the same
+/// geometry instance.
+pub fn reconstruct_bundle_invariants_in_theory(
+    theory: &ProjectiveBundleTheory,
+    weights_base: &[Rational],
+    weights_fiber: &[Rational],
+    genus: usize,
+    total_degree: usize,
+    insertions: &[BundleInsertion],
+) -> Result<Vec<(usize, isize, Rational)>, GwError> {
+    let n = theory.base_dimension();
+    let twists = theory.twists();
+    if is_stable_cohft_range(genus, insertions.len()) {
+        crate::graphs::stable_graph_generation_bounds(genus, insertions.len())?;
+    }
+    let ray_count = checked_reconstruction_ray_count("bundle", total_degree)?;
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
@@ -1936,34 +2072,46 @@ pub fn reconstruct_bundle_invariants(
         }
     }
 
-    let ray_results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(ray_count);
+    let ray_results = std::thread::scope(|scope| -> Result<Vec<_>, GwError> {
+        let mut handles = Vec::new();
+        handles.try_reserve_exact(ray_count).map_err(|_| {
+            GwError::UnsupportedInvariant(format!(
+                "cannot allocate {ray_count} bundle reconstruction workers"
+            ))
+        })?;
         for step in 0..ray_count {
             handles.push(
-                scope.spawn(move || -> Result<(Rational, Rational), GwError> {
-                    let ray = Rational::from(step + 1);
-                    let target = ProjectiveBundleRay::new(
-                        n,
-                        twists.to_vec(),
-                        weights_base.to_vec(),
-                        weights_fiber.to_vec(),
-                        ray.clone(),
-                    )?;
-                    let provider = BundleRayProvider::new(target);
-                    let value = compute_semisimple_graph_value(
-                        &provider,
-                        genus,
-                        total_degree,
-                        insertions,
-                        None,
-                    )?;
-                    let value = value.as_rational().ok_or_else(|| {
-                        GwError::AlgebraFailure(
-                            "bundle ray value did not specialize to a rational".to_string(),
-                        )
-                    })?;
-                    Ok((ray, value))
-                }),
+                std::thread::Builder::new()
+                    .name(format!("gw-bundle-ray-{step}"))
+                    .spawn_scoped(scope, move || -> Result<(Rational, Rational), GwError> {
+                        let ray = Rational::from(step + 1);
+                        let target = ProjectiveBundleRay::new(
+                            n,
+                            twists.to_vec(),
+                            weights_base.to_vec(),
+                            weights_fiber.to_vec(),
+                            ray.clone(),
+                        )?;
+                        let provider = BundleRayProvider::new(target);
+                        let value = compute_semisimple_graph_value(
+                            &provider,
+                            genus,
+                            total_degree,
+                            insertions,
+                            None,
+                        )?;
+                        let value = value.as_rational().ok_or_else(|| {
+                            GwError::AlgebraFailure(
+                                "bundle ray value did not specialize to a rational".to_string(),
+                            )
+                        })?;
+                        Ok((ray, value))
+                    })
+                    .map_err(|error| {
+                        GwError::AlgebraFailure(format!(
+                            "cannot spawn bundle reconstruction ray {step}: {error}"
+                        ))
+                    })?,
             );
         }
 
@@ -1997,20 +2145,25 @@ pub fn reconstruct_bundle_invariants(
         .collect::<Vec<_>>();
     recipe::solve_rational_system(&mut matrix, &mut values)?;
 
-    Ok(values
+    values
         .into_iter()
         .enumerate()
         .map(|(d2p, value)| {
             let d1 = total_degree - d2p;
-            let d2 = d2p as isize - (big_a * d1) as isize;
-            let value = if bundle_dimension_matches(n, twists, genus, d1, d2, insertions) {
+            let curve = theory.curve_from_shifted(d1, d2p)?;
+            let d2 = isize::try_from(curve.coordinate(1).expect("rank-two bundle class")).map_err(
+                |_| {
+                    GwError::AlgebraFailure("bundle fiber degree does not fit in isize".to_string())
+                },
+            )?;
+            let value = if bundle_dimension_matches_in_theory(theory, genus, d1, d2, insertions)? {
                 value
             } else {
                 Rational::zero()
             };
-            (d1, d2, value)
+            Ok((d1, d2, value))
         })
-        .collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -2046,6 +2199,137 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(point_base, GwError::ConventionMismatch(_)));
+    }
+
+    #[test]
+    fn bundle_reconstruction_rejects_oversized_ray_families_before_warmup() {
+        let theory = ProjectiveBundleTheory::new(1, vec![0, 0]).unwrap();
+        let error = reconstruct_bundle_invariants_in_theory(
+            &theory,
+            &base_weights(),
+            &fiber_weights(),
+            0,
+            MAX_EXACT_RECONSTRUCTION_RAYS,
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("Novikov rays"));
+    }
+
+    #[test]
+    fn bundle_rayless_stability_preflight_accepts_extreme_stable_genus() {
+        assert_eq!(rayless_precompute_z_orders(usize::MAX, &[]), vec![1]);
+    }
+
+    #[test]
+    fn bundle_reconstruction_rejects_extreme_genus_before_warmup() {
+        let theory = ProjectiveBundleTheory::new(1, vec![0, 0]).unwrap();
+        let error = reconstruct_bundle_invariants_in_theory(
+            &theory,
+            &base_weights(),
+            &fiber_weights(),
+            usize::MAX,
+            0,
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("stable-graph"));
+    }
+
+    #[test]
+    fn bundle_ray_rejects_extreme_base_dimension_fallibly() {
+        let error = ProjectiveBundleRay::new(
+            usize::MAX,
+            vec![0, 1],
+            Vec::new(),
+            Vec::new(),
+            Rational::one(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+    }
+
+    #[test]
+    fn bundle_ray_reports_colliding_seeds_before_lagrange_division() {
+        let error = ProjectiveBundleRay::new(
+            1,
+            vec![1, 0],
+            vec![Rational::from(1), Rational::from(2)],
+            vec![Rational::from(6), Rational::from(8)],
+            Rational::one(),
+        )
+        .unwrap_err();
+        assert_eq!(error, GwError::NonSemisimplePoint);
+    }
+
+    #[test]
+    fn bundle_ray_owns_canonical_geometry_and_keeps_summand_weights_aligned() {
+        let target = ProjectiveBundleRay::new(
+            1,
+            vec![1, 0, 1],
+            vec![Rational::from(1), Rational::from(3)],
+            vec![Rational::from(10), Rational::from(20), Rational::from(30)],
+            Rational::from(2),
+        )
+        .unwrap();
+
+        assert_eq!(target.twists(), &[0, 1, 1]);
+        // Sorting is stable, so equal-twist summands retain their input order.
+        assert_eq!(
+            target.fiber_weights(),
+            &[Rational::from(20), Rational::from(10), Rational::from(30)]
+        );
+        assert_eq!(target.base_dimension(), 1);
+        assert_eq!(target.rank(), 3);
+        assert_eq!(target.size(), 6);
+
+        let expected = ProjectiveBundleTheory::new(1, vec![0, 1, 1]).unwrap();
+        assert_eq!(
+            target.canonical_theory().theory_fingerprint(),
+            expected.theory_fingerprint()
+        );
+
+        let provider = BundleRayProvider::new(target);
+        assert!(std::ptr::eq(
+            provider.canonical_theory(),
+            provider.target().canonical_theory()
+        ));
+    }
+
+    #[test]
+    fn reconstruction_canonicalizes_twists_with_their_fiber_weights() {
+        let insertions = [
+            BundleInsertion::new(0, 1, 0),
+            BundleInsertion::new(0, 0, 1),
+            BundleInsertion::new(0, 0, 0),
+        ];
+        // These weights are deliberately collision-sensitive: if `[1, 0]`
+        // is sorted without carrying its paired fiber weights along, the
+        // resulting `[0, 1]` specialization has two equal grading seeds.
+        let base_weights = [Rational::from(1), Rational::from(2)];
+        let left = reconstruct_bundle_invariants(
+            1,
+            &[0, 1],
+            &base_weights,
+            &[Rational::from(-5), Rational::from(-4)],
+            0,
+            0,
+            &insertions,
+        )
+        .unwrap();
+        let right = reconstruct_bundle_invariants(
+            1,
+            &[1, 0],
+            &base_weights,
+            &[Rational::from(-4), Rational::from(-5)],
+            0,
+            0,
+            &insertions,
+        )
+        .unwrap();
+        assert_eq!(left, right);
     }
 
     #[test]

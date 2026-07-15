@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 license = "Apache-2.0"
-description = "Experimental exact computations for Gromov-Witten invariants of projective space."
+description = "Exact Gromov-Witten computations and Virasoro audits for projective targets."
 readme = "README.md"
 repository = "https://github.com/honglu2875/GWAI"
 

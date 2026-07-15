@@ -33,6 +33,9 @@ use crate::series::{
     compose_plain_series, integrate_q_derivative_zero_constant_matrix, invert_mirror_map,
     mul_plain_series, QSeries, SeriesMatrix,
 };
+use crate::theory::{
+    CurveClass, CurveEffectivity, GwTheory, NegativeSplitTotalSpaceTheory, ProjectiveSpaceTheory,
+};
 use crate::{Insertion, InvariantResult, Truncation};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -63,12 +66,22 @@ impl NegativeSplitBundleTwist {
     /// The stored degrees are the positive integers `a_i`; the signs are part
     /// of the type convention.  Negativity is what gives the concave Euler
     /// factors in the hypergeometric `I`-function below.
-    pub fn new(degrees: Vec<usize>) -> Result<Self, GwError> {
+    pub fn new(mut degrees: Vec<usize>) -> Result<Self, GwError> {
         if degrees.contains(&0) {
             return Err(GwError::ParseError(
                 "negative split-bundle degrees must be positive".to_string(),
             ));
         }
+        degrees.iter().try_fold(0usize, |sum, degree| {
+            sum.checked_add(*degree).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "negative split-bundle degree sum overflow".to_string(),
+                )
+            })
+        })?;
+        // A direct sum has no preferred summand order.  Canonicalizing here
+        // gives every downstream model the same theory presentation.
+        degrees.sort_unstable();
         Ok(Self { degrees })
     }
 
@@ -84,12 +97,55 @@ impl NegativeSplitBundleTwist {
         self.degrees.iter().sum()
     }
 
+    fn with_canonical_theory<T>(
+        &self,
+        base_n: usize,
+        use_theory: impl FnOnce(&dyn GwTheory) -> Result<T, GwError>,
+    ) -> Result<T, GwError> {
+        if self.degrees.is_empty() {
+            let theory = ProjectiveSpaceTheory::try_new(base_n)?;
+            use_theory(&theory)
+        } else {
+            let theory = NegativeSplitTotalSpaceTheory::new(base_n, self.degrees.clone())?;
+            use_theory(&theory)
+        }
+    }
+
+    pub fn try_total_space_dimension(&self, base_n: usize) -> Result<usize, GwError> {
+        self.with_canonical_theory(base_n, |theory| Ok(theory.target_dimension()))
+    }
+
     pub fn total_space_dimension(&self, base_n: usize) -> usize {
-        base_n + self.rank()
+        self.try_total_space_dimension(base_n)
+            .expect("negative-split total-space dimension must be representable")
+    }
+
+    pub fn try_is_calabi_yau(&self, base_n: usize) -> Result<bool, GwError> {
+        self.with_canonical_theory(base_n, |theory| {
+            Ok(theory.c1_pairing(&CurveClass::new(vec![1]))? == 0)
+        })
     }
 
     pub fn is_calabi_yau(&self, base_n: usize) -> bool {
-        self.degree_sum() == base_n + 1
+        self.try_is_calabi_yau(base_n)
+            .expect("negative-split canonical theory must be representable")
+    }
+
+    pub fn try_virtual_dimension(
+        &self,
+        base_n: usize,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Result<isize, GwError> {
+        let degree = i64::try_from(degree).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "local curve degree does not fit the canonical signed lattice".to_string(),
+            )
+        })?;
+        self.with_canonical_theory(base_n, |theory| {
+            theory.virtual_dimension(genus, &CurveClass::new(vec![degree]), markings)
+        })
     }
 
     pub fn virtual_dimension(
@@ -99,13 +155,90 @@ impl NegativeSplitBundleTwist {
         degree: usize,
         markings: usize,
     ) -> isize {
-        // Virtual dimension of maps to the total space of the split bundle:
-        // (1-g)(dim total - 3) + c1(total).d + markings.
-        let total_dimension = self.total_space_dimension(base_n) as isize;
-        let degree_slope = base_n as isize + 1 - self.degree_sum() as isize;
-        (1 - genus as isize) * (total_dimension - 3)
-            + degree_slope * degree as isize
-            + markings as isize
+        self.try_virtual_dimension(base_n, genus, degree, markings)
+            .expect("negative-split virtual dimension must be representable")
+    }
+
+    pub fn try_candidate_degrees(
+        &self,
+        base_n: usize,
+        genus: usize,
+        degree_max: usize,
+        markings: usize,
+        insertion_degree: Option<usize>,
+    ) -> Result<Vec<usize>, GwError> {
+        i64::try_from(degree_max).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "local degree bound does not fit the canonical signed lattice".to_string(),
+            )
+        })?;
+        self.with_canonical_theory(base_n, |theory| {
+            let effective_degrees = || -> Result<Vec<usize>, GwError> {
+                let count = degree_max.checked_add(1).ok_or_else(|| {
+                    GwError::UnsupportedInvariant("local degree bound is too large".to_string())
+                })?;
+                let mut degrees = Vec::new();
+                degrees.try_reserve_exact(count).map_err(|_| {
+                    GwError::UnsupportedInvariant(format!(
+                        "cannot allocate {count} local degree candidates"
+                    ))
+                })?;
+                for degree in 0..=degree_max {
+                    let degree_i64 = i64::try_from(degree).map_err(|_| {
+                        GwError::UnsupportedInvariant(
+                            "local curve degree does not fit the canonical signed lattice"
+                                .to_string(),
+                        )
+                    })?;
+                    if theory.effectivity(&CurveClass::new(vec![degree_i64]))?
+                        == CurveEffectivity::Effective
+                    {
+                        degrees.push(degree);
+                    }
+                }
+                Ok(degrees)
+            };
+            let Some(insertion_degree) = insertion_degree else {
+                return effective_degrees();
+            };
+            let insertion_degree = i128::try_from(insertion_degree).map_err(|_| {
+                GwError::UnsupportedInvariant(
+                    "local insertion degree does not fit in i128".to_string(),
+                )
+            })?;
+            let constant_dimension =
+                theory.virtual_dimension(genus, &CurveClass::new(vec![0]), markings)? as i128;
+            let slope = i128::from(theory.c1_pairing(&CurveClass::new(vec![1]))?);
+            let numerator = insertion_degree - constant_dimension;
+            if slope == 0 {
+                return if numerator == 0 {
+                    effective_degrees()
+                } else {
+                    Ok(Vec::new())
+                };
+            }
+            if numerator % slope != 0 {
+                return Ok(Vec::new());
+            }
+            let Ok(degree) = usize::try_from(numerator / slope) else {
+                return Ok(Vec::new());
+            };
+            if degree > degree_max {
+                return Ok(Vec::new());
+            }
+            let degree_i64 = i64::try_from(degree).map_err(|_| {
+                GwError::UnsupportedInvariant(
+                    "local curve degree does not fit the canonical signed lattice".to_string(),
+                )
+            })?;
+            if theory.effectivity(&CurveClass::new(vec![degree_i64]))?
+                == CurveEffectivity::Effective
+            {
+                Ok(vec![degree])
+            } else {
+                Ok(Vec::new())
+            }
+        })
     }
 
     pub fn candidate_degrees(
@@ -116,30 +249,8 @@ impl NegativeSplitBundleTwist {
         markings: usize,
         insertion_degree: Option<usize>,
     ) -> Vec<usize> {
-        let Some(insertion_degree) = insertion_degree else {
-            return (0..=degree_max).collect();
-        };
-        let constant_dimension = (1 - genus as isize)
-            * (self.total_space_dimension(base_n) as isize - 3)
-            + markings as isize;
-        let numerator = insertion_degree as isize - constant_dimension;
-        let slope = base_n as isize + 1 - self.degree_sum() as isize;
-        if slope == 0 {
-            return if numerator == 0 {
-                (0..=degree_max).collect()
-            } else {
-                Vec::new()
-            };
-        }
-        if numerator % slope != 0 {
-            return Vec::new();
-        }
-        let degree = numerator / slope;
-        if degree < 0 || degree as usize > degree_max {
-            Vec::new()
-        } else {
-            vec![degree as usize]
-        }
+        self.try_candidate_degrees(base_n, genus, degree_max, markings, insertion_degree)
+            .expect("negative-split degree candidates must be representable")
     }
 }
 

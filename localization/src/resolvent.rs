@@ -19,6 +19,7 @@ use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
 use crate::factored::FactoredRatFun;
 use crate::geometry::CohomologyClass;
+use crate::theory::{GwTheory, ProjectiveSpaceTheory};
 use crate::{tau, Insertion, InvariantResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,22 +35,36 @@ pub struct ResolventRequest {
 }
 
 impl ResolventRequest {
+    /// Construct a projective-space request from the canonical target theory.
+    ///
+    /// Panics if an input cannot be represented; use
+    /// [`Self::try_for_projective_space`] for untrusted bounds.
     pub fn for_projective_space(
         target_n: usize,
         genus: usize,
         degree: usize,
         markings: usize,
     ) -> Self {
-        let virtual_dimension = (1 - genus as isize) * (target_n as isize - 3)
-            + (target_n + 1) as isize * degree as isize
-            + markings as isize;
-        Self {
+        Self::try_for_projective_space(target_n, genus, degree, markings)
+            .expect("projective resolvent request is representable")
+    }
+
+    pub fn try_for_projective_space(
+        target_n: usize,
+        genus: usize,
+        degree: usize,
+        markings: usize,
+    ) -> Result<Self, GwError> {
+        let theory = ProjectiveSpaceTheory::try_new(target_n)?;
+        let curve = theory.try_curve(degree)?;
+        let virtual_dimension = theory.virtual_dimension(genus, &curve, markings)?;
+        Ok(Self {
             target_n,
             genus,
             degree,
             markings,
             virtual_dimension,
-        }
+        })
     }
 }
 
@@ -595,6 +610,23 @@ mod tests {
         assert_eq!(result.value.to_string(), "1/(z0^2) + t0/(z0)");
         assert_eq!(result.candidate_terms, 2);
         assert_eq!(result.nonzero_terms, 2);
+    }
+
+    #[test]
+    fn projective_request_derives_dimension_from_canonical_theory() {
+        let request = ResolventRequest::try_for_projective_space(2, 3, 4, 5).unwrap();
+        let theory = ProjectiveSpaceTheory::new(2);
+        assert_eq!(
+            request.virtual_dimension,
+            theory.virtual_dimension(3, &theory.curve(4), 5).unwrap()
+        );
+    }
+
+    #[test]
+    fn projective_request_rejects_unrepresentable_degree_without_panicking() {
+        if usize::BITS > i64::BITS {
+            assert!(ResolventRequest::try_for_projective_space(1, 0, usize::MAX, 0).is_err());
+        }
     }
 
     #[test]

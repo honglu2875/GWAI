@@ -1,5 +1,6 @@
-//! Experimental exact computations for Gromov-Witten invariants of projective
-//! space.
+//! Experimental exact Gromov--Witten computations for projective spaces,
+//! products, projective bundles, and negative split-bundle twists, together
+//! with symbolic Virasoro generation and exact compact-theory audits.
 //!
 //! The crate is intentionally staged.  The public computation path is the
 //! Givental/S/R graph pipeline, while validation-only backends preserve older
@@ -21,6 +22,7 @@
 //! target (`GWAI_DISABLE_FACTORED_GRAPH`).
 
 pub mod algebra;
+pub mod constraints;
 pub mod error;
 pub mod factored;
 pub mod formula;
@@ -34,6 +36,7 @@ pub mod series;
 pub mod symbolic;
 pub mod tautological;
 pub mod testsuite;
+pub mod theory;
 pub mod twisted;
 pub mod validation;
 #[doc(hidden)]
@@ -42,6 +45,7 @@ pub mod validation_backends;
 use algebra::RatFun;
 use error::GwError;
 use geometry::CohomologyClass;
+use theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComputeMode {
@@ -98,10 +102,31 @@ impl InvariantRequest {
         }
     }
 
+    /// Canonical ordinary projective-space theory underlying this request.
+    pub fn canonical_theory(&self) -> ProjectiveSpaceTheory {
+        self.try_canonical_theory()
+            .expect("projective-space request dimension must be representable")
+    }
+
+    /// Fallible canonical theory construction for untrusted dimensions.
+    pub fn try_canonical_theory(&self) -> Result<ProjectiveSpaceTheory, GwError> {
+        ProjectiveSpaceTheory::try_new(self.n)
+    }
+
+    /// Checked virtual dimension derived from the canonical target theory.
+    pub fn try_virtual_dimension(&self) -> Result<isize, GwError> {
+        let degree = i64::try_from(self.degree)
+            .map_err(|_| GwError::AlgebraFailure("curve degree does not fit in i64".to_string()))?;
+        self.try_canonical_theory()?.virtual_dimension(
+            self.genus,
+            &CurveClass::new(vec![degree]),
+            self.insertions.len(),
+        )
+    }
+
     pub fn virtual_dimension(&self) -> isize {
-        (1 - self.genus as isize) * (self.n as isize - 3)
-            + (self.n + 1) as isize * self.degree as isize
-            + self.insertions.len() as isize
+        self.try_virtual_dimension()
+            .expect("validated projective-space request has a representable virtual dimension")
     }
 
     /// Validate target-dependent request data before mathematical shortcuts
@@ -116,11 +141,22 @@ impl InvariantRequest {
                 )));
             }
         }
+        self.try_virtual_dimension()?;
         Ok(())
     }
 
+    /// Checked degree-zero part of the virtual dimension.
+    pub fn try_dimension_without_degree(&self) -> Result<isize, GwError> {
+        self.try_canonical_theory()?.virtual_dimension(
+            self.genus,
+            &CurveClass::new(vec![0]),
+            self.insertions.len(),
+        )
+    }
+
     pub fn dimension_without_degree(&self) -> isize {
-        (1 - self.genus as isize) * (self.n as isize - 3) + self.insertions.len() as isize
+        self.try_dimension_without_degree()
+            .expect("validated projective-space request has a representable virtual dimension")
     }
 
     pub fn insertion_degree(&self) -> Option<usize> {
@@ -133,17 +169,24 @@ impl InvariantRequest {
     }
 
     pub fn expected_degree_from_dimension(&self) -> Option<usize> {
-        let insertion_degree = self.insertion_degree()? as isize;
-        let numerator = insertion_degree - self.dimension_without_degree();
-        let denominator = (self.n + 1) as isize;
-        if numerator < 0 || numerator % denominator != 0 {
+        let theory = self.try_canonical_theory().ok()?;
+        let insertion_degree = isize::try_from(self.insertion_degree()?).ok()?;
+        let dimension_without_degree = theory
+            .virtual_dimension(self.genus, &CurveClass::new(vec![0]), self.insertions.len())
+            .ok()?;
+        let numerator = insertion_degree.checked_sub(dimension_without_degree)?;
+        let denominator =
+            isize::try_from(theory.c1_pairing(&CurveClass::new(vec![1])).ok()?).ok()?;
+        if denominator <= 0 || numerator < 0 || numerator % denominator != 0 {
             return None;
         }
-        let degree = (numerator / denominator) as usize;
-        // P^0 is a point, so its only effective curve class has degree zero.
-        // Do not let a formal dimension equation infer a nonexistent positive
-        // Novikov degree.
-        (self.n != 0 || degree == 0).then_some(degree)
+        let degree = usize::try_from(numerator / denominator).ok()?;
+        let curve_degree = i64::try_from(degree).ok()?;
+        (theory
+            .effectivity(&CurveClass::new(vec![curve_degree]))
+            .ok()?
+            == CurveEffectivity::Effective)
+            .then_some(degree)
     }
 }
 
@@ -159,6 +202,12 @@ pub struct SeriesRequest {
     pub mode: ComputeMode,
     pub truncation: Option<Truncation>,
 }
+
+/// Finite work envelope for sparse descendant-potential enumeration.
+pub const MAX_SERIES_STATE_SPACE_RANK: usize = 64;
+pub const MAX_SERIES_DEGREE: usize = 64;
+pub const MAX_SERIES_DESCENDANT_POWER: usize = 64;
+pub const MAX_SERIES_CANDIDATE_COEFFICIENTS: usize = 100_000;
 
 impl SeriesRequest {
     pub fn new(n: usize, genus: usize, degree_max: usize, max_markings: usize) -> Self {
@@ -189,6 +238,85 @@ impl SeriesRequest {
             mode: self.mode,
             truncation: self.truncation.clone(),
         }
+    }
+
+    /// Validate all public bounds before candidate vectors or graph kernels
+    /// are allocated.
+    pub fn validate(&self) -> Result<(), GwError> {
+        let state_space_rank = self.n.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("series target dimension overflow".to_string())
+        })?;
+        if state_space_rank > MAX_SERIES_STATE_SPACE_RANK {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "series state-space rank {state_space_rank} exceeds the explicit limit {MAX_SERIES_STATE_SPACE_RANK}"
+            )));
+        }
+        if self.degree_max > MAX_SERIES_DEGREE {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "series degree bound {} exceeds the explicit limit {MAX_SERIES_DEGREE}",
+                self.degree_max
+            )));
+        }
+        if self.max_markings > graphs::MAX_STABLE_GRAPH_MARKINGS {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "series marking bound {} exceeds the explicit limit {}",
+                self.max_markings,
+                graphs::MAX_STABLE_GRAPH_MARKINGS
+            )));
+        }
+        if self.max_descendant_power > MAX_SERIES_DESCENDANT_POWER {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "series descendant bound {} exceeds the explicit limit {MAX_SERIES_DESCENDANT_POWER}",
+                self.max_descendant_power
+            )));
+        }
+        for markings in 0..=self.max_markings {
+            if graphs::is_stable_moduli_range(self.genus, markings) {
+                graphs::stable_graph_generation_bounds(self.genus, markings)?;
+            }
+        }
+
+        let descendant_count = self.max_descendant_power.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("series descendant basis overflow".to_string())
+        })?;
+        let basis_count = state_space_rank
+            .checked_mul(descendant_count)
+            .ok_or_else(|| GwError::UnsupportedInvariant("series basis overflow".to_string()))?;
+        let mut profiles = 1usize;
+        let mut exact_marking_profiles = 1usize;
+        for markings in 1..=self.max_markings {
+            let numerator = basis_count.checked_add(markings - 1).ok_or_else(|| {
+                GwError::UnsupportedInvariant("series profile count overflow".to_string())
+            })?;
+            exact_marking_profiles = exact_marking_profiles
+                .checked_mul(numerator)
+                .and_then(|value| value.checked_div(markings))
+                .ok_or_else(|| {
+                    GwError::UnsupportedInvariant("series profile count overflow".to_string())
+                })?;
+            profiles = profiles
+                .checked_add(exact_marking_profiles)
+                .ok_or_else(|| {
+                    GwError::UnsupportedInvariant("series profile count overflow".to_string())
+                })?;
+            if profiles > MAX_SERIES_CANDIDATE_COEFFICIENTS {
+                return Err(GwError::UnsupportedInvariant(format!(
+                    "series insertion-profile count exceeds the explicit coefficient limit {MAX_SERIES_CANDIDATE_COEFFICIENTS}"
+                )));
+            }
+        }
+        let degree_count = self.degree_max.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("series degree count overflow".to_string())
+        })?;
+        let coefficient_bound = profiles.checked_mul(degree_count).ok_or_else(|| {
+            GwError::UnsupportedInvariant("series coefficient count overflow".to_string())
+        })?;
+        if coefficient_bound > MAX_SERIES_CANDIDATE_COEFFICIENTS {
+            return Err(GwError::UnsupportedInvariant(format!(
+                "series candidate coefficient bound {coefficient_bound} exceeds the explicit limit {MAX_SERIES_CANDIDATE_COEFFICIENTS}"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -270,6 +398,7 @@ pub fn compute(req: InvariantRequest) -> Result<InvariantResult, GwError> {
 }
 
 pub fn compute_series(req: SeriesRequest) -> Result<SeriesResult, GwError> {
+    req.validate()?;
     if req.mode == ComputeMode::Givental {
         if let Some(result) = givental::compute_series_master(&req)? {
             return Ok(result);
@@ -497,6 +626,48 @@ mod tests {
             ],
         );
         assert_eq!(formally_degree_one.expected_degree_from_dimension(), None);
+    }
+
+    #[test]
+    fn extreme_projective_request_is_rejected_without_panicking() {
+        let request = InvariantRequest::new(usize::MAX, 0, 0, Vec::new());
+        assert!(matches!(
+            request.validate(),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+        assert!(matches!(
+            request.try_virtual_dimension(),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+        assert_eq!(request.expected_degree_from_dimension(), None);
+    }
+
+    #[test]
+    fn sparse_series_rejects_unbounded_public_bounds_before_allocation() {
+        for request in [
+            SeriesRequest::new(1, 0, usize::MAX, 0),
+            SeriesRequest::new(1, 0, 0, usize::MAX),
+            SeriesRequest::new(usize::MAX, 0, 0, 0),
+        ] {
+            assert!(matches!(
+                request.validate(),
+                Err(GwError::UnsupportedInvariant(_))
+            ));
+        }
+
+        let mut descendants = SeriesRequest::new(1, 0, 0, 0);
+        descendants.max_descendant_power = usize::MAX;
+        assert!(matches!(
+            descendants.validate(),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+
+        let mut combinatorial = SeriesRequest::new(2, 0, 0, 8);
+        combinatorial.max_descendant_power = 3;
+        assert!(matches!(
+            compute_series(combinatorial),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
     }
 
     #[test]

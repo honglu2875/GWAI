@@ -8,6 +8,13 @@
 
 use crate::algebra::Rational;
 
+/// Explicit work envelope for the coefficient-series GV-to-GW validation
+/// transform.  The bundled local-P2 oracle only needs genera through 7.
+pub const MAX_EXACT_GV_TRANSFORM_GENUS: usize = 16;
+/// The generic transform enumerates divisors and is a validation oracle, not
+/// an unbounded production multiple-cover engine.
+pub const MAX_EXACT_GV_TRANSFORM_DEGREE: usize = 10_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LocalCurveClass {
     pub genus: usize,
@@ -48,9 +55,11 @@ pub fn gv_to_gw(
     degree: usize,
     gv: impl Fn(usize, usize) -> Option<i128>,
 ) -> Option<Rational> {
-    if degree == 0 {
+    if degree == 0 || genus > MAX_EXACT_GV_TRANSFORM_GENUS || degree > MAX_EXACT_GV_TRANSFORM_DEGREE
+    {
         return None;
     }
+    let doubled_genus = genus.checked_mul(2)?;
     let mut total = Rational::zero();
     for cover in divisors(degree) {
         let primitive_degree = degree / cover;
@@ -63,7 +72,7 @@ pub fn gv_to_gw(
             if coefficient.is_zero() {
                 continue;
             }
-            let cover_factor = Rational::from(cover).pow_usize(2 * genus).clone()
+            let cover_factor = Rational::from(cover).pow_usize(doubled_genus).clone()
                 / Rational::from(cover).pow_usize(3);
             total += Rational::from(gv_value) * cover_factor * coefficient;
         }
@@ -145,7 +154,9 @@ fn divisors(value: usize) -> Vec<usize> {
 }
 
 fn factorial_rational(value: usize) -> Rational {
-    Rational::from((1..=value).product::<usize>().max(1))
+    (1..=value).fold(Rational::one(), |factorial, factor| {
+        factorial * Rational::from(factor)
+    })
 }
 
 const LOCAL_P2_GW: [[(i128, i128); 15]; 8] = [
@@ -438,6 +449,21 @@ mod tests {
         assert_eq!(resolved_conifold_gw(1, 3), Some(Rational::new(1, 36)));
         assert_eq!(resolved_conifold_gw(2, 3), Some(Rational::new(1, 80)));
         assert_eq!(resolved_conifold_gw(3, 3), Some(Rational::new(1, 224)));
+    }
+
+    #[test]
+    fn gv_transform_rejects_unbounded_work_without_overflowing() {
+        assert_eq!(resolved_conifold_gw(usize::MAX, 1), None);
+        assert_eq!(resolved_conifold_gw(0, usize::MAX), None);
+        assert_eq!(gv_to_gw(usize::MAX, 1, |_, _| Some(1)), None);
+    }
+
+    #[test]
+    fn rational_factorial_does_not_overflow_machine_words() {
+        assert_eq!(
+            factorial_rational(25),
+            Rational::from(15_511_210_043_330_985_984_000_000i128)
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@
 //! rationals.  [`reconstruct_bidegree_invariants`] packages this.
 
 use super::*;
+use crate::theory::{CurveClass, GwTheory, ProductProjectiveTheory};
 use std::time::Instant;
 
 /// Insertion `tau_k(H1^a H2^b)` on the product.
@@ -42,11 +43,10 @@ impl ProductInsertion {
 /// at rational equivariant weights for both factors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProductProjectiveRay {
-    pub n: usize,
-    pub m: usize,
-    pub weights_x: Vec<Rational>,
-    pub weights_y: Vec<Rational>,
-    pub ray: Rational,
+    theory: ProductProjectiveTheory,
+    weights_x: Vec<Rational>,
+    weights_y: Vec<Rational>,
+    ray: Rational,
 }
 
 impl ProductProjectiveRay {
@@ -57,22 +57,34 @@ impl ProductProjectiveRay {
         weights_y: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
-        if n == 0 || m == 0 {
-            return Err(GwError::ConventionMismatch(
-                "product ray reconstruction requires two positive-dimensional projective factors; a P^0 factor has no independent curve degree and must be reduced to the other projective-space factor"
-                    .to_string(),
-            ));
-        }
-        if weights_x.len() != n + 1 || weights_y.len() != m + 1 {
+        Self::from_theory(
+            ProductProjectiveTheory::new(n, m)?,
+            weights_x,
+            weights_y,
+            ray,
+        )
+    }
+
+    /// Attach ray-calibration data to an already constructed canonical
+    /// product theory.  All geometric queries are delegated to this stored
+    /// theory; the weights and ray only select a semisimple calibration.
+    pub fn from_theory(
+        theory: ProductProjectiveTheory,
+        weights_x: Vec<Rational>,
+        weights_y: Vec<Rational>,
+        ray: Rational,
+    ) -> Result<Self, GwError> {
+        let (n, m) = theory.dimensions();
+        let expected_x = n + 1;
+        let expected_y = m + 1;
+        if weights_x.len() != expected_x || weights_y.len() != expected_y {
             return Err(GwError::ConventionMismatch(format!(
                 "product weights must have lengths {} and {}",
-                n + 1,
-                m + 1
+                expected_x, expected_y
             )));
         }
         let target = Self {
-            n,
-            m,
+            theory,
             weights_x,
             weights_y,
             ray,
@@ -88,19 +100,50 @@ impl ProductProjectiveRay {
         Ok(target)
     }
 
+    /// Ordinary geometric data for the unspecialized product target.  The
+    /// rational Novikov ray affects calibration, not the state space or curve
+    /// lattice used by dimension checks.
+    pub fn canonical_theory(&self) -> &ProductProjectiveTheory {
+        &self.theory
+    }
+
+    pub fn dimensions(&self) -> (usize, usize) {
+        self.theory.dimensions()
+    }
+
+    pub fn n(&self) -> usize {
+        self.dimensions().0
+    }
+
+    pub fn m(&self) -> usize {
+        self.dimensions().1
+    }
+
+    pub fn x_weights(&self) -> &[Rational] {
+        &self.weights_x
+    }
+
+    pub fn y_weights(&self) -> &[Rational] {
+        &self.weights_y
+    }
+
+    pub fn ray(&self) -> &Rational {
+        &self.ray
+    }
+
     fn size(&self) -> usize {
-        (self.n + 1) * (self.m + 1)
+        self.theory.state_space().basis.len()
     }
 
     fn point(&self, i: usize, j: usize) -> usize {
-        i * (self.m + 1) + j
+        i * (self.m() + 1) + j
     }
 
     /// Classical eigenvalues of `D = H1 + H2`: `lambda_i + mu_j`.
     fn classical_seeds(&self) -> Vec<Rational> {
         let mut seeds = vec![Rational::zero(); self.size()];
-        for i in 0..=self.n {
-            for j in 0..=self.m {
+        for i in 0..=self.n() {
+            for j in 0..=self.m() {
                 seeds[self.point(i, j)] = self.weights_x[i].clone() + self.weights_y[j].clone();
             }
         }
@@ -110,12 +153,12 @@ impl ProductProjectiveRay {
     /// Equivariant Euler class of the tangent space at fixed point `(i, j)`.
     fn euler(&self, i: usize, j: usize) -> Rational {
         let mut euler = Rational::one();
-        for k in 0..=self.n {
+        for k in 0..=self.n() {
             if k != i {
                 euler = euler * (self.weights_x[i].clone() - self.weights_x[k].clone());
             }
         }
-        for l in 0..=self.m {
+        for l in 0..=self.m() {
             if l != j {
                 euler = euler * (self.weights_y[j].clone() - self.weights_y[l].clone());
             }
@@ -132,8 +175,8 @@ impl ProductProjectiveRay {
         for row in 0..size {
             for col in 0..size {
                 let mut total = Rational::zero();
-                for i in 0..=self.n {
-                    for j in 0..=self.m {
+                for i in 0..=self.n() {
+                    for j in 0..=self.m() {
                         let seed = &seeds[self.point(i, j)];
                         total += seed.pow_usize(row + col) / self.euler(i, j);
                     }
@@ -199,10 +242,10 @@ impl ProductProjectiveRay {
         // the fixed point (k,l).  Equals the identity at q = 0.
         let size = self.size();
         let mut restriction_entries = vec![vec![QSeries::zero(q_degree); size]; size];
-        for k in 0..=self.n {
-            for l in 0..=self.m {
-                for i in 0..=self.n {
-                    for j in 0..=self.m {
+        for k in 0..=self.n() {
+            for l in 0..=self.m() {
+                for i in 0..=self.n() {
+                    for j in 0..=self.m() {
                         restriction_entries[self.point(k, l)][self.point(i, j)] =
                             x_restrictions[k][i].mul(&y_restrictions[l][j]);
                     }
@@ -236,8 +279,8 @@ impl ProductProjectiveRay {
             recipe::neumann_inverse(&restriction_matrix, q_degree)?.mul(&classical_vandermonde);
 
         let mut roots = vec![QSeries::zero(q_degree); size];
-        for i in 0..=self.n {
-            for j in 0..=self.m {
+        for i in 0..=self.n() {
+            for j in 0..=self.m() {
                 roots[self.point(i, j)] = x_roots[i].add(&y_roots[j]);
             }
         }
@@ -308,8 +351,8 @@ impl ProductProjectiveRay {
         let size = self.size();
         let transition = self.classical_transition();
         let mut vector = vec![Rational::zero(); size];
-        for i in 0..=self.n {
-            for j in 0..=self.m {
+        for i in 0..=self.n() {
+            for j in 0..=self.m() {
                 let restriction =
                     self.weights_x[i].pow_usize(h1_power) * self.weights_y[j].pow_usize(h2_power);
                 for row in 0..size {
@@ -323,8 +366,8 @@ impl ProductProjectiveRay {
     fn cache_key(&self) -> String {
         format!(
             "p{}xp{}[{};{}]@{}",
-            self.n,
-            self.m,
+            self.n(),
+            self.m(),
             self.weights_x
                 .iter()
                 .map(Rational::to_string)
@@ -346,19 +389,19 @@ impl ProductProjectiveRay {
     ) -> Result<SemisimpleCalibration, GwError> {
         let frame = self.canonical_frame(q_degree)?;
         let mut classical_diagonal = Vec::with_capacity(self.size());
-        for i in 0..=self.n {
-            for j in 0..=self.m {
+        for i in 0..=self.n() {
+            for j in 0..=self.m() {
                 // Tangent weight differences of the product at (i, j): the
                 // factor differences, matching R_{X x Y} = R_X (x) R_Y.
                 let mut differences = Vec::new();
-                for k in 0..=self.n {
+                for k in 0..=self.n() {
                     if k != i {
                         differences.push(RatFun::from_rational(
                             self.weights_x[k].clone() - self.weights_x[i].clone(),
                         ));
                     }
                 }
-                for l in 0..=self.m {
+                for l in 0..=self.m() {
                     if l != j {
                         differences.push(RatFun::from_rational(
                             self.weights_y[l].clone() - self.weights_y[j].clone(),
@@ -411,12 +454,20 @@ fn series_polynomial_from_roots(roots: &[QSeries], q_degree: usize) -> Vec<QSeri
 /// Engine-facing provider for one ray of the product theory.
 #[derive(Debug, Clone)]
 pub struct ProductRayProvider {
-    pub target: ProductProjectiveRay,
+    target: ProductProjectiveRay,
 }
 
 impl ProductRayProvider {
     pub fn new(target: ProductProjectiveRay) -> Self {
         Self { target }
+    }
+
+    pub fn target(&self) -> &ProductProjectiveRay {
+        &self.target
+    }
+
+    pub fn canonical_theory(&self) -> &ProductProjectiveTheory {
+        self.target.canonical_theory()
     }
 }
 
@@ -522,38 +573,74 @@ pub fn reconstruct_bidegree_invariants(
     total_degree: usize,
     insertions: &[ProductInsertion],
 ) -> Result<Vec<Rational>, GwError> {
-    let ray_count = total_degree + 1;
+    let theory = ProductProjectiveTheory::new(n, m)?;
+    reconstruct_bidegree_invariants_in_theory(
+        &theory,
+        weights_x,
+        weights_y,
+        genus,
+        total_degree,
+        insertions,
+    )
+}
+
+/// Reconstruct using an already validated canonical theory.  Evaluator
+/// adapters use this entry point so scalar dimension queries and repeated
+/// correlators share one geometry instance.
+pub fn reconstruct_bidegree_invariants_in_theory(
+    theory: &ProductProjectiveTheory,
+    weights_x: &[Rational],
+    weights_y: &[Rational],
+    genus: usize,
+    total_degree: usize,
+    insertions: &[ProductInsertion],
+) -> Result<Vec<Rational>, GwError> {
+    if is_stable_cohft_range(genus, insertions.len()) {
+        crate::graphs::stable_graph_generation_bounds(genus, insertions.len())?;
+    }
+    let ray_count = checked_reconstruction_ray_count("product", total_degree)?;
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
-    let ray_results = std::thread::scope(|scope| {
-        let mut handles = Vec::with_capacity(ray_count);
+    let ray_results = std::thread::scope(|scope| -> Result<Vec<_>, GwError> {
+        let mut handles = Vec::new();
+        handles.try_reserve_exact(ray_count).map_err(|_| {
+            GwError::UnsupportedInvariant(format!(
+                "cannot allocate {ray_count} product reconstruction workers"
+            ))
+        })?;
         for step in 0..ray_count {
             handles.push(
-                scope.spawn(move || -> Result<(Rational, Rational), GwError> {
-                    let ray = Rational::from(step + 1);
-                    let target = ProductProjectiveRay::new(
-                        n,
-                        m,
-                        weights_x.to_vec(),
-                        weights_y.to_vec(),
-                        ray.clone(),
-                    )?;
-                    let provider = ProductRayProvider::new(target);
-                    let value = compute_semisimple_graph_value(
-                        &provider,
-                        genus,
-                        total_degree,
-                        insertions,
-                        None,
-                    )?;
-                    let value = value.as_rational().ok_or_else(|| {
-                        GwError::AlgebraFailure(
-                            "product ray value did not specialize to a rational".to_string(),
-                        )
-                    })?;
-                    Ok((ray, value))
-                }),
+                std::thread::Builder::new()
+                    .name(format!("gw-product-ray-{step}"))
+                    .spawn_scoped(scope, move || -> Result<(Rational, Rational), GwError> {
+                        let ray = Rational::from(step + 1);
+                        let target = ProductProjectiveRay::from_theory(
+                            theory.clone(),
+                            weights_x.to_vec(),
+                            weights_y.to_vec(),
+                            ray.clone(),
+                        )?;
+                        let provider = ProductRayProvider::new(target);
+                        let value = compute_semisimple_graph_value(
+                            &provider,
+                            genus,
+                            total_degree,
+                            insertions,
+                            None,
+                        )?;
+                        let value = value.as_rational().ok_or_else(|| {
+                            GwError::AlgebraFailure(
+                                "product ray value did not specialize to a rational".to_string(),
+                            )
+                        })?;
+                        Ok((ray, value))
+                    })
+                    .map_err(|error| {
+                        GwError::AlgebraFailure(format!(
+                            "cannot spawn product reconstruction ray {step}: {error}"
+                        ))
+                    })?,
             );
         }
 
@@ -594,7 +681,8 @@ pub fn reconstruct_bidegree_invariants(
     // (For n != m the virtual dimension varies across the bidegrees of one
     // total degree, so this per-bidegree check cannot happen on a ray.)
     for (d2, value) in values.iter_mut().enumerate() {
-        if !bidegree_dimension_matches(n, m, genus, total_degree - d2, d2, insertions) {
+        if !bidegree_dimension_matches_in_theory(theory, genus, total_degree - d2, d2, insertions)?
+        {
             *value = Rational::zero();
         }
     }
@@ -611,20 +699,117 @@ pub fn bidegree_dimension_matches(
     d2: usize,
     insertions: &[ProductInsertion],
 ) -> bool {
-    let insertion_degree: usize = insertions
+    try_bidegree_dimension_matches(n, m, genus, d1, d2, insertions).unwrap_or(false)
+}
+
+/// Fallible form of [`bidegree_dimension_matches`], preserving validation
+/// errors for untrusted target dimensions and degrees.
+pub fn try_bidegree_dimension_matches(
+    n: usize,
+    m: usize,
+    genus: usize,
+    d1: usize,
+    d2: usize,
+    insertions: &[ProductInsertion],
+) -> Result<bool, GwError> {
+    let theory = ProductProjectiveTheory::new(n, m)?;
+    bidegree_dimension_matches_in_theory(&theory, genus, d1, d2, insertions)
+}
+
+/// Checked dimension match using an existing canonical product theory.
+pub fn bidegree_dimension_matches_in_theory(
+    theory: &ProductProjectiveTheory,
+    genus: usize,
+    d1: usize,
+    d2: usize,
+    insertions: &[ProductInsertion],
+) -> Result<bool, GwError> {
+    let insertion_degree = insertions
         .iter()
-        .map(|insertion| insertion.descendant_power + insertion.h1_power + insertion.h2_power)
-        .sum();
-    let virtual_dimension = (1 - genus as isize) * ((n + m) as isize - 3)
-        + (n as isize + 1) * d1 as isize
-        + (m as isize + 1) * d2 as isize
-        + insertions.len() as isize;
-    insertion_degree as isize == virtual_dimension
+        .try_fold(0usize, |total, insertion| {
+            total
+                .checked_add(insertion.descendant_power)
+                .and_then(|value| value.checked_add(insertion.h1_power))
+                .and_then(|value| value.checked_add(insertion.h2_power))
+        })
+        .ok_or_else(|| GwError::AlgebraFailure("product insertion degree overflow".to_string()))?;
+    let d1 = i64::try_from(d1)
+        .map_err(|_| GwError::AlgebraFailure("product degree does not fit in i64".to_string()))?;
+    let d2 = i64::try_from(d2)
+        .map_err(|_| GwError::AlgebraFailure("product degree does not fit in i64".to_string()))?;
+    let virtual_dimension =
+        theory.virtual_dimension(genus, &CurveClass::new(vec![d1, d2]), insertions.len())?;
+    Ok(usize::try_from(virtual_dimension).ok() == Some(insertion_degree))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn product_ray_rejects_extreme_dimensions_before_unchecked_arithmetic() {
+        let error =
+            ProductProjectiveRay::new(usize::MAX, 1, Vec::new(), Vec::new(), Rational::one())
+                .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+    }
+
+    #[test]
+    fn product_reconstruction_rejects_oversized_ray_families_before_spawning() {
+        let theory = ProductProjectiveTheory::new(1, 1).unwrap();
+        let error = reconstruct_bidegree_invariants_in_theory(
+            &theory,
+            &weights_x(),
+            &weights_y(),
+            0,
+            MAX_EXACT_RECONSTRUCTION_RAYS,
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("Novikov rays"));
+    }
+
+    #[test]
+    fn product_reconstruction_rejects_extreme_genus_without_worker_panic() {
+        let theory = ProductProjectiveTheory::new(1, 1).unwrap();
+        let error = reconstruct_bidegree_invariants_in_theory(
+            &theory,
+            &weights_x(),
+            &weights_y(),
+            usize::MAX,
+            0,
+            &[],
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains("stable-graph"));
+    }
+
+    #[test]
+    fn product_provider_uses_its_stored_canonical_theory() {
+        let theory = ProductProjectiveTheory::new(1, 2).unwrap();
+        let fingerprint = theory.theory_fingerprint();
+        let dimension = theory.target_dimension();
+        let state_space_dimension = theory.state_space().basis.len();
+        let target = ProductProjectiveRay::from_theory(
+            theory,
+            weights_x(),
+            vec![Rational::from(11), Rational::from(23), Rational::from(41)],
+            Rational::from(3),
+        )
+        .unwrap();
+        let provider = ProductRayProvider::new(target);
+
+        assert_eq!(provider.target().dimensions(), (1, 2));
+        assert_eq!(provider.canonical_theory().dimensions(), (1, 2));
+        assert_eq!(provider.canonical_theory().target_dimension(), dimension);
+        assert_eq!(
+            provider.canonical_theory().theory_fingerprint(),
+            fingerprint
+        );
+        assert_eq!(provider.colors(), state_space_dimension);
+    }
 
     fn weights_x() -> Vec<Rational> {
         vec![Rational::from(2), Rational::from(5)]

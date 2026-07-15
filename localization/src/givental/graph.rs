@@ -545,10 +545,13 @@ pub fn projective_graph_bounded_potential_coefficients(
         ));
     }
 
-    let provider = ProjectiveSpaceProvider::new(n, equivariant);
+    let provider = ProjectiveSpaceProvider::try_new(n, equivariant)?;
     let colors = provider.colors();
-    let graph_dimension = 3 * genus + markings - 3;
-    let graph_kernel = provider.graph_kernel(degree_max, graph_dimension + 1, graph_dimension)?;
+    let graph_dimension = checked_stable_graph_work_dimension(genus, markings)?;
+    let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+    })?;
+    let graph_kernel = provider.graph_kernel(degree_max, needed_r_order, graph_dimension)?;
     let mut profile = GraphEvalProfile::new();
     let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile);
     let prepared = graphs.get(graph_index).ok_or_else(|| {
@@ -640,8 +643,10 @@ where
     // The largest total psi degree on a stable-curve vertex is the dimension
     // of Mbar_{g,n}.  This one number bounds the necessary `R`, edge, and
     // translation powers for the whole graph sum.
-    let graph_dimension = 3 * genus + insertions.len() - 3;
-    let needed_r_order = graph_dimension + 1;
+    let graph_dimension = checked_stable_graph_work_dimension(genus, insertions.len())?;
+    let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+    })?;
     let needed_s_order = max_descendant_power;
     let needed_z_order = needed_r_order.max(needed_s_order);
     let z_order = truncation
@@ -790,8 +795,10 @@ where
         ));
     }
 
-    let graph_dimension = 3 * genus + insertions.len() - 3;
-    let needed_r_order = graph_dimension + 1;
+    let graph_dimension = checked_stable_graph_work_dimension(genus, insertions.len())?;
+    let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+    })?;
     let needed_s_order = max_descendant_power;
     let needed_z_order = needed_r_order.max(needed_s_order);
     let z_order = truncation
@@ -919,11 +926,12 @@ const MASTER_MIN_RESTRICTED_KERNEL_TASKS: usize = 2;
 /// it shares graph kernels and, for small marking counts, precontracts the
 /// entire stable-graph sum into an external-leg tensor.
 pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>, GwError> {
+    req.validate()?;
     if req.mode != ComputeMode::Givental {
         return Ok(None);
     }
 
-    let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
+    let provider = ProjectiveSpaceProvider::try_new(req.n, req.equivariant)?;
     compute_series_master_with_provider(req, provider)
 }
 
@@ -934,6 +942,7 @@ pub fn compute_series_master_with_provider<P>(
 where
     P: SemisimpleCohftProvider<Insertion = Insertion>,
 {
+    req.validate()?;
     if req.mode != ComputeMode::Givental {
         return Ok(None);
     }
@@ -1305,8 +1314,10 @@ where
         ));
     }
 
-    let graph_dimension = 3 * req.genus + req.markings - 3;
-    let needed_r_order = graph_dimension + 1;
+    let graph_dimension = checked_stable_graph_work_dimension(req.genus, req.markings)?;
+    let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+    })?;
     let needed_s_order = req.virtual_dimension as usize;
     let graph_kernel = provider.coeff_graph_kernel(req.degree, needed_r_order, graph_dimension)?;
     let descendant_s = provider.coeff_descendant_s_matrix(req.degree, needed_s_order)?;
@@ -1779,7 +1790,7 @@ where
         q_degree: usize,
         tasks: &[MasterContractionTask],
     ) -> Result<RestrictedExternalLegKernel, GwError> {
-        let graph_dimension = self.graph_dimension(markings);
+        let graph_dimension = self.graph_dimension(markings)?;
         let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
         let template = RestrictedExternalLegKernel::from_tasks(
             markings,
@@ -1818,8 +1829,10 @@ where
         markings: usize,
         insertions: &[Insertion],
     ) -> Result<(), GwError> {
-        let graph_dimension = self.graph_dimension(markings);
-        let needed_r_order = graph_dimension + 1;
+        let graph_dimension = self.graph_dimension(markings)?;
+        let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+        })?;
         let needed_s_order = insertions
             .iter()
             .map(|insertion| insertion.descendant_power)
@@ -1836,8 +1849,8 @@ where
         Ok(())
     }
 
-    fn graph_dimension(&self, markings: usize) -> usize {
-        3 * self.genus + markings - 3
+    fn graph_dimension(&self, markings: usize) -> Result<usize, GwError> {
+        checked_stable_graph_work_dimension(self.genus, markings)
     }
 
     fn descendant_s(&mut self, q_degree: usize, z_order: usize) -> Result<&SeriesSMatrix, GwError> {
@@ -1864,9 +1877,12 @@ where
         markings: usize,
         q_degree: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
-        let graph_dimension = self.graph_dimension(markings);
+        let graph_dimension = self.graph_dimension(markings)?;
+        let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
+        })?;
         self.provider
-            .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
+            .graph_kernel(q_degree, needed_r_order, graph_dimension)
     }
 
     fn external_leg_kernel(&mut self, markings: usize) -> Result<&ExternalLegKernel, GwError> {
@@ -1881,7 +1897,7 @@ where
     }
 
     fn build_external_leg_kernel(&self, markings: usize) -> Result<ExternalLegKernel, GwError> {
-        let graph_dimension = self.graph_dimension(markings);
+        let graph_dimension = self.graph_dimension(markings)?;
         let graph_kernel = self.graph_kernel_for_markings(markings)?;
         let mut profile = GraphEvalProfile::new();
         let graphs =
@@ -1939,7 +1955,7 @@ where
             }
         }
 
-        let graph_dimension = self.graph_dimension(markings);
+        let graph_dimension = self.graph_dimension(markings)?;
         let s_order = self.max_descendant_power.max(insertion.descendant_power);
         let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
         let colors = self.colors();
@@ -3745,7 +3761,12 @@ pub(crate) fn accumulate_restricted_external_leg_graph_factors<C>(
 }
 
 pub(crate) fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
-    2 * genus + markings > 2
+    crate::graphs::is_stable_moduli_range(genus, markings)
+}
+
+fn checked_stable_graph_work_dimension(genus: usize, markings: usize) -> Result<usize, GwError> {
+    crate::graphs::stable_graph_generation_bounds(genus, markings)?;
+    crate::graphs::stable_graph_dimension(genus, markings)
 }
 
 pub(crate) fn ancestor_insertion_terms_from_provider<C, P>(
@@ -4300,14 +4321,27 @@ where
         profile.vertex_cache_misses += 1;
     }
 
-    let base_dimension = 3isize * genus as isize - 3 + base_powers.len() as isize;
-    let base_power_sum = base_powers.iter().sum::<usize>() as isize;
-    let translation_excess = base_dimension - base_power_sum;
-    if translation_excess < 0 {
+    let base_dimension = match crate::graphs::stable_graph_dimension(genus, base_powers.len()) {
+        Ok(dimension) => dimension,
+        Err(_) => {
+            let zero = QSeries::<C>::zero(q_degree);
+            vertex_cache.insert(key, Arc::new(zero.clone()));
+            return zero;
+        }
+    };
+    let Some(base_power_sum) = base_powers
+        .iter()
+        .try_fold(0usize, |sum, power| sum.checked_add(*power))
+    else {
         let zero = QSeries::<C>::zero(q_degree);
         vertex_cache.insert(key, Arc::new(zero.clone()));
         return zero;
-    }
+    };
+    let Some(translation_excess) = base_dimension.checked_sub(base_power_sum) else {
+        let zero = QSeries::<C>::zero(q_degree);
+        vertex_cache.insert(key, Arc::new(zero.clone()));
+        return zero;
+    };
 
     let mut total = QSeries::<C>::zero(q_degree);
     if translation_excess == 0 {
@@ -4316,7 +4350,7 @@ where
             .add(&vertex_factor.scale(&C::from_rational(oracle.psi_integral(genus, base_powers))));
     }
 
-    for partition in translation_excess_partitions(translation_excess as usize) {
+    for partition in translation_excess_partitions(translation_excess) {
         if profile.enabled {
             profile.translation_terms += 1;
         }
@@ -4496,7 +4530,13 @@ pub(crate) fn prepared_stable_graphs(
                 .vertices
                 .iter()
                 .enumerate()
-                .map(|(vertex, stable_vertex)| 3 * stable_vertex.genus + graph.valence(vertex) - 3)
+                .map(|(vertex, stable_vertex)| {
+                    crate::graphs::stable_graph_dimension(
+                        stable_vertex.genus,
+                        graph.valence(vertex),
+                    )
+                    .expect("stable-graph generation produced only stable vertices")
+                })
                 .collect::<Vec<_>>();
             PreparedStableGraph {
                 graph,

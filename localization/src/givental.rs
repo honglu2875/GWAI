@@ -56,17 +56,45 @@ pub mod target;
 pub use target::{GwTarget, ProjectiveTarget, TargetProvider};
 pub mod bundle;
 pub use bundle::{
-    bundle_dimension_matches, reconstruct_bundle_invariants, BundleInsertion, BundleRayProvider,
+    bundle_dimension_matches, bundle_dimension_matches_in_theory, reconstruct_bundle_invariants,
+    reconstruct_bundle_invariants_in_theory, BundleInsertion, BundleRayProvider,
     ProjectiveBundleRay,
 };
 pub mod product;
 pub use product::{
-    bidegree_dimension_matches, reconstruct_bidegree_invariants, ProductInsertion,
+    bidegree_dimension_matches, bidegree_dimension_matches_in_theory,
+    reconstruct_bidegree_invariants, reconstruct_bidegree_invariants_in_theory, ProductInsertion,
     ProductProjectiveRay, ProductRayProvider,
 };
 mod graph;
 pub use graph::*;
 use r_solve::*;
+
+/// Maximum number of one-parameter Novikov rays materialized by an exact
+/// multi-degree reconstruction.
+///
+/// Product and projective-bundle reconstruction solve a dense Vandermonde
+/// system and currently run one scoped worker per ray.  Keeping this guard in
+/// the shared reconstruction layer prevents a large degree from turning a
+/// public fallible API into an allocation or thread-spawn abort.  The bound
+/// can be raised deliberately once those algorithms use bounded parallelism
+/// and a more scalable interpolation strategy.
+pub const MAX_EXACT_RECONSTRUCTION_RAYS: usize = 64;
+
+pub(crate) fn checked_reconstruction_ray_count(
+    target: &str,
+    total_degree: usize,
+) -> Result<usize, GwError> {
+    let ray_count = total_degree.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant(format!("{target} reconstruction degree is too large"))
+    })?;
+    if ray_count > MAX_EXACT_RECONSTRUCTION_RAYS {
+        return Err(GwError::UnsupportedInvariant(format!(
+            "{target} reconstruction requires {ray_count} Novikov rays, exceeding the explicit limit {MAX_EXACT_RECONSTRUCTION_RAYS}"
+        )));
+    }
+    Ok(ray_count)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaConvention {
