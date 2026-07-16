@@ -210,6 +210,66 @@ fn equivariant_projective_i_records_base_weight_correction() {
 }
 
 #[test]
+fn equivariant_projective_i_nonnegative_z_floor_is_an_empty_window() {
+    let coefficient = projective_equivariant_i_function_coefficient(
+        1,
+        1,
+        &[Rational::from(2usize), Rational::from(5usize)],
+        0,
+    )
+    .unwrap();
+
+    assert_eq!(coefficient, HLaurentSeries::zero(1));
+
+    let degree_zero_above_constant = projective_equivariant_i_function_coefficient(
+        1,
+        0,
+        &[Rational::from(2usize), Rational::from(5usize)],
+        1,
+    )
+    .unwrap();
+    assert_eq!(degree_zero_above_constant, HLaurentSeries::zero(1));
+
+    let degree_zero_at_constant = projective_equivariant_i_function_coefficient(
+        1,
+        0,
+        &[Rational::from(2usize), Rational::from(5usize)],
+        0,
+    )
+    .unwrap();
+    assert_eq!(degree_zero_at_constant, HLaurentSeries::one(1));
+}
+
+#[test]
+fn birkhoff_rejects_unrepresentable_bounds_before_factorization() {
+    let fundamental = BTreeMap::new();
+    let too_large_for_exponents = usize::try_from(i32::MAX).unwrap().checked_add(1).unwrap();
+
+    for z_order in [too_large_for_exponents, usize::MAX] {
+        assert!(matches!(
+            birkhoff_descendant_s_matrix_from_fundamental(
+                1,
+                0,
+                z_order,
+                &fundamental,
+                CalibrationId("overflow-guard".to_string()),
+            ),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
+    }
+
+    let model = NegativeSplitHypergeometricModel::new(
+        0,
+        NegativeSplitBundleTwist::new(Vec::new()).unwrap(),
+        0,
+    );
+    assert!(matches!(
+        model.birkhoff_descendant_s_matrix(usize::MAX),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+}
+
+#[test]
 fn qrr_factorized_i_function_matches_direct_hypergeometric_i_function() {
     let twist = NegativeSplitBundleTwist::new(vec![3]).unwrap();
     let qrr = NegativeSplitQrrOperator::new(twist.clone());
@@ -239,6 +299,153 @@ fn equivariant_negative_split_i_specializes_to_direct_local_i_at_zero_weights() 
         equivariant,
         negative_split_i_function_coefficient(2, &twist, 1)
     );
+}
+
+#[test]
+fn o_minus_five_p1_retained_i_window_matches_deep_laurent_reference() {
+    let twist = NegativeSplitBundleTwist::new(vec![5]).unwrap();
+    let base_weights = vec![Rational::from(1usize), Rational::from(2usize)];
+    let fiber_weights = vec![Rational::from(3usize)];
+    let retained_min_z_power = -5;
+
+    let retained = negative_split_equivariant_i_function_coefficient(
+        1,
+        &twist,
+        1,
+        &base_weights,
+        &fiber_weights,
+        retained_min_z_power,
+    )
+    .unwrap();
+    let deep_reference = negative_split_equivariant_i_function_coefficient(
+        1,
+        &twist,
+        1,
+        &base_weights,
+        &fiber_weights,
+        -29,
+    )
+    .unwrap()
+    .truncated_z_below(retained_min_z_power);
+
+    assert_eq!(retained, deep_reference);
+}
+
+#[test]
+fn multi_summand_qrr_retained_i_window_matches_deep_laurent_reference() {
+    let twist = NegativeSplitBundleTwist::new(vec![3, 4]).unwrap();
+    let base_weights = vec![Rational::from(2usize), Rational::from(5usize)];
+    let fiber_weights = vec![Rational::from(11usize), Rational::from(23usize)];
+    let retained_min_z_power = -5;
+
+    // In degree one the two Euler numerators raise z-degree by 2 and 3,
+    // respectively.  This specifically exercises their summed source-tail
+    // allowance, rather than the one-line maximum used by the simpler tests.
+    let retained = negative_split_equivariant_i_function_coefficient(
+        1,
+        &twist,
+        1,
+        &base_weights,
+        &fiber_weights,
+        retained_min_z_power,
+    )
+    .unwrap();
+    let deep_reference = negative_split_equivariant_i_function_coefficient(
+        1,
+        &twist,
+        1,
+        &base_weights,
+        &fiber_weights,
+        -30,
+    )
+    .unwrap()
+    .truncated_z_below(retained_min_z_power);
+
+    assert_eq!(retained, deep_reference);
+    assert!(
+        (0..=1).any(|h_power| !retained
+            .coefficient(h_power, retained_min_z_power)
+            .is_zero()),
+        "the comparison must exercise the retained Laurent boundary"
+    );
+}
+
+#[test]
+fn negative_split_hypergeometric_windows_reject_arithmetic_overflow() {
+    let twist = NegativeSplitBundleTwist::new(vec![usize::MAX]).unwrap();
+    let base_weights = vec![Rational::from(1usize), Rational::from(2usize)];
+    let fiber_weights = vec![Rational::from(3usize)];
+
+    assert!(matches!(
+        negative_split_equivariant_qrr_euler_factor(1, &twist, 2, &base_weights, &fiber_weights),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    let exponent_overflow_twist = NegativeSplitBundleTwist::new(vec![usize::try_from(i32::MAX)
+        .unwrap()
+        .checked_add(2)
+        .unwrap()])
+    .unwrap();
+    assert!(matches!(
+        negative_split_equivariant_qrr_euler_factor(
+            1,
+            &exponent_overflow_twist,
+            1,
+            &base_weights,
+            &fiber_weights,
+        ),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        negative_split_equivariant_i_function_coefficient(
+            1,
+            &NegativeSplitBundleTwist::new(vec![5]).unwrap(),
+            1,
+            &base_weights,
+            &fiber_weights,
+            i32::MIN,
+        ),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        projective_equivariant_i_function_coefficient(1, 1, &base_weights, i32::MIN),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        projective_equivariant_i_function_coefficient(usize::MAX, 0, &[], -1),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        negative_split_equivariant_qrr_euler_factor(
+            usize::MAX,
+            &NegativeSplitBundleTwist::new(vec![1]).unwrap(),
+            0,
+            &[],
+            &[Rational::one()],
+        ),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        NegativeSplitEquivariantHypergeometricModel::new(
+            1,
+            NegativeSplitBundleTwist::new(vec![1]).unwrap(),
+            usize::MAX,
+            base_weights.clone(),
+            fiber_weights.clone(),
+            -5,
+        ),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
+    assert!(matches!(
+        NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+            1,
+            NegativeSplitBundleTwist::new(vec![1]).unwrap(),
+            usize::MAX,
+            1,
+            base_weights,
+            fiber_weights,
+        ),
+        Err(GwError::UnsupportedInvariant(_))
+    ));
 }
 
 #[test]
@@ -374,6 +581,181 @@ fn equivariant_birkhoff_s_matrix_builds_from_weighted_i_function() {
         descendant_s.calibration(),
         &CalibrationId("negative-split-equivariant-hypergeometric-birkhoff".to_string())
     );
+}
+
+#[test]
+fn o_minus_five_p1_default_birkhoff_matches_deep_laurent_reference() {
+    let twist = NegativeSplitBundleTwist::new(vec![5]).unwrap();
+    let base_weights = vec![Rational::from(1usize), Rational::from(2usize)];
+    let fiber_weights = vec![Rational::from(3usize)];
+    let bounded = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+        1,
+        twist.clone(),
+        1,
+        1,
+        base_weights.clone(),
+        fiber_weights.clone(),
+    )
+    .unwrap()
+    .birkhoff_descendant_s_matrix(1)
+    .unwrap();
+    let deep = NegativeSplitEquivariantHypergeometricModel::new(
+        1,
+        twist,
+        1,
+        base_weights,
+        fiber_weights,
+        -29,
+    )
+    .unwrap()
+    .birkhoff_descendant_s_matrix(1)
+    .unwrap();
+
+    assert_eq!(bounded, deep);
+}
+
+#[test]
+fn o_minus_four_p1_recursive_birkhoff_matches_deep_laurent_reference() {
+    let twist = NegativeSplitBundleTwist::new(vec![4]).unwrap();
+    let base_weights = vec![Rational::from(1usize), Rational::from(2usize)];
+    let fiber_weights = vec![Rational::from(3usize)];
+    let bounded = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+        1,
+        twist.clone(),
+        2,
+        1,
+        base_weights.clone(),
+        fiber_weights.clone(),
+    )
+    .unwrap()
+    .birkhoff_descendant_s_matrix(1)
+    .unwrap();
+    let deep_model = NegativeSplitEquivariantHypergeometricModel::new(
+        1,
+        twist,
+        2,
+        base_weights,
+        fiber_weights,
+        -31,
+    )
+    .unwrap();
+    let deep_fundamental = deep_model.fundamental_solution_matrix().unwrap();
+    let deep = birkhoff_descendant_s_matrix_from_fundamental(
+        2,
+        2,
+        1,
+        &deep_fundamental,
+        CalibrationId("deep-o4-reference".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(bounded.coefficients(), deep.coefficients());
+}
+
+#[test]
+fn o_minus_eight_p1_dynamic_birkhoff_depth_matches_deep_reference() {
+    let twist = NegativeSplitBundleTwist::new(vec![8]).unwrap();
+    let base_weights = vec![Rational::one(), Rational::from(2)];
+    let fiber_weights = vec![Rational::from(3)];
+    let bounded = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+        1,
+        twist.clone(),
+        2,
+        1,
+        base_weights.clone(),
+        fiber_weights.clone(),
+    )
+    .unwrap()
+    .birkhoff_descendant_s_matrix(1)
+    .unwrap();
+    let deep_model = NegativeSplitEquivariantHypergeometricModel::new(
+        1,
+        twist,
+        2,
+        base_weights,
+        fiber_weights,
+        -40,
+    )
+    .unwrap();
+    let deep_fundamental = deep_model.fundamental_solution_matrix().unwrap();
+    let deep = birkhoff_descendant_s_matrix_from_fundamental(
+        2,
+        2,
+        1,
+        &deep_fundamental,
+        CalibrationId("deep-o8-reference".to_string()),
+    )
+    .unwrap();
+
+    assert_eq!(bounded.coefficients(), deep.coefficients());
+}
+
+#[test]
+fn generic_line_o_minus_eight_uses_dynamic_birkhoff_depth() {
+    let twist = NegativeSplitBundleTwist::new(vec![8]).unwrap();
+    let base_weights = vec![Rational::one(), Rational::from(2)];
+    let fiber_weights = vec![Rational::from(3)];
+    let bounded = NegativeSplitLineHypergeometricModel::<Rational>::from_coeff_weights(
+        1,
+        twist,
+        2,
+        1,
+        base_weights,
+        &fiber_weights,
+    )
+    .unwrap();
+    let mut deep = bounded.clone();
+    deep.min_z_power = -40;
+
+    assert_eq!(
+        bounded.birkhoff_descendant_s_matrix(1).unwrap(),
+        deep.birkhoff_descendant_s_matrix(1).unwrap()
+    );
+}
+
+#[test]
+#[ignore = "slow large-twist dynamic Laurent-depth acceptance grid"]
+fn p1_twist_grid_uses_dynamic_birkhoff_depth() {
+    for bundle_degree in [4usize, 5, 6, 8, 10] {
+        let twist = NegativeSplitBundleTwist::new(vec![bundle_degree]).unwrap();
+        let base_weights = vec![Rational::one(), Rational::from(2)];
+        let fiber_weights = vec![Rational::from(3)];
+        let bounded = NegativeSplitEquivariantHypergeometricModel::with_default_z_truncation(
+            1,
+            twist.clone(),
+            2,
+            1,
+            base_weights.clone(),
+            fiber_weights.clone(),
+        )
+        .unwrap()
+        .birkhoff_descendant_s_matrix(1)
+        .unwrap();
+        let deep_model = NegativeSplitEquivariantHypergeometricModel::new(
+            1,
+            twist,
+            2,
+            base_weights,
+            fiber_weights,
+            -60,
+        )
+        .unwrap();
+        let deep_fundamental = deep_model.fundamental_solution_matrix().unwrap();
+        let deep = birkhoff_descendant_s_matrix_from_fundamental(
+            2,
+            2,
+            1,
+            &deep_fundamental,
+            CalibrationId(format!("deep-o{bundle_degree}-reference")),
+        )
+        .unwrap();
+
+        assert_eq!(
+            bounded.coefficients(),
+            deep.coefficients(),
+            "O(-{bundle_degree}) on P1"
+        );
+    }
 }
 
 #[test]
@@ -837,6 +1219,119 @@ fn o_minus_one_p2_genus_zero_three_primary_uses_frobenius_product() {
 }
 
 #[test]
+fn o_minus_two_p2_three_primary_is_permutation_symmetric() {
+    let h = tau(0, CohomologyClass::h_power(2, 1));
+    let h2 = tau(0, CohomologyClass::h_power(2, 2));
+    let expected = RatFun::from_rational(Rational::from(-1));
+    for insertions in [
+        vec![h2.clone(), h.clone(), h.clone()],
+        vec![h.clone(), h2.clone(), h.clone()],
+        vec![h.clone(), h.clone(), h2.clone()],
+    ] {
+        let req = TwistedInvariantRequest::new(2, vec![2], 0, 1, insertions).unwrap();
+        let value = compute_negative_split_twisted(&req).unwrap().value;
+        assert!(
+            value.equivalent(&expected),
+            "three-primary value should be -1 for every insertion order, got {value}"
+        );
+    }
+}
+
+#[test]
+fn o_minus_two_p2_three_primary_matches_generic_graph_and_divisor_equation() {
+    let h = tau(0, CohomologyClass::h_power(2, 1));
+    let h2 = tau(0, CohomologyClass::h_power(2, 2));
+    let three_insertions = vec![h2.clone(), h.clone(), h.clone()];
+    let mut four_insertions = three_insertions.clone();
+    four_insertions.push(h.clone());
+
+    let direct_provider = TwistedProjectiveSpaceProvider::new(2, vec![2], false).unwrap();
+    let direct = crate::givental::compute_semisimple_graph_value(
+        &direct_provider,
+        0,
+        1,
+        &three_insertions,
+        None,
+    )
+    .unwrap();
+    // The series entry point deliberately bypasses the provider's scalar
+    // `direct_value` shortcut, so this is an independent graph-path value for
+    // exactly the same three-point correlator.
+    let generic = crate::givental::compute_semisimple_graph_series(
+        &direct_provider,
+        0,
+        1,
+        &three_insertions,
+        None,
+    )
+    .unwrap()
+    .coeff(1)
+    .cloned()
+    .unwrap_or_else(RatFun::zero);
+    let four_point = crate::givental::compute_semisimple_graph_value(
+        &direct_provider,
+        0,
+        1,
+        &four_insertions,
+        None,
+    )
+    .unwrap();
+    let expected = RatFun::from_rational(Rational::from(-1));
+    assert!(direct.equivalent(&expected), "direct value: {direct}");
+    assert!(generic.equivalent(&expected), "generic value: {generic}");
+    assert!(
+        four_point.equivalent(&expected),
+        "four-point value: {four_point}"
+    );
+
+    // A degree-two row makes the divisor factor nontrivial: adding H
+    // multiplies the invariant by its curve degree, namely two.
+    let degree_two_three = vec![h2.clone(), h2.clone(), h.clone()];
+    let mut degree_two_four = degree_two_three.clone();
+    degree_two_four.push(h);
+    let three_value = crate::givental::compute_semisimple_graph_value(
+        &direct_provider,
+        0,
+        2,
+        &degree_two_three,
+        None,
+    )
+    .unwrap();
+    let four_value = crate::givental::compute_semisimple_graph_value(
+        &direct_provider,
+        0,
+        2,
+        &degree_two_four,
+        None,
+    )
+    .unwrap();
+    assert!(three_value.equivalent(&RatFun::from_rational(Rational::from(-2))));
+    assert!(four_value.equivalent(&(&three_value * &RatFun::from_rational(Rational::from(2)))));
+}
+
+#[test]
+fn factored_o_minus_two_p2_three_primary_is_permutation_symmetric() {
+    let h = tau(0, CohomologyClass::h_power(2, 1));
+    let h2 = tau(0, CohomologyClass::h_power(2, 2));
+    let expected = RatFun::from_rational(Rational::from(-1));
+    for insertions in [
+        vec![h2.clone(), h.clone(), h.clone()],
+        vec![h.clone(), h2.clone(), h.clone()],
+        vec![h.clone(), h.clone(), h2.clone()],
+    ] {
+        let mut req = TwistedInvariantRequest::new(2, vec![2], 0, 1, insertions).unwrap();
+        req.equivariant = true;
+        let value = compute_negative_split_twisted_factored(&req)
+            .unwrap()
+            .to_ratfun();
+        assert!(
+            value.equivalent(&expected),
+            "factored three-primary value should be -1, got {value}"
+        );
+    }
+}
+
+#[test]
 fn factored_o_minus_one_p2_three_primary_matches_expanded_product() {
     let mut req = TwistedInvariantRequest::new(
         2,
@@ -1056,11 +1551,21 @@ fn fiber_equivariant_factored_constant_matches_local_limit() {
     let nonequivariant =
         TwistedInvariantRequest::new(3, vec![4], 0, 1, insertions.clone()).unwrap();
     let local = compute_negative_split_twisted(&nonequivariant).unwrap();
-    assert_eq!(local.value, RatFun::from_rational(Rational::from(-40)));
+    assert_eq!(local.value, RatFun::from_rational(Rational::from(-20)));
 
     let ordinary =
         crate::compute(crate::InvariantRequest::new(3, 0, 1, insertions.clone())).unwrap();
     assert_eq!(ordinary.value, RatFun::zero());
+
+    let mut divisor_insertions = insertions.clone();
+    divisor_insertions.push(tau(0, CohomologyClass::h_power(3, 1)));
+    let divisor_request =
+        TwistedInvariantRequest::new(3, vec![4], 0, 1, divisor_insertions).unwrap();
+    let generic_four_point = compute_negative_split_twisted(&divisor_request).unwrap();
+    assert_eq!(
+        generic_four_point.value,
+        RatFun::from_rational(Rational::from(-20))
+    );
 
     let mut equivariant = TwistedInvariantRequest::new(3, vec![4], 0, 1, insertions).unwrap();
     equivariant.equivariant = true;
@@ -1070,7 +1575,7 @@ fn fiber_equivariant_factored_constant_matches_local_limit() {
         values.insert("mu_0".to_string(), Rational::from(weight));
         assert_eq!(
             factored.evaluate_variables(&values).unwrap(),
-            Rational::from(-40),
+            Rational::from(-20),
             "fiber weight mu_0={weight}"
         );
     }

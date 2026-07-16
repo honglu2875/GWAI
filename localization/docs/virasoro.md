@@ -218,8 +218,11 @@ their shape:
 The two `L_2` tests perturb a nonzero genus-two dependency and require the
 formerly zero residual to become nonzero.  Full descendant divisor recursion
 also has direct product, bundle, and twisted dilaton regressions.  The native
-`F_2` exceptional-class probe is separately required to fail closed in the
-backend's known deformation-negative calibration gap.
+`F_2` exceptional-class probe checks an `L_1`, genus-two equation in class
+`(1,-2)` directly: all positive-degree dependencies are evaluated by the
+bundle backend and the exact residual must vanish.  The independent
+`F_2 -> P^1 x P^1` deformation checks remain separate audit oracles rather
+than runtime substitutions.
 
 ## Exact-check semantics
 

@@ -548,8 +548,15 @@ pub fn negative_split_i_function_coefficient(
     // usual projective-space I-function denominator.
     let mut out = HLaurentSeries::one(n);
     for bundle_degree in twist.degrees() {
-        for m in (-(bundle_degree.saturating_mul(degree) as isize) + 1)..=0 {
-            out = out.multiply_by_linear(-Rational::from(*bundle_degree), Rational::from(m));
+        // The factors commute, so enumerate m = 0, -1, ..., -ad + 1.
+        // Nested ranges preserve the infallible public API without forming the
+        // potentially overflowing product a*d or casting it through isize.
+        let mut z_offset = Rational::zero();
+        for _ in 0..degree {
+            for _ in 0..*bundle_degree {
+                out = out.multiply_by_linear(-Rational::from(*bundle_degree), -z_offset.clone());
+                z_offset += Rational::one();
+            }
         }
     }
     for m in 1..=degree {
@@ -604,11 +611,70 @@ pub fn negative_split_qrr_euler_factor(
 ) -> HLaurentSeries {
     let mut out = HLaurentSeries::one(n);
     for bundle_degree in twist.degrees() {
-        for m in (-(bundle_degree.saturating_mul(degree) as isize) + 1)..=0 {
-            out = out.multiply_by_linear(-Rational::from(*bundle_degree), Rational::from(m));
+        let mut z_offset = Rational::zero();
+        for _ in 0..degree {
+            for _ in 0..*bundle_degree {
+                out = out.multiply_by_linear(-Rational::from(*bundle_degree), -z_offset.clone());
+                z_offset += Rational::one();
+            }
         }
     }
     out
+}
+
+fn negative_split_euler_factor_count(
+    bundle_degree: usize,
+    curve_degree: usize,
+) -> Result<usize, GwError> {
+    bundle_degree.checked_mul(curve_degree).ok_or_else(|| {
+        GwError::UnsupportedInvariant("negative-split Euler-factor count overflow".to_string())
+    })
+}
+
+fn negative_split_positive_z_degree(
+    twist: &NegativeSplitBundleTwist,
+    degree: usize,
+) -> Result<i32, GwError> {
+    // For O(-a) in degree d the concave factor contains ad affine factors,
+    // one with m=0.  Its largest z power is therefore max(ad-1, 0).  Terms
+    // this far below the requested output floor can be shifted back into the
+    // retained window when the projective denominator is multiplied by QRR.
+    let positive_z_degree = twist.degrees().iter().try_fold(
+        0usize,
+        |total, bundle_degree| -> Result<usize, GwError> {
+            let factor_count = negative_split_euler_factor_count(*bundle_degree, degree)?;
+            let summand_z_degree = if factor_count == 0 {
+                0
+            } else {
+                factor_count - 1
+            };
+            total.checked_add(summand_z_degree).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "negative-split Euler-factor z-degree overflow".to_string(),
+                )
+            })
+        },
+    )?;
+    i32::try_from(positive_z_degree).map_err(|_| {
+        GwError::UnsupportedInvariant(
+            "negative-split Euler-factor z-degree exceeds i32 range".to_string(),
+        )
+    })
+}
+
+fn negative_split_projective_source_min_z_power(
+    twist: &NegativeSplitBundleTwist,
+    degree: usize,
+    retained_min_z_power: i32,
+) -> Result<i32, GwError> {
+    let positive_z_degree = negative_split_positive_z_degree(twist, degree)?;
+    retained_min_z_power
+        .checked_sub(positive_z_degree)
+        .ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split I-function source z-window exceeds i32 range".to_string(),
+            )
+        })
 }
 
 pub fn negative_split_equivariant_i_function_coefficient(
@@ -637,6 +703,8 @@ fn negative_split_equivariant_i_function_coefficient_coeff<C: Coeff>(
     fiber_weights: &[C],
     min_z_power: i32,
 ) -> Result<HCoeffLaurentSeries<C>, GwError> {
+    let projective_min_z_power =
+        negative_split_projective_source_min_z_power(twist, degree, min_z_power)?;
     let h_power_relation = base_h_power_relation_coeff(n, base_weights)?;
     let factor = negative_split_equivariant_qrr_euler_factor_coeff(
         n,
@@ -645,8 +713,12 @@ fn negative_split_equivariant_i_function_coefficient_coeff<C: Coeff>(
         base_weights,
         fiber_weights,
     )?;
-    let projective =
-        projective_equivariant_i_function_coefficient_coeff(n, degree, base_weights, min_z_power)?;
+    let projective = projective_equivariant_i_function_coefficient_coeff(
+        n,
+        degree,
+        base_weights,
+        projective_min_z_power,
+    )?;
     Ok(factor
         .multiply_mod_relation(&projective, &h_power_relation)
         .truncated_z_below(min_z_power))
@@ -658,10 +730,11 @@ fn projective_equivariant_i_function_coefficient_coeff<C: Coeff>(
     base_weights: &[C],
     min_z_power: i32,
 ) -> Result<HCoeffLaurentSeries<C>, GwError> {
-    if base_weights.len() != n + 1 {
+    let state_space_size = negative_split_state_space_size(n)?;
+    if base_weights.len() != state_space_size {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",
-            n + 1,
+            state_space_size,
             base_weights.len()
         )));
     }
@@ -682,7 +755,7 @@ fn projective_equivariant_i_function_coefficient_coeff<C: Coeff>(
                 .truncated_z_below(min_z_power);
         }
     }
-    Ok(out)
+    Ok(out.truncated_z_below(min_z_power))
 }
 
 fn negative_split_equivariant_qrr_euler_factor_coeff<C: Coeff>(
@@ -699,14 +772,19 @@ fn negative_split_equivariant_qrr_euler_factor_coeff<C: Coeff>(
             fiber_weights.len()
         )));
     }
+    // `HCoeffLaurentSeries` stores z-exponents in i32.  Validate the
+    // cumulative numerator degree before multiplying so the public fallible
+    // path reports an error instead of eventually overflowing `z_power + 1`.
+    negative_split_positive_z_degree(twist, degree)?;
     let h_power_relation = base_h_power_relation_coeff(n, base_weights)?;
     let mut out = HCoeffLaurentSeries::<C>::one(n);
     for (bundle_degree, fiber_weight) in twist.degrees().iter().zip(fiber_weights) {
-        for m in (-(bundle_degree.saturating_mul(degree) as isize) + 1)..=0 {
+        let factor_count = negative_split_euler_factor_count(*bundle_degree, degree)?;
+        for z_offset in 0..factor_count {
             out = out.multiply_by_affine_mod_relation(
                 C::from_rational(-Rational::from(*bundle_degree)),
                 fiber_weight.clone(),
-                C::from_rational(Rational::from(m)),
+                C::from_rational(-Rational::from(z_offset)),
                 &h_power_relation,
             );
         }
@@ -718,10 +796,11 @@ pub(crate) fn base_h_power_relation_coeff<C: Coeff>(
     n: usize,
     base_weights: &[C],
 ) -> Result<Vec<C>, GwError> {
-    if base_weights.len() != n + 1 {
+    let state_space_size = negative_split_state_space_size(n)?;
+    if base_weights.len() != state_space_size {
         return Err(GwError::AlgebraFailure(format!(
             "expected {} base weights, got {}",
-            n + 1,
+            state_space_size,
             base_weights.len()
         )));
     }
@@ -734,13 +813,21 @@ pub(crate) fn base_h_power_relation_coeff<C: Coeff>(
         }
         coefficients = next;
     }
-    let leading = coefficients[n + 1].clone();
+    let leading = coefficients[state_space_size].clone();
     if leading.is_zero() {
         return Err(GwError::NonSemisimplePoint);
     }
     Ok((0..=n)
         .map(|power| coefficients[power].neg().div(&leading))
         .collect())
+}
+
+fn negative_split_state_space_size(n: usize) -> Result<usize, GwError> {
+    n.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant(
+            "negative-split projective state-space size overflow".to_string(),
+        )
+    })
 }
 
 fn h_coeff_laurent_columns_to_laurent_matrix<C: Coeff>(
@@ -841,7 +928,15 @@ fn inverse_affine_z_laurent_coeff<C: Coeff>(
     }
 
     let mut out = HCoeffLaurentSeries::<C>::zero(max_h_power);
-    let max_k = (-min_z_power - 1) as usize;
+    let max_k = min_z_power
+        .checked_neg()
+        .and_then(|depth| depth.checked_sub(1))
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "Laurent expansion z-window exceeds the supported range".to_string(),
+            )
+        })?;
     for k in 0..=max_k {
         let sign = if k % 2 == 0 {
             C::one()

@@ -95,6 +95,7 @@ impl NegativeSplitQrrModel {
     }
 
     pub fn birkhoff_descendant_s_matrix(&self, z_order: usize) -> Result<SeriesSMatrix, GwError> {
+        validate_birkhoff_request_bounds(self.q_degree, z_order)?;
         birkhoff_descendant_s_matrix_from_fundamental(
             self.n + 1,
             self.q_degree,
@@ -181,6 +182,7 @@ impl NegativeSplitHypergeometricModel {
     pub fn birkhoff_descendant_s_matrix(&self, z_order: usize) -> Result<SeriesSMatrix, GwError> {
         // Extract the negative z-power factor from the fundamental solution;
         // that factor is the descendant S-calibration used on insertions.
+        validate_birkhoff_request_bounds(self.q_degree, z_order)?;
         birkhoff_descendant_s_matrix_from_fundamental(
             self.n + 1,
             self.q_degree,
@@ -201,6 +203,88 @@ pub struct NegativeSplitEquivariantHypergeometricModel {
     min_z_power: i32,
 }
 
+fn default_negative_split_min_z_power(
+    n: usize,
+    q_degree: usize,
+    z_order: usize,
+) -> Result<i32, GwError> {
+    let state_space_size = n.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant(
+            "negative-split hypergeometric state-space size overflow".to_string(),
+        )
+    })?;
+    let depth = state_space_size
+        .checked_mul(q_degree)
+        .and_then(|value| value.checked_add(z_order))
+        .and_then(|value| value.checked_add(2))
+        .ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split default Laurent z-window overflow".to_string(),
+            )
+        })?;
+    let depth = i32::try_from(depth).map_err(|_| {
+        GwError::UnsupportedInvariant(
+            "negative-split default Laurent z-window exceeds i32 range".to_string(),
+        )
+    })?;
+    depth.checked_neg().ok_or_else(|| {
+        GwError::UnsupportedInvariant(
+            "negative-split default Laurent z-window exceeds i32 range".to_string(),
+        )
+    })
+}
+
+fn negative_laurent_depth_to_min_z(depth: usize) -> Result<i32, GwError> {
+    let depth = i32::try_from(depth).map_err(|_| {
+        GwError::UnsupportedInvariant(
+            "negative-split Birkhoff Laurent depth exceeds i32 range".to_string(),
+        )
+    })?;
+    depth.checked_neg().ok_or_else(|| {
+        GwError::UnsupportedInvariant(
+            "negative-split Birkhoff Laurent depth exceeds i32 range".to_string(),
+        )
+    })
+}
+
+fn birkhoff_ready_fundamental<C, F>(
+    n: usize,
+    q_degree: usize,
+    z_order: usize,
+    initial_min_z_power: i32,
+    mut build_fundamental: F,
+) -> Result<BTreeMap<i32, SeriesMatrix<C>>, GwError>
+where
+    C: Coeff,
+    F: FnMut(i32) -> Result<BTreeMap<i32, SeriesMatrix<C>>, GwError>,
+{
+    validate_birkhoff_request_bounds(q_degree, z_order)?;
+    // D = H + z q d/dq can raise z-power once in each of the n derivatives
+    // used to form the flat-basis columns.  Start deeply enough that the
+    // nonnegative window used to plan Birkhoff dependencies is itself exact.
+    let derivative_probe_min_z = negative_laurent_depth_to_min_z(n)?;
+    let mut working_min_z = initial_min_z_power.min(derivative_probe_min_z);
+
+    loop {
+        let fundamental = build_fundamental(working_min_z)?;
+        if q_degree == 0 || z_order == 0 {
+            return Ok(fundamental);
+        }
+        let required_final_depth =
+            required_birkhoff_negative_z_depth(&fundamental, q_degree, z_order)?;
+        let required_source_depth = required_final_depth.checked_add(n).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split Birkhoff source Laurent depth overflow".to_string(),
+            )
+        })?;
+        let required_source_min_z = negative_laurent_depth_to_min_z(required_source_depth)?;
+        if working_min_z <= required_source_min_z {
+            return Ok(fundamental);
+        }
+        working_min_z = required_source_min_z;
+    }
+}
+
 impl NegativeSplitEquivariantHypergeometricModel {
     pub fn new(
         n: usize,
@@ -210,6 +294,16 @@ impl NegativeSplitEquivariantHypergeometricModel {
         fiber_weights: Vec<Rational>,
         min_z_power: i32,
     ) -> Result<Self, GwError> {
+        n.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split hypergeometric state-space size overflow".to_string(),
+            )
+        })?;
+        q_degree.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split hypergeometric q-degree count overflow".to_string(),
+            )
+        })?;
         validate_twisted_weights(n, &twist, &base_weights, &fiber_weights)?;
         Ok(Self {
             n,
@@ -229,7 +323,7 @@ impl NegativeSplitEquivariantHypergeometricModel {
         base_weights: Vec<Rational>,
         fiber_weights: Vec<Rational>,
     ) -> Result<Self, GwError> {
-        let min_z_power = -(((n + 1) * q_degree + z_order + 2) as i32);
+        let min_z_power = default_negative_split_min_z_power(n, q_degree, z_order)?;
         Self::new(n, twist, q_degree, base_weights, fiber_weights, min_z_power)
     }
 
@@ -292,11 +386,22 @@ impl NegativeSplitEquivariantHypergeometricModel {
     }
 
     pub fn birkhoff_descendant_s_matrix(&self, z_order: usize) -> Result<SeriesSMatrix, GwError> {
+        let fundamental = birkhoff_ready_fundamental(
+            self.n,
+            self.q_degree,
+            z_order,
+            self.min_z_power,
+            |min_z_power| {
+                let mut model = self.clone();
+                model.min_z_power = min_z_power;
+                model.fundamental_solution_matrix()
+            },
+        )?;
         birkhoff_descendant_s_matrix_from_fundamental(
             self.n + 1,
             self.q_degree,
             z_order,
-            &self.fundamental_solution_matrix()?,
+            &fundamental,
             CalibrationId("negative-split-equivariant-hypergeometric-birkhoff".to_string()),
         )
     }
@@ -334,10 +439,15 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
         base_weights: Vec<C>,
         fiber_weights: &[C],
     ) -> Result<Self, GwError> {
-        if base_weights.len() != n + 1 {
+        let state_space_size = n.checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split hypergeometric state-space size overflow".to_string(),
+            )
+        })?;
+        if base_weights.len() != state_space_size {
             return Err(GwError::AlgebraFailure(format!(
                 "expected {} base weights, got {}",
-                n + 1,
+                state_space_size,
                 base_weights.len()
             )));
         }
@@ -348,7 +458,7 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
                 fiber_weights.len()
             )));
         }
-        let min_z_power = -(((n + 1) * q_degree + z_order + 2) as i32);
+        let min_z_power = default_negative_split_min_z_power(n, q_degree, z_order)?;
         Ok(Self {
             n,
             twist,
@@ -407,11 +517,22 @@ impl<C: Coeff> NegativeSplitLineHypergeometricModel<C> {
         &self,
         z_order: usize,
     ) -> Result<SeriesSMatrix<C>, GwError> {
+        let fundamental = birkhoff_ready_fundamental(
+            self.n,
+            self.q_degree,
+            z_order,
+            self.min_z_power,
+            |min_z_power| {
+                let mut model = self.clone();
+                model.min_z_power = min_z_power;
+                model.fundamental_solution_matrix()
+            },
+        )?;
         birkhoff_descendant_s_matrix_from_fundamental_coeff(
             self.n + 1,
             self.q_degree,
             z_order,
-            &self.fundamental_solution_matrix()?,
+            &fundamental,
             CalibrationId("negative-split-lambda-line-hypergeometric-birkhoff".to_string()),
         )
     }

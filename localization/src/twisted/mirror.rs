@@ -167,6 +167,7 @@ pub(crate) fn birkhoff_descendant_s_matrix_from_fundamental_coeff<C: Coeff>(
     fundamental: &BTreeMap<i32, SeriesMatrix<C>>,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix<C>, GwError> {
+    validate_birkhoff_request_bounds(q_degree, z_order)?;
     if z_order == 0 {
         return SeriesSMatrix::from_coefficients(
             size,
@@ -179,9 +180,7 @@ pub(crate) fn birkhoff_descendant_s_matrix_from_fundamental_coeff<C: Coeff>(
     // Birkhoff factorization splits the Laurent fundamental solution into
     // S(z^{-1})^{-1} * P(z).  We keep the negative factor and convert its
     // z^{-k} terms into the descendant S-matrix coefficients.
-    let raw_positive_windows = max_nonnegative_z_power_by_q_degree(fundamental, q_degree);
-    let positive_windows = positive_factor_q_z_windows(q_degree, &raw_positive_windows);
-    let negative_depths = q_negative_z_depths(q_degree, z_order, &positive_windows);
+    let (positive_windows, negative_depths) = birkhoff_q_z_bounds(fundamental, q_degree, z_order)?;
     let s_factor = birkhoff_negative_factor_by_q_degree_with_z_bounds(
         size,
         q_degree,
@@ -191,6 +190,42 @@ pub(crate) fn birkhoff_descendant_s_matrix_from_fundamental_coeff<C: Coeff>(
     )?;
     let coefficients = negative_factor_to_s_coefficients(size, q_degree, z_order, &s_factor);
     SeriesSMatrix::from_coefficients(size, q_degree, z_order, coefficients, calibration)
+}
+
+pub(crate) fn validate_birkhoff_request_bounds(
+    q_degree: usize,
+    z_order: usize,
+) -> Result<(), GwError> {
+    q_degree.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("Birkhoff q-degree count overflow".to_string())
+    })?;
+    z_order.checked_add(1).ok_or_else(|| {
+        GwError::UnsupportedInvariant("Birkhoff z-order count overflow".to_string())
+    })?;
+    i32::try_from(z_order).map_err(|_| {
+        GwError::UnsupportedInvariant("Birkhoff z-order exceeds i32 range".to_string())
+    })?;
+    Ok(())
+}
+
+pub(crate) fn required_birkhoff_negative_z_depth<C: Coeff>(
+    fundamental: &BTreeMap<i32, SeriesMatrix<C>>,
+    q_degree: usize,
+    z_order: usize,
+) -> Result<usize, GwError> {
+    let (_, negative_depths) = birkhoff_q_z_bounds(fundamental, q_degree, z_order)?;
+    Ok(negative_depths.values().copied().max().unwrap_or(0))
+}
+
+fn birkhoff_q_z_bounds<C: Coeff>(
+    fundamental: &BTreeMap<i32, SeriesMatrix<C>>,
+    q_degree: usize,
+    z_order: usize,
+) -> Result<(BTreeMap<usize, usize>, BTreeMap<usize, usize>), GwError> {
+    let raw_positive_windows = max_nonnegative_z_power_by_q_degree(fundamental, q_degree);
+    let positive_windows = positive_factor_q_z_windows(q_degree, &raw_positive_windows);
+    let negative_depths = q_negative_z_depths(q_degree, z_order, &positive_windows)?;
+    Ok((positive_windows, negative_depths))
 }
 
 fn max_nonnegative_z_power_by_q_degree<C: Coeff>(
@@ -235,7 +270,7 @@ fn q_negative_z_depths(
     q_degree: usize,
     base_depth: usize,
     positive_windows: &BTreeMap<usize, usize>,
-) -> BTreeMap<usize, usize> {
+) -> Result<BTreeMap<usize, usize>, GwError> {
     let mut depths = (1..=q_degree)
         .map(|degree| (degree, base_depth))
         .collect::<BTreeMap<_, _>>();
@@ -244,14 +279,18 @@ fn q_negative_z_depths(
         for split in 1..degree {
             let right_degree = degree - split;
             let right_window = positive_windows.get(&right_degree).copied().unwrap_or(0);
-            let needed_depth = target_depth + right_window;
+            let needed_depth = target_depth.checked_add(right_window).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "twisted Birkhoff negative Laurent depth overflow".to_string(),
+                )
+            })?;
             depths
                 .entry(split)
                 .and_modify(|depth| *depth = (*depth).max(needed_depth))
                 .or_insert(needed_depth);
         }
     }
-    depths
+    Ok(depths)
 }
 
 pub(crate) fn exp_minus_h_mirror_over_z_coefficients(

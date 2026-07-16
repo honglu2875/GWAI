@@ -374,6 +374,31 @@ quietly fails for non-Fano ones.  The mechanism, made concrete on
   raw bidegree fundamental frame and the maximum length of a lower-degree
   dependency chain.  A fixed local margin passed rank two and failed the
   rank-three deformation `P(O(2) ⊕ O(1) ⊕ O(-3)) ~ P^1 x P^2`.
+- There is an earlier instance of the same noncommutativity inside each scalar
+  fixed-point I-function coefficient.  If
+  `D_l = d2 + a_l d1 < 0`, its numerator contributes as many as
+  `max(-D_l-1, 0)` positive powers of `z`.  Truncating inverse-affine
+  denominator expansions before multiplying those numerators discards terms
+  that can subsequently move back into the requested window.  One safe
+  working lower bound is the final lower bound minus the sum of these future
+  shifts.  The bundle implementation uses the equivalent and simpler exact
+  ordering: form every positive-`z` numerator polynomial first, then expand
+  the remaining inverse factors, which can only lower `z`-degree, directly to
+  the final bound.  This is a property of effective section classes written
+  with a negative fiber coordinate, not a license to classify them as
+  ineffective.
+- The equivariant negative-split backend has the same ordering hazard in its
+  QRR multiplication.  For `O(-a)` in curve degree `d`, the Euler numerator
+  can raise `z` by `max(ad-1, 0)`.  That path therefore expands the projective
+  denominator through the requested floor minus the sum of those shifts, then
+  applies QRR and truncates to the caller's original floor.  Tests compare the
+  retained window with a separate, substantially deeper expansion before
+  trusting the default Birkhoff calibration.  The calibration itself then
+  previews the nonnegative `z` support, computes the recursive Birkhoff
+  dependency depths, and rebuilds with the additional flat-basis derivative
+  allowance when its initial final window is too shallow.  Per-coefficient
+  tail retention and calibration-level dependency depth are separate bounds;
+  fixing either one alone still leaves large twists incorrect.
 
 Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
 `(t, b·t)` and full-vector debugging are worth building** — printing the raw
@@ -389,3 +414,22 @@ R-asymptotics is `(-c_il) - (-c_ij) = c_ij - c_il`, opposite to the Euler
 factor used in the flat metric.  When a validation battery looks green, ask
 what *order* of each object it actually reaches — coverage of cases is not
 coverage of structure.
+
+### 18. A coefficient vector is meaningless without its basis
+
+The three-primary twisted shortcut constructs multiplication by `H` and uses
+its powers to recover a general quantum product.  Those powers generate the
+q-dependent cyclic basis
+
+```text
+1, H, H * H, H * H * H, ...
+```
+
+but insertion vectors arrive in the fixed flat basis `1, H, H^2, ...`.
+They agree at degree zero and differ in positive Novikov degree.  Treating the
+same array as coordinates in both bases made a three-point invariant depend
+on which insertion was placed first, even though each individual operation
+looked algebraically reasonable.  Convert through the cyclic-basis matrix
+before applying powers of quantum multiplication.  Permutation symmetry and
+the divisor equation are particularly cheap regressions for catching this
+class of error; a single known numerical value is not.

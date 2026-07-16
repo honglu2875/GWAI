@@ -387,20 +387,44 @@ impl ProjectiveBundleRay {
         )
     }
 
-    fn bidegree_birkhoff_bounds(&self, k_max: usize, z_order: usize) -> BidegreeBirkhoffBounds {
-        let column_shift = self.size().saturating_sub(1);
-        let preview_min_z = -(column_shift as i32);
-        let preview_cone = self.i_container(k_max, preview_min_z);
+    fn bidegree_birkhoff_bounds(
+        &self,
+        k_max: usize,
+        z_order: usize,
+    ) -> Result<BidegreeBirkhoffBounds, GwError> {
+        let column_shift = self.size().checked_sub(1).ok_or_else(|| {
+            GwError::AlgebraFailure("bundle state space must be nonempty".to_string())
+        })?;
+        let column_shift_i32 = i32::try_from(column_shift).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "bundle state-space dimension exceeds Laurent exponent range".to_string(),
+            )
+        })?;
+        let preview_min_z = column_shift_i32.checked_neg().ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "bundle preview Laurent exponent exceeds supported range".to_string(),
+            )
+        })?;
+        let preview_cone = self.i_container(k_max, preview_min_z)?;
         let preview = self.fundamental_bidegree_matrix(k_max, &preview_cone);
         let raw_positive_windows = max_nonnegative_z_power_by_grade(&preview);
         let positive_windows = positive_factor_z_windows(k_max, &raw_positive_windows);
-        let base_depth = z_order + column_shift;
-        let negative_depths = bidegree_negative_depths(k_max, base_depth, &positive_windows);
+        let base_depth = z_order.checked_add(column_shift).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "bundle Birkhoff Laurent-depth calculation overflowed".to_string(),
+            )
+        })?;
+        let negative_depths = bidegree_negative_depths(k_max, base_depth, &positive_windows)?;
         let max_depth = negative_depths
             .values()
             .copied()
             .max()
             .unwrap_or(base_depth);
+        let max_depth_i32 = i32::try_from(max_depth).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "bundle Birkhoff Laurent depth exceeds supported exponent range".to_string(),
+            )
+        })?;
 
         // In the graded Birkhoff recursion, a positive-factor term z^p can
         // move an already-computed negative coefficient z^(-s-p) into z^-s.
@@ -409,18 +433,53 @@ impl ProjectiveBundleRay {
         // total-degree drop.  The final column shift accounts for repeated
         // (z q d/dq + D) derivatives used to build the raw fundamental matrix
         // from I.
-        BidegreeBirkhoffBounds {
-            min_z: -(max_depth as i32),
+        Ok(BidegreeBirkhoffBounds {
+            min_z: max_depth_i32.checked_neg().ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "bundle Birkhoff Laurent exponent exceeds supported range".to_string(),
+                )
+            })?,
             positive_z_windows: positive_windows,
             negative_z_depths: negative_depths,
-        }
+        })
     }
 
     /// Sufficient negative z-depth for the I-coefficients through total
     /// grade `k_max` and Birkhoff order `z_order`.
     #[cfg(test)]
-    fn min_z_power(&self, k_max: usize, z_order: usize) -> i32 {
-        self.bidegree_birkhoff_bounds(k_max, z_order).min_z
+    fn min_z_power(&self, k_max: usize, z_order: usize) -> Result<i32, GwError> {
+        Ok(self.bidegree_birkhoff_bounds(k_max, z_order)?.min_z)
+    }
+
+    fn shifted_fiber_degrees(&self, d1: usize, d2p: usize) -> Result<Vec<i64>, GwError> {
+        let curve = self.theory.curve_from_shifted(d1, d2p)?;
+        let d1 = i64::try_from(d1).map_err(|_| {
+            GwError::UnsupportedInvariant(
+                "bundle base degree exceeds the signed curve lattice".to_string(),
+            )
+        })?;
+        let d2 = curve.coordinate(1).ok_or_else(|| {
+            GwError::AlgebraFailure("bundle curve class has the wrong rank".to_string())
+        })?;
+
+        self.twists()
+            .iter()
+            .map(|&twist| {
+                let twist = i64::try_from(twist).map_err(|_| {
+                    GwError::UnsupportedInvariant(
+                        "bundle twist exceeds the signed curve lattice".to_string(),
+                    )
+                })?;
+                twist
+                    .checked_mul(d1)
+                    .and_then(|offset| d2.checked_add(offset))
+                    .ok_or_else(|| {
+                        GwError::UnsupportedInvariant(
+                            "bundle fiber degree calculation overflowed".to_string(),
+                        )
+                    })
+            })
+            .collect()
     }
 
     /// Scalar z-Laurent restriction of the `(d1, d2)` I-coefficient at the
@@ -431,44 +490,70 @@ impl ProjectiveBundleRay {
         i: usize,
         j: usize,
         d1: usize,
-        d2: isize,
+        fiber_degrees: &[i64],
         min_z: i32,
-    ) -> ZLaurent {
+    ) -> Result<ZLaurent, GwError> {
         let mut out = zl_one();
+
+        // Negative-degree fiber factors are polynomials in z.  Apply all of
+        // them exactly before truncating any inverse-factor expansion: a term
+        // such as (c-z) can raise a coefficient from z^(-s-1) to z^-s.
+        // Scalar factors commute, and every remaining inverse factor only
+        // lowers z-degree, so truncation at `min_z` is safe after this phase.
+        for (l, &fiber_degree) in fiber_degrees.iter().enumerate() {
+            if fiber_degree >= 0 {
+                continue;
+            }
+            let value = data.fiber_weights[i][l].clone() - data.fiber_weights[i][j].clone();
+            let first_factor = fiber_degree.checked_add(1).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "bundle negative fiber-factor range overflowed".to_string(),
+                )
+            })?;
+            for k in first_factor..=0 {
+                out = zl_mul_affine_exact(&out, &value, k)?;
+            }
+            if out.is_empty() {
+                return Ok(out);
+            }
+        }
+
         for k in 1..=d1 {
             for i_prime in 0..=self.base_dimension() {
                 let constant = self.weights_base[i].clone() - self.weights_base[i_prime].clone();
                 out = zl_mul_inverse_affine(&out, &constant, k, min_z);
             }
         }
-        for l in 0..self.rank() {
-            let fiber_degree = d2 + (self.twists()[l] * d1) as isize;
+        for (l, &fiber_degree) in fiber_degrees.iter().enumerate() {
+            if fiber_degree < 0 {
+                continue;
+            }
             let value = data.fiber_weights[i][l].clone() - data.fiber_weights[i][j].clone();
-            if fiber_degree >= 0 {
-                for k in 1..=(fiber_degree as usize) {
-                    out = zl_mul_inverse_affine(&out, &value, k, min_z);
-                }
-            } else {
-                for k in (fiber_degree + 1)..=0 {
-                    out = zl_mul_affine(&out, &value, k, min_z);
-                }
+            let fiber_degree = usize::try_from(fiber_degree).map_err(|_| {
+                GwError::UnsupportedInvariant(
+                    "bundle fiber degree exceeds the platform range".to_string(),
+                )
+            })?;
+            for k in 1..=fiber_degree {
+                out = zl_mul_inverse_affine(&out, &value, k, min_z);
             }
             if out.is_empty() {
-                return out;
+                return Ok(out);
             }
         }
-        out
+        out.retain(|z_power, _| *z_power >= min_z);
+        Ok(out)
     }
 
     /// The `(d1, d2')` I-coefficient in the classical `D`-power basis.
-    fn i_coefficient(&self, d1: usize, d2p: usize, min_z: i32) -> HLaurentSeries {
+    fn i_coefficient(&self, d1: usize, d2p: usize, min_z: i32) -> Result<HLaurentSeries, GwError> {
         let size = self.size();
-        let d2 = d2p as isize - (self.big_a() * d1) as isize;
+        let fiber_degrees = self.shifted_fiber_degrees(d1, d2p)?;
         let data = self.classical_data();
         let restrictions = (0..=self.base_dimension())
             .flat_map(|i| (0..self.rank()).map(move |j| (i, j)))
-            .map(|(i, j)| self.i_restriction_with_data(&data, i, j, d1, d2, min_z))
-            .collect::<Vec<_>>();
+            .map(|(i, j)| self.i_restriction_with_data(&data, i, j, d1, &fiber_degrees, min_z))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let mut out = HLaurentSeries::zero(size - 1);
         let mut z_powers = std::collections::BTreeSet::<i32>::new();
@@ -488,21 +573,25 @@ impl ProjectiveBundleRay {
                 }
             }
         }
-        out
+        Ok(out)
     }
 
     /// Bidegree-graded `I`-coefficients through shifted total degree `k_max`.
-    fn i_container(&self, k_max: usize, min_z: i32) -> BTreeMap<Grade, HLaurentSeries> {
+    fn i_container(
+        &self,
+        k_max: usize,
+        min_z: i32,
+    ) -> Result<BTreeMap<Grade, HLaurentSeries>, GwError> {
         let mut container = BTreeMap::new();
         for d1 in 0..=k_max {
             for d2p in 0..=(k_max - d1) {
-                let coefficient = self.i_coefficient(d1, d2p, min_z);
+                let coefficient = self.i_coefficient(d1, d2p, min_z)?;
                 if !coefficient.is_empty() {
                     container.insert((d1, d2p), coefficient);
                 }
             }
         }
-        container
+        Ok(container)
     }
 
     fn multiply_by_grading_divisor_mod_relation(
@@ -639,7 +728,7 @@ fn bidegree_negative_depths(
     max_total_degree: usize,
     base_depth: usize,
     positive_windows: &BTreeMap<Grade, usize>,
-) -> BTreeMap<Grade, usize> {
+) -> Result<BTreeMap<Grade, usize>, GwError> {
     let mut depths: BTreeMap<Grade, usize> = BTreeMap::new();
     for total in 1..=max_total_degree {
         for first in 0..=total {
@@ -659,7 +748,11 @@ fn bidegree_negative_depths(
                     }
                     let right_grade = (grade.0 - left_first, grade.1 - left_second);
                     let right_window = positive_windows.get(&right_grade).copied().unwrap_or(0);
-                    let needed_depth = target_depth + right_window;
+                    let needed_depth = target_depth.checked_add(right_window).ok_or_else(|| {
+                        GwError::UnsupportedInvariant(
+                            "bundle Birkhoff Laurent-depth calculation overflowed".to_string(),
+                        )
+                    })?;
                     depths
                         .entry(left_grade)
                         .and_modify(|depth| *depth = (*depth).max(needed_depth))
@@ -668,35 +761,38 @@ fn bidegree_negative_depths(
             }
         }
     }
-    depths
+    Ok(depths)
 }
 
 fn zl_one() -> ZLaurent {
     BTreeMap::from([(0, Rational::one())])
 }
 
-/// Multiply by the affine factor `constant + k z`.
-fn zl_mul_affine(series: &ZLaurent, constant: &Rational, k: isize, min_z: i32) -> ZLaurent {
+/// Multiply exactly by the affine factor `constant + k z`.
+fn zl_mul_affine_exact(
+    series: &ZLaurent,
+    constant: &Rational,
+    k: i64,
+) -> Result<ZLaurent, GwError> {
     let mut out = ZLaurent::new();
     for (z_power, coefficient) in series {
         if !constant.is_zero() {
-            add_zl_term(
-                &mut out,
-                *z_power,
-                coefficient.clone() * constant.clone(),
-                min_z,
-            );
+            add_zl_term_exact(&mut out, *z_power, coefficient.clone() * constant.clone());
         }
         if k != 0 {
-            add_zl_term(
+            let raised_power = z_power.checked_add(1).ok_or_else(|| {
+                GwError::UnsupportedInvariant(
+                    "bundle Laurent numerator exceeds supported exponent range".to_string(),
+                )
+            })?;
+            add_zl_term_exact(
                 &mut out,
-                z_power + 1,
+                raised_power,
                 coefficient.clone() * Rational::from(k),
-                min_z,
             );
         }
     }
-    out
+    Ok(out)
 }
 
 /// Multiply by `(constant + k z)^{-1}` for `k >= 1`, expanded around
@@ -707,17 +803,39 @@ fn zl_mul_inverse_affine(series: &ZLaurent, constant: &Rational, k: usize, min_z
     for (z_power, coefficient) in series {
         // (c + kz)^{-1} = sum_{r >= 0} (-c)^r k^{-r-1} z^{-r-1}.
         let mut factor = Rational::one() / k_rational.clone();
-        let mut power = z_power - 1;
+        let Some(mut power) = z_power.checked_sub(1) else {
+            continue;
+        };
         while power >= min_z {
             add_zl_term(&mut out, power, coefficient.clone() * factor.clone(), min_z);
             factor = factor * (-constant.clone()) / k_rational.clone();
             if constant.is_zero() {
                 break;
             }
-            power -= 1;
+            let Some(next_power) = power.checked_sub(1) else {
+                break;
+            };
+            power = next_power;
         }
     }
     out
+}
+
+fn add_zl_term_exact(series: &mut ZLaurent, z_power: i32, value: Rational) {
+    if value.is_zero() {
+        return;
+    }
+    match series.entry(z_power) {
+        Entry::Vacant(entry) => {
+            entry.insert(value);
+        }
+        Entry::Occupied(mut entry) => {
+            *entry.get_mut() += value;
+            if entry.get().is_zero() {
+                entry.remove();
+            }
+        }
+    }
 }
 
 fn add_zl_term(series: &mut ZLaurent, z_power: i32, value: Rational, min_z: i32) {
@@ -1448,7 +1566,7 @@ impl ProjectiveBundleRay {
         }
 
         let min_z_started = Instant::now();
-        let bounds = self.bidegree_birkhoff_bounds(q_degree, z_order);
+        let bounds = self.bidegree_birkhoff_bounds(q_degree, z_order)?;
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_min_z={:.3}s q_degree={} z_order={} min_z={}",
@@ -1459,7 +1577,7 @@ impl ProjectiveBundleRay {
             );
         }
         let i_started = Instant::now();
-        let cone_point = self.i_container(q_degree, bounds.min_z);
+        let cone_point = self.i_container(q_degree, bounds.min_z)?;
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_i_container={:.3}s grades={} q_degree={} z_order={}",
@@ -2049,39 +2167,6 @@ pub fn reconstruct_bundle_invariants_in_theory(
     }
     let ray_count = checked_reconstruction_ray_count("bundle", total_degree)?;
 
-    // F_2 is deformation equivalent to P^1 x P^1 under
-    //   (d1, d2) -> (d1 + d2, d1).
-    // The native non-Fano Birkhoff calibration is known to fabricate
-    // nonzero higher-genus coefficients when the first product degree is
-    // negative.  Refuse an on-dimension coefficient in that chamber before
-    // doing any ray work.  The independent deformation oracle used in the
-    // acceptance tests remains an explicit path; native reconstruction must
-    // not silently substitute it or return its known-bad coefficient.
-    if n == 1 && twists == [0, 2] {
-        for shifted_fiber_degree in 0..=total_degree {
-            let d1 = total_degree - shifted_fiber_degree;
-            let curve = theory.curve_from_shifted(d1, shifted_fiber_degree)?;
-            let d2_i64 = curve.coordinate(1).expect("rank-two bundle class");
-            let product_first_degree = curve
-                .coordinate(0)
-                .expect("rank-two bundle class")
-                .checked_add(d2_i64)
-                .ok_or_else(|| {
-                    GwError::AlgebraFailure("F_2 deformation degree overflow".to_string())
-                })?;
-            if product_first_degree >= 0 {
-                continue;
-            }
-            let d2 = isize::try_from(d2_i64).map_err(|_| {
-                GwError::AlgebraFailure("bundle fiber degree does not fit in isize".to_string())
-            })?;
-            if bundle_dimension_matches_in_theory(theory, genus, d1, d2, insertions)? {
-                return Err(GwError::UnsupportedInvariant(format!(
-                    "native F_2 reconstruction is not validated in the deformation-negative chamber d1 + d2 < 0 (requested on-dimension class ({d1},{d2})); use an explicitly selected deformation oracle instead"
-                )));
-            }
-        }
-    }
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
@@ -2273,13 +2358,13 @@ mod tests {
     }
 
     #[test]
-    fn f2_native_reconstruction_rejects_deformation_negative_coefficients() {
+    fn f2_native_reconstruction_vanishes_in_deformation_negative_degree() {
         let theory = ProjectiveBundleTheory::new(1, vec![0, 2]).unwrap();
         // In shifted total degree one, (d1,d2)=(1,-2) maps to product
-        // bidegree (-1,1).  This insertion is on dimension for its genus-one
-        // coefficient, so the native path must reject it rather than expose
-        // the known-spurious nonzero calibration value.
-        let error = reconstruct_bundle_invariants_in_theory(
+        // bidegree (-1,1), hence its on-dimension genus-one coefficient
+        // vanishes.  This is reconstructed natively, without substituting
+        // the deformation-equivalent product backend.
+        let invariants = reconstruct_bundle_invariants_in_theory(
             &theory,
             &base_weights(),
             &fiber_weights(),
@@ -2287,10 +2372,110 @@ mod tests {
             1,
             &[BundleInsertion::new(0, 0, 1)],
         )
-        .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("deformation-negative"));
-        assert!(error.to_string().contains("(1,-2)"));
+        .unwrap();
+        assert_eq!(
+            invariants,
+            vec![(1, -2, Rational::zero()), (0, 1, Rational::zero())]
+        );
+    }
+
+    #[test]
+    fn negative_fiber_numerators_do_not_lose_laurent_boundary_terms() {
+        let target = ProjectiveBundleRay::new(
+            2,
+            vec![0, 2],
+            vec![Rational::from(2), Rational::from(5), Rational::from(7)],
+            fiber_weights(),
+            Rational::one(),
+        )
+        .unwrap();
+        let data = target.classical_data();
+        let fiber_degrees = target.shifted_fiber_degrees(1, 0).unwrap();
+        assert_eq!(fiber_degrees, vec![-2, 0]);
+
+        let min_z = -6;
+        let mut saw_boundary_term = false;
+        for i in 0..=target.base_dimension() {
+            for j in 0..target.rank() {
+                let shallow = target
+                    .i_restriction_with_data(&data, i, j, 1, &fiber_degrees, min_z)
+                    .unwrap();
+                let mut one_term_deeper = target
+                    .i_restriction_with_data(&data, i, j, 1, &fiber_degrees, min_z - 1)
+                    .unwrap();
+                one_term_deeper.retain(|z_power, _| *z_power >= min_z);
+                saw_boundary_term |= shallow.contains_key(&min_z);
+                assert_eq!(shallow, one_term_deeper, "fixed point ({i},{j})");
+            }
+        }
+        assert!(saw_boundary_term, "the comparison must exercise z^-6");
+    }
+
+    #[test]
+    fn multiple_negative_fiber_numerators_preserve_laurent_boundary_terms() {
+        let target = ProjectiveBundleRay::new(
+            1,
+            vec![0, 1, 3],
+            base_weights(),
+            vec![Rational::from(11), Rational::from(23), Rational::from(41)],
+            Rational::one(),
+        )
+        .unwrap();
+        let data = target.classical_data();
+        let fiber_degrees = target.shifted_fiber_degrees(1, 0).unwrap();
+        assert_eq!(fiber_degrees, vec![-3, -2, 0]);
+        assert_eq!(
+            fiber_degrees.iter().filter(|degree| **degree < 0).count(),
+            2
+        );
+
+        // The two negative factors can jointly raise z-degree by 2 + 1.
+        // Expanding three terms deeper is therefore an independent retained-
+        // window reference for the requested floor.
+        let min_z = -6;
+        let deep_min_z = min_z - 3;
+        let mut saw_boundary_term = false;
+        for i in 0..=target.base_dimension() {
+            for j in 0..target.rank() {
+                let shallow = target
+                    .i_restriction_with_data(&data, i, j, 1, &fiber_degrees, min_z)
+                    .unwrap();
+                let mut deep = target
+                    .i_restriction_with_data(&data, i, j, 1, &fiber_degrees, deep_min_z)
+                    .unwrap();
+                deep.retain(|z_power, _| *z_power >= min_z);
+                saw_boundary_term |= shallow.contains_key(&min_z);
+                assert_eq!(shallow, deep, "fixed point ({i},{j})");
+            }
+        }
+        assert!(saw_boundary_term, "the comparison must exercise z^-6");
+    }
+
+    #[test]
+    fn p2_o_plus_o2_negative_section_is_weight_independent() {
+        let insertions = [
+            BundleInsertion::new(0, 1, 1),
+            BundleInsertion::new(0, 1, 0),
+            BundleInsertion::new(0, 1, 0),
+        ];
+        let expected = vec![(1, -2, Rational::from(2)), (0, 1, Rational::zero())];
+
+        for (base, fiber) in [
+            (
+                vec![Rational::from(2), Rational::from(5), Rational::from(7)],
+                vec![Rational::from(11), Rational::from(23)],
+            ),
+            (
+                vec![Rational::from(-3), Rational::from(4), Rational::from(13)],
+                vec![Rational::from(-7), Rational::from(19)],
+            ),
+        ] {
+            assert_eq!(
+                reconstruct_bundle_invariants(2, &[0, 2], &base, &fiber, 0, 1, &insertions)
+                    .unwrap(),
+                expected
+            );
+        }
     }
 
     #[test]
@@ -2417,7 +2602,7 @@ mod tests {
     }
 
     #[test]
-    fn bounded_bidegree_birkhoff_matches_full_factorization_window() {
+    fn bounded_bidegree_birkhoff_matches_deep_full_factorization_window() {
         let target = ProjectiveBundleRay::new(
             1,
             vec![5, 4, 0],
@@ -2428,16 +2613,32 @@ mod tests {
         .unwrap();
         let q_degree = 2;
         let z_order = 1;
-        let bounds = target.bidegree_birkhoff_bounds(q_degree, z_order);
-        let cone_point = target.i_container(q_degree, bounds.min_z);
-        let fundamental = target.fundamental_bidegree_matrix(q_degree, &cone_point);
+        let bounds = target.bidegree_birkhoff_bounds(q_degree, z_order).unwrap();
+        let bounded_cone = target.i_container(q_degree, bounds.min_z).unwrap();
+        let bounded_fundamental = target.fundamental_bidegree_matrix(q_degree, &bounded_cone);
+
+        // Build the oracle from an independently fixed source window.  Using
+        // the bounded fundamental on both sides would verify only the
+        // factorization algorithm, not that `bounds.min_z` retained enough of
+        // the I-function before factorization.
+        // Through total degree two, the two negative summands can jointly
+        // raise z-degree by ten.  This fixed floor is more than ten terms
+        // below the adaptive floor for this target, so it also serves as an
+        // oracle for the pre-factorization numerator tail.
+        let deep_min_z = -24;
+        assert!(bounds
+            .min_z
+            .checked_sub(deep_min_z)
+            .is_some_and(|margin| margin > 10));
+        let deep_cone = target.i_container(q_degree, deep_min_z).unwrap();
+        let deep_fundamental = target.fundamental_bidegree_matrix(q_degree, &deep_cone);
         let (_, full_negative) =
-            crate::twisted::birkhoff_factor_by_bidegree(target.size(), q_degree, &fundamental)
+            crate::twisted::birkhoff_factor_by_bidegree(target.size(), q_degree, &deep_fundamental)
                 .unwrap();
         let bounded_negative = crate::twisted::birkhoff_negative_factor_by_bidegree_with_z_bounds(
             target.size(),
             q_degree,
-            &fundamental,
+            &bounded_fundamental,
             &bounds.positive_z_windows,
             &bounds.negative_z_depths,
         )
@@ -2453,8 +2654,11 @@ mod tests {
         for total in 1..=q_degree {
             for first in 0..=total {
                 let grade = (first, total - first);
-                let depth = bounds.negative_z_depths.get(&grade).copied().unwrap_or(0);
-                for z_power in -(depth as i32)..0 {
+                // Only z^-1, ..., z^-z_order are observable in the requested
+                // descendant S-matrix.  Deeper entries are internal working
+                // coefficients and can legitimately differ at the adaptive
+                // source boundary.
+                for z_power in -(z_order as i32)..0 {
                     assert_eq!(
                         matrix_at(&bounded_negative, grade, z_power),
                         matrix_at(&full_negative, grade, z_power),
@@ -2830,9 +3034,9 @@ mod tests {
             Rational::one(),
         )
         .unwrap();
-        let min_z = target.min_z_power(2, 2);
-        assert!(!target.i_coefficient(1, 0, min_z).is_empty());
-        assert!(!target.i_coefficient(0, 1, min_z).is_empty());
+        let min_z = target.min_z_power(2, 2).unwrap();
+        assert!(!target.i_coefficient(1, 0, min_z).unwrap().is_empty());
+        assert!(!target.i_coefficient(0, 1, min_z).unwrap().is_empty());
     }
 
     #[test]

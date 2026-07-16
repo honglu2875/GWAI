@@ -1859,7 +1859,7 @@ mod tests {
     }
 
     #[test]
-    fn f2_genus_two_exceptional_l1_relation_fails_closed_on_native_bundle_gap() {
+    fn f2_genus_two_exceptional_l1_relation_is_verified_natively() {
         let theory = ProjectiveBundleTheory::new(1, vec![0, 2]).unwrap();
         let evaluator = ProjectiveBundleEvaluator::new(theory).unwrap();
         let theory = evaluator.bundle_theory();
@@ -1872,15 +1872,35 @@ mod tests {
         )
         .unwrap();
         let report = evaluate_constraint(&evaluator, &constraint);
-        assert_eq!(report.status(), ResidualStatus::Incomplete, "{report:?}");
-        assert!(report.missing_correlators().iter().any(|missing| {
-            missing.correlator.degree == theory.curve(1, -2)
-                && matches!(
-                    &missing.reason,
-                    IncompleteReason::Unsupported(message)
-                        if message.contains("deformation-negative")
-                )
-        }));
+        assert_eq!(report.status(), ResidualStatus::VerifiedZero, "{report:?}");
+        assert_eq!(report.total_term_count(), 39);
+        assert_eq!(report.backend_correlator_count(), 21);
+        assert_eq!(report.structural_zero_correlator_count(), 34);
+
+        let positive_degree_dependencies = report
+            .backend_correlators()
+            .iter()
+            .filter(|key| !key.degree.is_zero())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(positive_degree_dependencies.len(), 15);
+        for key in &positive_degree_dependencies {
+            assert!(
+                evaluator.evaluate_backend(key).unwrap().is_zero(),
+                "positive-degree F_2 dependency should vanish: {key:?}"
+            );
+        }
+
+        assert!(
+            positive_degree_dependencies.iter().any(|target| {
+                let perturbed = PerturbedEvaluator {
+                    inner: &evaluator,
+                    target: target.clone(),
+                };
+                evaluate_constraint(&perturbed, &constraint).status() == ResidualStatus::Nonzero
+            }),
+            "the native F_2 relation must detect corruption of at least one positive-degree dependency"
+        );
     }
 
     #[test]
