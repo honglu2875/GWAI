@@ -172,7 +172,13 @@ impl<C: Coeff> SeriesRMatrix<C> {
             } else {
                 SeriesMatrix::zero(self.size, self.size, self.q_degree)
             };
-            if total != expected {
+            // Coefficient engines are allowed to retain distinct but
+            // algebraically equivalent representations.  In particular,
+            // `FactoredRatFun` deliberately preserves denominator factors, so
+            // structural matrix equality can reject a genuine cancellation.
+            // Unitarity is a mathematical identity: test the residual through
+            // the coefficient ring's semantic zero predicate instead.
+            if !total.sub(&expected).is_zero() {
                 return Err(GwError::ValidationFailure(format!(
                     "R(-z)^T eta R(z) failed at z^{z_degree}"
                 )));

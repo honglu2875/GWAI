@@ -1123,6 +1123,71 @@ mod tests {
         }
     }
 
+    /// Assert that a verified Virasoro relation exercises genuinely nonzero
+    /// higher-genus backend data, both nonlinear parts of the operator, and is
+    /// capable of detecting corruption of at least one such dependency.
+    ///
+    /// Returning the report and the detected dependency lets individual audit
+    /// cases add target-specific coverage assertions without duplicating the
+    /// generic sensitivity checks.
+    fn assert_backend_sensitive_virasoro_relation(
+        label: &str,
+        evaluator: &dyn CanonicalCorrelatorEvaluator,
+        constraint: &CanonicalVirasoroConstraint,
+    ) -> (
+        ResidualReport<CurveClass, BasisId, RatFun>,
+        CorrelatorKey<CurveClass, BasisId>,
+    ) {
+        let report = evaluate_constraint(evaluator, constraint);
+        assert_eq!(
+            report.status(),
+            ResidualStatus::VerifiedZero,
+            "{label}: {report:?}"
+        );
+        assert!(
+            has_nonzero_contribution_from(constraint, &report, TermOrigin::GenusReduction),
+            "{label}: genus reduction must contribute nontrivially"
+        );
+        assert!(
+            has_nonzero_contribution_from(constraint, &report, TermOrigin::DegreeSplitting),
+            "{label}: degree splitting must contribute nontrivially"
+        );
+
+        let mut high_genus_dependencies = Vec::new();
+        for key in report.backend_correlators() {
+            if key.genus < 2 || key.degree.is_zero() {
+                continue;
+            }
+            let value = evaluator
+                .evaluate_backend(key)
+                .unwrap_or_else(|error| panic!("{label}: failed to re-evaluate {key:?}: {error}"));
+            if !value.is_zero() {
+                high_genus_dependencies.push(key.clone());
+            }
+        }
+        assert!(
+            !high_genus_dependencies.is_empty(),
+            "{label}: expected a nonzero positive-degree genus-two-or-higher backend dependency"
+        );
+
+        let sensitive_target = high_genus_dependencies
+            .into_iter()
+            .find(|target| {
+                let perturbed = PerturbedEvaluator {
+                    inner: evaluator,
+                    target: target.clone(),
+                };
+                evaluate_constraint(&perturbed, constraint).status() == ResidualStatus::Nonzero
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "{label}: perturbing every nonzero positive-degree high-genus dependency left the relation verified"
+                )
+            });
+
+        (report, sensitive_target)
+    }
+
     #[test]
     fn point_string_constraint_is_verified_exactly() {
         let (evaluator, constraint) = point_constraint(
@@ -2048,6 +2113,41 @@ mod tests {
             ResidualStatus::Nonzero,
             "the relation must detect a corrupted native bundle invariant"
         );
+    }
+
+    #[test]
+    #[ignore = "slow asymmetric-product Virasoro acceptance test"]
+    fn p1_x_p2_genus_two_l2_relation_is_nonlinear_and_perturbation_sensitive() {
+        let evaluator = ProductProjectiveEvaluator::new(1, 2).unwrap();
+        let theory = evaluator.product_theory();
+        // The asymmetric target keeps six canonical colors, while class (1,1)
+        // has the genuine positive split (1,0)+(0,1).  A tau_1(point) marking
+        // makes genus reduction dimensionally nontrivial.  The preferred class
+        // (1,2) needs a codimension-seven descendant for the same reason and is
+        // substantially beyond the acceptance frontier.
+        let curve = theory.curve(1, 1);
+        assert_eq!(theory.c1_pairing(&curve).unwrap(), 5);
+
+        let constraint = generate_constraint(
+            theory,
+            2,
+            2,
+            curve,
+            TimeMonomial::from_descendants([Descendant::new(1, theory.basis_id(1, 2).unwrap())]),
+        )
+        .unwrap();
+        let (report, sensitive_target) = assert_backend_sensitive_virasoro_relation(
+            "P1 x P2 genus-two L2 class (1,1)",
+            &evaluator,
+            &constraint,
+        );
+
+        assert!(report.total_term_count() >= 30);
+        assert!(report.backend_correlator_count() >= 10);
+        assert!(matches!(
+            theory.bidegree(&sensitive_target.degree),
+            Some((0, 1) | (1, 0) | (1, 1))
+        ));
     }
 
     #[test]

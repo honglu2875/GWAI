@@ -849,6 +849,194 @@ fn local_p2_birkhoff_r_candidate_is_unitary_at_low_order() {
 }
 
 #[test]
+fn asymmetric_twisted_birkhoff_calibrations_pass_full_validation_grid() {
+    struct Case {
+        label: &'static str,
+        n: usize,
+        degrees: Vec<usize>,
+        base_weights: Vec<Rational>,
+        fiber_weights: Vec<Rational>,
+    }
+
+    let cases = [
+        Case {
+            label: "O(-1)+O(-2) over P1",
+            n: 1,
+            degrees: vec![1, 2],
+            base_weights: vec![Rational::from(2), Rational::from(7)],
+            fiber_weights: vec![Rational::from(19), Rational::from(31)],
+        },
+        Case {
+            label: "O(-1)+O(-2) over P2",
+            n: 2,
+            degrees: vec![1, 2],
+            base_weights: vec![Rational::from(2), Rational::from(7), Rational::from(13)],
+            fiber_weights: vec![Rational::from(23), Rational::from(41)],
+        },
+        Case {
+            label: "O(-1)+O(-3) over P2",
+            n: 2,
+            degrees: vec![1, 3],
+            base_weights: vec![Rational::from(1), Rational::from(5), Rational::from(12)],
+            fiber_weights: vec![Rational::from(29), Rational::from(47)],
+        },
+    ];
+
+    for case in cases {
+        let twist = NegativeSplitBundleTwist::new(case.degrees).unwrap();
+        let calibration =
+            negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validation(
+                case.n,
+                &twist,
+                1,
+                2,
+                &case.base_weights,
+                &case.fiber_weights,
+                TwistedCalibrationMode::InverseEuler,
+                TwistedCalibrationValidation::Full,
+            )
+            .unwrap_or_else(|error| panic!("{} failed full validation: {error}", case.label));
+
+        assert_eq!(
+            calibration.psi_inverse.mul(&calibration.psi),
+            SeriesMatrix::identity(case.n + 1, 1),
+            "{} has inconsistent canonical-frame transitions",
+            case.label
+        );
+        calibration
+            .r_matrix
+            .check_unitarity(&calibration.metric)
+            .unwrap_or_else(|error| panic!("{} failed explicit unitarity: {error}", case.label));
+    }
+}
+
+fn assert_factored_qseries_specializes_to_rational(
+    factored: &QSeries<FactoredRatFun>,
+    rational: &QSeries<Rational>,
+    label: &str,
+) {
+    assert_eq!(factored.max_degree(), rational.max_degree(), "{label}");
+    for degree in 0..=rational.max_degree() {
+        assert_eq!(
+            factored.coeff(degree).unwrap().to_ratfun().as_rational(),
+            Some(rational.coeff(degree).unwrap().clone()),
+            "{label}, q^{degree}"
+        );
+    }
+}
+
+fn assert_factored_matrix_specializes_to_rational(
+    factored: &SeriesMatrix<FactoredRatFun>,
+    rational: &SeriesMatrix<Rational>,
+    label: &str,
+) {
+    assert_eq!(
+        (factored.rows(), factored.cols()),
+        (rational.rows(), rational.cols())
+    );
+    for row in 0..rational.rows() {
+        for col in 0..rational.cols() {
+            assert_factored_qseries_specializes_to_rational(
+                factored.entry(row, col),
+                rational.entry(row, col),
+                &format!("{label} entry ({row},{col})"),
+            );
+        }
+    }
+}
+
+#[test]
+fn asymmetric_calibration_agrees_between_rational_and_factored_coefficient_tiers() {
+    let n = 1;
+    let twist = NegativeSplitBundleTwist::new(vec![1, 2]).unwrap();
+    let base_weights = vec![Rational::from(2), Rational::from(7)];
+    let fiber_weights = vec![Rational::from(19), Rational::from(31)];
+    let rational =
+        negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation(
+            n,
+            &twist,
+            1,
+            1,
+            &base_weights,
+            &fiber_weights,
+            TwistedCalibrationValidation::Full,
+        )
+        .unwrap();
+    let factored_base = base_weights
+        .iter()
+        .cloned()
+        .map(FactoredRatFun::from_rational)
+        .collect::<Vec<_>>();
+    let factored_fiber = fiber_weights
+        .iter()
+        .cloned()
+        .map(FactoredRatFun::from_rational)
+        .collect::<Vec<_>>();
+    let factored =
+        negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation(
+            n,
+            &twist,
+            1,
+            1,
+            &factored_base,
+            &factored_fiber,
+            TwistedCalibrationValidation::Full,
+        )
+        .unwrap();
+
+    for (order, (factored_coefficient, rational_coefficient)) in factored
+        .r_matrix
+        .coefficients()
+        .iter()
+        .zip(rational.r_matrix.coefficients())
+        .enumerate()
+    {
+        assert_factored_matrix_specializes_to_rational(
+            factored_coefficient,
+            rational_coefficient,
+            &format!("R_{order}"),
+        );
+    }
+    for (label, factored_matrix, rational_matrix) in [
+        ("metric", &factored.metric, &rational.metric),
+        ("psi", &factored.psi, &rational.psi),
+        ("psi inverse", &factored.psi_inverse, &rational.psi_inverse),
+        ("connection", &factored.connection, &rational.connection),
+    ] {
+        assert_factored_matrix_specializes_to_rational(factored_matrix, rational_matrix, label);
+    }
+    for (label, factored_series, rational_series) in [
+        ("delta", &factored.delta, &rational.delta),
+        (
+            "inverse delta",
+            &factored.inverse_delta,
+            &rational.inverse_delta,
+        ),
+        (
+            "relative sqrt delta",
+            &factored.relative_sqrt_delta,
+            &rational.relative_sqrt_delta,
+        ),
+        (
+            "inverse relative sqrt delta",
+            &factored.relative_sqrt_delta_inverse,
+            &rational.relative_sqrt_delta_inverse,
+        ),
+    ] {
+        assert_eq!(factored_series.len(), rational_series.len(), "{label}");
+        for (branch, (factored_entry, rational_entry)) in
+            factored_series.iter().zip(rational_series).enumerate()
+        {
+            assert_factored_qseries_specializes_to_rational(
+                factored_entry,
+                rational_entry,
+                &format!("{label} branch {branch}"),
+            );
+        }
+    }
+}
+
+#[test]
 fn local_p2_birkhoff_graph_recovers_known_genus_zero_divisor_row() {
     let provider = TwistedProjectiveSpaceProvider::new(2, vec![3], false).unwrap();
     let insertions = vec![
