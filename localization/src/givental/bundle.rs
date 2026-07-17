@@ -50,7 +50,9 @@
 //! coincidences are not small-theory validation.
 
 use super::*;
-use crate::reconstruction::{BidegreeLaurentFactor, LaurentCoeffMatrix};
+use crate::reconstruction::{
+    solve_rational_system, BidegreeLaurentFactor, ExactRayInterpolation, LaurentCoeffMatrix,
+};
 use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
 use crate::twisted::HLaurentSeries;
 use std::collections::btree_map::Entry;
@@ -103,19 +105,6 @@ impl ProjectiveBundleRay {
         weights_fiber: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
-        let expected_base = n.checked_add(1).ok_or_else(|| {
-            GwError::UnsupportedInvariant("bundle base dimension is too large".to_string())
-        })?;
-        expected_base.checked_mul(twists.len()).ok_or_else(|| {
-            GwError::UnsupportedInvariant("bundle state-space size overflow".to_string())
-        })?;
-        if weights_base.len() != expected_base || weights_fiber.len() != twists.len() {
-            return Err(GwError::ConventionMismatch(format!(
-                "bundle weights must have lengths {} and {}",
-                expected_base,
-                twists.len()
-            )));
-        }
         // Direct-sum order is not geometry, but each equivariant fiber weight
         // belongs to one summand.  Canonicalize the zipped data before the
         // theory performs its own order-independent validation so the weight
@@ -124,6 +113,33 @@ impl ProjectiveBundleRay {
         summands.sort_by_key(|(twist, _)| *twist);
         let (twists, weights_fiber): (Vec<_>, Vec<_>) = summands.into_iter().unzip();
         let theory = ProjectiveBundleTheory::new(n, twists)?;
+        Self::from_theory(theory, weights_base, weights_fiber, ray)
+    }
+
+    /// Construct a ray adapter over an already validated canonical theory.
+    ///
+    /// Fiber weights must follow [`ProjectiveBundleTheory::twists`], whose
+    /// order is canonical.  Reconstruction and constraint evaluators use this
+    /// entry point so every ray shares the caller's geometric authority.
+    pub fn from_theory(
+        theory: ProjectiveBundleTheory,
+        weights_base: Vec<Rational>,
+        weights_fiber: Vec<Rational>,
+        ray: Rational,
+    ) -> Result<Self, GwError> {
+        let expected_base = theory.base_dimension().checked_add(1).ok_or_else(|| {
+            GwError::UnsupportedInvariant("bundle base dimension is too large".to_string())
+        })?;
+        expected_base.checked_mul(theory.rank()).ok_or_else(|| {
+            GwError::UnsupportedInvariant("bundle state-space size overflow".to_string())
+        })?;
+        if weights_base.len() != expected_base || weights_fiber.len() != theory.rank() {
+            return Err(GwError::ConventionMismatch(format!(
+                "bundle weights must have lengths {} and {}",
+                expected_base,
+                theory.rank()
+            )));
+        }
         let target = Self {
             theory,
             weights_base,
@@ -1361,7 +1377,7 @@ impl ProjectiveBundleRay {
                 })
                 .collect::<Vec<_>>();
             let mut values = vector.to_vec();
-            if recipe::solve_rational_system(&mut matrix, &mut values).is_ok() {
+            if solve_rational_system(&mut matrix, &mut values).is_ok() {
                 return Ok((values[0].clone(), values[1].clone(), values[2].clone()));
             }
         }
@@ -2224,19 +2240,40 @@ pub fn reconstruct_bundle_invariants_in_theory(
     total_degree: usize,
     insertions: &[BundleInsertion],
 ) -> Result<Vec<(usize, isize, Rational)>, GwError> {
-    let n = theory.base_dimension();
-    let twists = theory.twists();
+    reconstruct_bundle_invariants_in_theory_with_nodes(
+        theory,
+        weights_base,
+        weights_fiber,
+        genus,
+        total_degree,
+        insertions,
+        None,
+    )
+}
+
+fn reconstruct_bundle_invariants_in_theory_with_nodes(
+    theory: &ProjectiveBundleTheory,
+    weights_base: &[Rational],
+    weights_fiber: &[Rational],
+    genus: usize,
+    total_degree: usize,
+    insertions: &[BundleInsertion],
+    ray_nodes: Option<&[Rational]>,
+) -> Result<Vec<(usize, isize, Rational)>, GwError> {
     if is_stable_cohft_range(genus, insertions.len()) {
         crate::graphs::stable_graph_generation_bounds(genus, insertions.len())?;
     }
-    let ray_count = checked_reconstruction_ray_count("bundle", total_degree)?;
+    let interpolation = match ray_nodes {
+        Some(nodes) => ExactRayInterpolation::with_nodes("bundle", total_degree, nodes)?,
+        None => ExactRayInterpolation::for_total_degree("bundle", total_degree)?,
+    };
+    let ray_count = interpolation.ray_count();
 
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
-    let warm_target = ProjectiveBundleRay::new(
-        n,
-        twists.to_vec(),
+    let warm_target = ProjectiveBundleRay::from_theory(
+        theory.clone(),
         weights_base.to_vec(),
         weights_fiber.to_vec(),
         Rational::one(),
@@ -2255,57 +2292,24 @@ pub fn reconstruct_bundle_invariants_in_theory(
         }
     }
 
-    let ray_results = std::thread::scope(|scope| -> Result<Vec<_>, GwError> {
-        let mut handles = Vec::new();
-        handles.try_reserve_exact(ray_count).map_err(|_| {
-            GwError::UnsupportedInvariant(format!(
-                "cannot allocate {ray_count} bundle reconstruction workers"
-            ))
-        })?;
-        for step in 0..ray_count {
-            handles.push(
-                std::thread::Builder::new()
-                    .name(format!("gw-bundle-ray-{step}"))
-                    .spawn_scoped(scope, move || -> Result<(Rational, Rational), GwError> {
-                        let ray = Rational::from(step + 1);
-                        let target = ProjectiveBundleRay::new(
-                            n,
-                            twists.to_vec(),
-                            weights_base.to_vec(),
-                            weights_fiber.to_vec(),
-                            ray.clone(),
-                        )?;
-                        let provider = BundleRayProvider::new(target);
-                        let value = compute_semisimple_graph_value(
-                            &provider,
-                            genus,
-                            total_degree,
-                            insertions,
-                            None,
-                        )?;
-                        let value = value.as_rational().ok_or_else(|| {
-                            GwError::AlgebraFailure(
-                                "bundle ray value did not specialize to a rational".to_string(),
-                            )
-                        })?;
-                        Ok((ray, value))
-                    })
-                    .map_err(|error| {
-                        GwError::AlgebraFailure(format!(
-                            "cannot spawn bundle reconstruction ray {step}: {error}"
-                        ))
-                    })?,
-            );
-        }
-
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle.join().map_err(|_| {
-                    GwError::AlgebraFailure("bundle ray worker panicked".to_string())
-                })?
-            })
-            .collect::<Result<Vec<_>, _>>()
+    let values = interpolation.reconstruct(|ray| {
+        let target = ProjectiveBundleRay::from_theory(
+            theory.clone(),
+            weights_base.to_vec(),
+            weights_fiber.to_vec(),
+            ray.clone(),
+        )?;
+        let provider = BundleRayProvider::new(target);
+        let value = compute_semisimple_graph_value(
+            &provider,
+            genus,
+            interpolation.total_degree(),
+            insertions,
+            None,
+        )?;
+        value.as_rational().ok_or_else(|| {
+            GwError::AlgebraFailure("bundle ray value did not specialize to a rational".to_string())
+        })
     })?;
     if profile_enabled {
         eprintln!(
@@ -2315,18 +2319,6 @@ pub fn reconstruct_bundle_invariants_in_theory(
             ray_count
         );
     }
-
-    let (rays, mut values): (Vec<_>, Vec<_>) = ray_results.into_iter().unzip();
-
-    let mut matrix = rays
-        .iter()
-        .map(|ray| {
-            (0..ray_count)
-                .map(|power| ray.pow_usize(power))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    recipe::solve_rational_system(&mut matrix, &mut values)?;
 
     values
         .into_iter()

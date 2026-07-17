@@ -52,6 +52,7 @@ inspects `GwTheory`.
 | `src/graphs.rs` | stable-graph generation, individualization–refinement canonicalization, automorphisms, disk cache |
 | `src/tautological.rs` | Witten–Kontsevich psi integrals (string/dilaton/DVV), shared process-wide cache |
 | `src/theory.rs` | canonical `GwTheory` data: state space, pairing, grading, `c1`, numerical curve classes, admissible splittings, characteristic numbers; concrete compact and local theory records |
+| `src/spaces/` | public discovery facade grouped by target; reexports each canonical theory beside its current provider, insertion, reconstruction, and Virasoro-evaluator adapters without moving implementations or duplicating geometry |
 | `src/constraints/` | backend-independent identity ASTs; Getzler Virasoro generation, text/TeX rendering, exact evaluation reports, and bounded scans |
 | `src/geometry.rs` | equivariant cohomology of `P^n`: classes, fixed-point restriction, Atiyah–Bott pairing |
 | `src/frobenius.rs` | `P^n` quantum Frobenius data: root series, quantum idempotents (historical; the generic path lives in `recipe`) |

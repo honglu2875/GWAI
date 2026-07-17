@@ -34,6 +34,7 @@ pub mod graphs;
 pub(crate) mod reconstruction;
 pub mod resolvent;
 pub mod series;
+pub mod spaces;
 pub mod symbolic;
 pub mod tautological;
 pub mod testsuite;

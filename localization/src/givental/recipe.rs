@@ -412,40 +412,6 @@ pub(crate) fn neumann_inverse(
     Ok(inverse)
 }
 
-/// In-place Gaussian elimination over the rationals; `values` becomes the
-/// solution vector.
-pub(crate) fn solve_rational_system(
-    matrix: &mut [Vec<Rational>],
-    values: &mut [Rational],
-) -> Result<(), GwError> {
-    let size = matrix.len();
-    for pivot in 0..size {
-        let row = (pivot..size)
-            .find(|&row| !matrix[row][pivot].is_zero())
-            .ok_or_else(|| GwError::AlgebraFailure("singular linear system".to_string()))?;
-        matrix.swap(pivot, row);
-        values.swap(pivot, row);
-        let inverse = Rational::one() / matrix[pivot][pivot].clone();
-        for col in pivot..size {
-            matrix[pivot][col] = matrix[pivot][col].clone() * inverse.clone();
-        }
-        values[pivot] = values[pivot].clone() * inverse;
-        for other in 0..size {
-            if other == pivot || matrix[other][pivot].is_zero() {
-                continue;
-            }
-            let factor = matrix[other][pivot].clone();
-            for col in pivot..size {
-                let term = matrix[pivot][col].clone() * factor.clone();
-                matrix[other][col] = matrix[other][col].clone() - term;
-            }
-            let term = values[pivot].clone() * factor;
-            values[other] = values[other].clone() - term;
-        }
-    }
-    Ok(())
-}
-
 /// Monic characteristic polynomial of a series matrix by Faddeev-LeVerrier,
 /// in ascending powers (constant first, leading `1` last).
 pub(crate) fn series_matrix_charpoly(matrix: &SeriesMatrix) -> Vec<QSeries> {

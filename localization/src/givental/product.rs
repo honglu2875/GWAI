@@ -18,6 +18,7 @@
 //! rationals.  [`reconstruct_bidegree_invariants`] packages this.
 
 use super::*;
+use crate::reconstruction::ExactRayInterpolation;
 use crate::theory::{CurveClass, GwTheory, ProductProjectiveTheory};
 use std::time::Instant;
 
@@ -595,63 +596,57 @@ pub fn reconstruct_bidegree_invariants_in_theory(
     total_degree: usize,
     insertions: &[ProductInsertion],
 ) -> Result<Vec<Rational>, GwError> {
+    reconstruct_bidegree_invariants_in_theory_with_nodes(
+        theory,
+        weights_x,
+        weights_y,
+        genus,
+        total_degree,
+        insertions,
+        None,
+    )
+}
+
+fn reconstruct_bidegree_invariants_in_theory_with_nodes(
+    theory: &ProductProjectiveTheory,
+    weights_x: &[Rational],
+    weights_y: &[Rational],
+    genus: usize,
+    total_degree: usize,
+    insertions: &[ProductInsertion],
+    ray_nodes: Option<&[Rational]>,
+) -> Result<Vec<Rational>, GwError> {
     if is_stable_cohft_range(genus, insertions.len()) {
         crate::graphs::stable_graph_generation_bounds(genus, insertions.len())?;
     }
-    let ray_count = checked_reconstruction_ray_count("product", total_degree)?;
+    let interpolation = match ray_nodes {
+        Some(nodes) => ExactRayInterpolation::with_nodes("product", total_degree, nodes)?,
+        None => ExactRayInterpolation::for_total_degree("product", total_degree)?,
+    };
+    let ray_count = interpolation.ray_count();
     let profile_enabled = crate::env_flag("GW_PROFILE");
     let started = Instant::now();
 
-    let ray_results = std::thread::scope(|scope| -> Result<Vec<_>, GwError> {
-        let mut handles = Vec::new();
-        handles.try_reserve_exact(ray_count).map_err(|_| {
-            GwError::UnsupportedInvariant(format!(
-                "cannot allocate {ray_count} product reconstruction workers"
-            ))
-        })?;
-        for step in 0..ray_count {
-            handles.push(
-                std::thread::Builder::new()
-                    .name(format!("gw-product-ray-{step}"))
-                    .spawn_scoped(scope, move || -> Result<(Rational, Rational), GwError> {
-                        let ray = Rational::from(step + 1);
-                        let target = ProductProjectiveRay::from_theory(
-                            theory.clone(),
-                            weights_x.to_vec(),
-                            weights_y.to_vec(),
-                            ray.clone(),
-                        )?;
-                        let provider = ProductRayProvider::new(target);
-                        let value = compute_semisimple_graph_value(
-                            &provider,
-                            genus,
-                            total_degree,
-                            insertions,
-                            None,
-                        )?;
-                        let value = value.as_rational().ok_or_else(|| {
-                            GwError::AlgebraFailure(
-                                "product ray value did not specialize to a rational".to_string(),
-                            )
-                        })?;
-                        Ok((ray, value))
-                    })
-                    .map_err(|error| {
-                        GwError::AlgebraFailure(format!(
-                            "cannot spawn product reconstruction ray {step}: {error}"
-                        ))
-                    })?,
-            );
-        }
-
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle.join().map_err(|_| {
-                    GwError::AlgebraFailure("product ray worker panicked".to_string())
-                })?
-            })
-            .collect::<Result<Vec<_>, _>>()
+    let mut values = interpolation.reconstruct(|ray| {
+        let target = ProductProjectiveRay::from_theory(
+            theory.clone(),
+            weights_x.to_vec(),
+            weights_y.to_vec(),
+            ray.clone(),
+        )?;
+        let provider = ProductRayProvider::new(target);
+        let value = compute_semisimple_graph_value(
+            &provider,
+            genus,
+            interpolation.total_degree(),
+            insertions,
+            None,
+        )?;
+        value.as_rational().ok_or_else(|| {
+            GwError::AlgebraFailure(
+                "product ray value did not specialize to a rational".to_string(),
+            )
+        })
     })?;
     if profile_enabled {
         eprintln!(
@@ -661,19 +656,6 @@ pub fn reconstruct_bidegree_invariants_in_theory(
             ray_count
         );
     }
-
-    let (rays, mut values): (Vec<_>, Vec<_>) = ray_results.into_iter().unzip();
-
-    // Solve sum_{d2} ray^{d2} N_{d2} = value for each ray (Vandermonde).
-    let mut matrix = rays
-        .iter()
-        .map(|ray| {
-            (0..ray_count)
-                .map(|power| ray.pow_usize(power))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    recipe::solve_rational_system(&mut matrix, &mut values)?;
 
     // Equivariant invariants at dimension-mismatched bidegrees are nonzero
     // weight-dependent quantities whose non-equivariant limit vanishes;
@@ -1009,6 +991,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first, vec![Rational::one(), Rational::zero()]);
+
+        // A disjoint sampling family must recover the same bidegrees.  This
+        // catches calibration caches that accidentally omit the ray.
+        let theory = ProductProjectiveTheory::new(1, 1).unwrap();
+        let alternate = reconstruct_bidegree_invariants_in_theory_with_nodes(
+            &theory,
+            &weights_x(),
+            &weights_y(),
+            0,
+            1,
+            &[
+                point_class(0),
+                ProductInsertion::new(0, 1, 0),
+                ProductInsertion::new(0, 1, 0),
+            ],
+            Some(&[Rational::from(3), Rational::from(5)]),
+        )
+        .unwrap();
+        assert_eq!(alternate, first);
 
         let second = reconstruct_bidegree_invariants(
             1,

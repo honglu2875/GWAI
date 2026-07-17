@@ -70,31 +70,9 @@ mod graph;
 pub use graph::*;
 use r_solve::*;
 
-/// Maximum number of one-parameter Novikov rays materialized by an exact
-/// multi-degree reconstruction.
-///
-/// Product and projective-bundle reconstruction solve a dense Vandermonde
-/// system and currently run one scoped worker per ray.  Keeping this guard in
-/// the shared reconstruction layer prevents a large degree from turning a
-/// public fallible API into an allocation or thread-spawn abort.  The bound
-/// can be raised deliberately once those algorithms use bounded parallelism
-/// and a more scalable interpolation strategy.
-pub const MAX_EXACT_RECONSTRUCTION_RAYS: usize = 64;
-
-pub(crate) fn checked_reconstruction_ray_count(
-    target: &str,
-    total_degree: usize,
-) -> Result<usize, GwError> {
-    let ray_count = total_degree.checked_add(1).ok_or_else(|| {
-        GwError::UnsupportedInvariant(format!("{target} reconstruction degree is too large"))
-    })?;
-    if ray_count > MAX_EXACT_RECONSTRUCTION_RAYS {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "{target} reconstruction requires {ray_count} Novikov rays, exceeding the explicit limit {MAX_EXACT_RECONSTRUCTION_RAYS}"
-        )));
-    }
-    Ok(ray_count)
-}
+// Compatibility export: the implementation and guard now live with the
+// target-neutral exact-ray interpolation algorithm.
+pub use crate::reconstruction::MAX_EXACT_RECONSTRUCTION_RAYS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaConvention {
