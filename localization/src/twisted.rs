@@ -25,8 +25,8 @@ use crate::error::GwError;
 use crate::factored::FactoredRatFun;
 use crate::givental::{
     compute_semisimple_graph_value_with_coeff, CalibrationId, CanonicalFrameConvention,
-    CoefficientSemisimpleCohftProvider, GiventalGraphKernel, ProjectiveSpaceProvider,
-    SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix,
+    GiventalGraphKernel, ProjectiveSpaceProvider, SemisimpleCalibration, SemisimpleCohftProvider,
+    SeriesRMatrix, SeriesSMatrix,
 };
 use crate::resolvent::{ResolventRequest, ResolventResult};
 use crate::series::{

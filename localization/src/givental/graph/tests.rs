@@ -994,6 +994,104 @@ fn packed_resolvent_matches_invariant_wise_projective_resolver() {
     assert_eq!(packed.nonzero_terms, invariant_wise.nonzero_terms);
 }
 
+#[derive(Debug, Clone)]
+struct ExcessFriendlyPackedProvider(ProjectiveSpaceProvider);
+
+impl SemisimpleCohftProvider for ExcessFriendlyPackedProvider {
+    type Insertion = Insertion;
+
+    fn colors(&self) -> usize {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::colors(&self.0)
+    }
+
+    fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::descendant_power(&self.0, insertion)
+    }
+
+    fn insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::insertion_degree(&self.0, insertions)?
+            .checked_add(1)
+    }
+
+    fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::virtual_dimension(
+            &self.0, genus, degree, markings,
+        )
+    }
+
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::degree_is_effective(&self.0, degree)
+    }
+
+    fn vanishes_by_dimension(&self, _virtual_dimension: isize, _total_degree: usize) -> bool {
+        false
+    }
+
+    fn descendant_s_matrix(
+        &self,
+        q_degree: usize,
+        z_order: usize,
+    ) -> Result<SeriesSMatrix, GwError> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::descendant_s_matrix(
+            &self.0, q_degree, z_order,
+        )
+    }
+
+    fn graph_kernel(
+        &self,
+        q_degree: usize,
+        r_order: usize,
+        graph_dimension: usize,
+    ) -> Result<std::sync::Arc<GiventalGraphKernel>, GwError> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::graph_kernel(
+            &self.0,
+            q_degree,
+            r_order,
+            graph_dimension,
+        )
+    }
+
+    fn insertion_vector(
+        &self,
+        insertion: &Self::Insertion,
+        q_degree: usize,
+    ) -> Result<Vec<QSeries>, GwError> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider>::insertion_vector(
+            &self.0, insertion, q_degree,
+        )
+    }
+}
+
+#[test]
+fn packed_resolvent_keeps_its_exact_slice_under_generic_provider_policy() {
+    let req = ResolventRequest::for_projective_space(1, 0, 0, 3);
+    let provider = ExcessFriendlyPackedProvider(ProjectiveSpaceProvider::new(1, true));
+
+    let expanded = compute_packed_resolvent_with_provider(
+        &req,
+        provider.clone(),
+        "test-expanded-resolvent",
+        "test",
+        Ok::<RatFun, GwError>,
+    )
+    .unwrap();
+    let generic = compute_packed_resolvent_with_coeff_provider::<RatFun, _, _>(
+        &req,
+        provider,
+        "test-generic-resolvent",
+        "test",
+        Ok::<RatFun, GwError>,
+    )
+    .unwrap();
+
+    assert!(expanded.candidate_terms > 0);
+    assert_eq!(generic.candidate_terms, expanded.candidate_terms);
+    assert_eq!(expanded.nonzero_terms, 0);
+    assert_eq!(generic.nonzero_terms, 0);
+    assert!(expanded.value.is_zero());
+    assert!(generic.value.is_zero());
+}
+
 #[test]
 fn point_target_positive_degree_packed_resolvent_is_empty() {
     let req = ResolventRequest {

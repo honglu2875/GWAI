@@ -1114,10 +1114,18 @@ impl FactoredTwistedProjectiveSpaceProvider {
         };
         let s_matrix = self.factored_raw_descendant_s_matrix(degree, s_order)?;
         let metric = self.factored_flat_metric_matrix(degree)?;
-        let descendant = self.coeff_insertion_vector(&insertions[descendant_idx], degree)?;
-        let primary = self.coeff_insertion_vector(&insertions[primary_idx], degree)?;
+        let descendant = <Self as SemisimpleCohftProvider<FactoredRatFun>>::insertion_vector(
+            self,
+            &insertions[descendant_idx],
+            degree,
+        )?;
+        let primary = <Self as SemisimpleCohftProvider<FactoredRatFun>>::insertion_vector(
+            self,
+            &insertions[primary_idx],
+            degree,
+        )?;
         genus_zero_two_point_raw_s_matrix_pairing_coeff(
-            self.coeff_colors(),
+            <Self as SemisimpleCohftProvider<FactoredRatFun>>::colors(self),
             degree,
             s_order,
             &s_matrix,
@@ -1129,53 +1137,78 @@ impl FactoredTwistedProjectiveSpaceProvider {
     }
 }
 
-impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProjectiveSpaceProvider {
+impl SemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProjectiveSpaceProvider {
     type Insertion = Insertion;
 
-    fn coeff_colors(&self) -> usize {
-        self.inner.colors()
+    fn colors(&self) -> usize {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::colors(&self.inner)
     }
 
-    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
-        self.inner.descendant_power(insertion)
+    fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::descendant_power(
+            &self.inner,
+            insertion,
+        )
     }
 
-    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
-        self.inner.insertion_degree(insertions)
+    fn insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::insertion_degree(
+            &self.inner,
+            insertions,
+        )
     }
 
-    fn coeff_virtual_dimension(
-        &self,
-        genus: usize,
-        degree: usize,
-        markings: usize,
-    ) -> Option<isize> {
-        self.inner.virtual_dimension(genus, degree, markings)
+    fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::virtual_dimension(
+            &self.inner,
+            genus,
+            degree,
+            markings,
+        )
     }
 
-    fn coeff_degree_is_effective(&self, degree: usize) -> bool {
-        self.inner.degree_is_effective(degree)
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::degree_is_effective(
+            &self.inner,
+            degree,
+        )
     }
 
-    fn coeff_expected_degree_from_dimension(
+    fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::vanishes_by_dimension(
+            &self.inner,
+            virtual_dimension,
+            total_degree,
+        )
+    }
+
+    fn expected_degree_from_dimension(
         &self,
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
-        self.inner.expected_degree_from_dimension(genus, insertions)
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::expected_degree_from_dimension(
+            &self.inner,
+            genus,
+            insertions,
+        )
     }
 
-    fn coeff_candidate_degrees_from_dimension(
+    fn candidate_degrees_from_dimension(
         &self,
         genus: usize,
         degree_max: usize,
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
-        self.inner
-            .candidate_degrees_from_dimension(genus, degree_max, insertions)
+        <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::candidate_degrees_from_dimension(
+            &self.inner,
+            genus,
+            degree_max,
+            insertions,
+        )
     }
 
-    fn coeff_descendant_s_matrix(
+    fn descendant_s_matrix(
         &self,
         q_degree: usize,
         z_order: usize,
@@ -1197,7 +1230,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         )
     }
 
-    fn coeff_graph_kernel(
+    fn graph_kernel(
         &self,
         q_degree: usize,
         r_order: usize,
@@ -1237,7 +1270,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         Ok(kernel)
     }
 
-    fn coeff_insertion_vector(
+    fn insertion_vector(
         &self,
         insertion: &Self::Insertion,
         q_degree: usize,
@@ -1250,7 +1283,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
             .collect())
     }
 
-    fn coeff_direct_value(
+    fn direct_value(
         &self,
         genus: usize,
         degree: usize,
@@ -1264,7 +1297,11 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         let fiber_weights = self.factored_fiber_weights();
         let insertion_vectors = insertions
             .iter()
-            .map(|insertion| self.coeff_insertion_vector(insertion, degree))
+            .map(|insertion| {
+                <Self as SemisimpleCohftProvider<FactoredRatFun>>::insertion_vector(
+                    self, insertion, degree,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
         twisted_genus_zero_three_primary_value_coeff(
             self.inner.base.n(),
@@ -1278,7 +1315,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredTwistedProje
         .map(Some)
     }
 
-    fn coeff_scalar_fallback_value(
+    fn scalar_fallback_value(
         &self,
         genus: usize,
         degree: usize,
@@ -1697,6 +1734,30 @@ pub(crate) fn metric_adjoint_descendant_s_matrix_with_inverse_coeff<C: Coeff>(
 #[cfg(test)]
 mod provider_tests {
     use super::*;
+
+    #[test]
+    #[allow(deprecated)]
+    fn factored_twisted_provider_and_compatibility_view_preserve_equivariant_grading() {
+        let factored =
+            FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(2, vec![1]).unwrap();
+
+        let expected = <TwistedProjectiveSpaceProvider as SemisimpleCohftProvider<
+            RatFun,
+        >>::vanishes_by_dimension(factored.inner(), 3, 7);
+        let canonical = <FactoredTwistedProjectiveSpaceProvider as SemisimpleCohftProvider<
+            FactoredRatFun,
+        >>::vanishes_by_dimension(&factored, 3, 7);
+        let compatibility = <FactoredTwistedProjectiveSpaceProvider as crate::givental::CoefficientSemisimpleCohftProvider<
+            FactoredRatFun,
+        >>::coeff_vanishes_by_dimension(&factored, 3, 7);
+
+        assert!(
+            !expected,
+            "fiber-equivariant parameters carry excess degree"
+        );
+        assert_eq!(canonical, expected);
+        assert_eq!(compatibility, expected);
+    }
 
     #[test]
     fn custom_fiber_weights_follow_their_sorted_line_summands() {

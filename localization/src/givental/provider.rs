@@ -29,12 +29,13 @@ pub type ProjectiveSpaceJCalibration = SemisimpleCalibration;
 
 /// Source of the semisimple data needed by the Givental-Teleman graph engine.
 ///
-/// The current coefficient ring is `RatFun` over one Novikov variable through
-/// `QSeries`.  That is enough for projective space and split-bundle twists over
-/// projective space; genuinely multi-parameter theories should eventually
-/// replace `QSeries` behind this boundary rather than modifying graph
-/// contraction.
-pub trait SemisimpleCohftProvider {
+/// Coefficients live in `C` over one Novikov variable through `QSeries`.
+/// `RatFun` remains the default, preserving the ordinary public provider API,
+/// while factored symbolic providers implement the same canonical boundary
+/// with a different coefficient type.  Genuinely multi-parameter theories
+/// should eventually replace `QSeries` behind this boundary rather than
+/// duplicating the provider contract.
+pub trait SemisimpleCohftProvider<C: Coeff = RatFun> {
     type Insertion;
 
     /// Number of canonical idempotents, also the number of colors in the graph
@@ -111,7 +112,7 @@ pub trait SemisimpleCohftProvider {
         &self,
         q_degree: usize,
         z_order: usize,
-    ) -> Result<SeriesSMatrix, GwError>;
+    ) -> Result<SeriesSMatrix<C>, GwError>;
 
     /// Complete reusable graph kernel for a fixed target and truncation.
     ///
@@ -123,7 +124,7 @@ pub trait SemisimpleCohftProvider {
         q_degree: usize,
         r_order: usize,
         graph_dimension: usize,
-    ) -> Result<Arc<GiventalGraphKernel>, GwError>;
+    ) -> Result<Arc<GiventalGraphKernel<C>>, GwError>;
 
     /// Flat-basis vector for a cohomology insertion.
     ///
@@ -134,7 +135,7 @@ pub trait SemisimpleCohftProvider {
         &self,
         insertion: &Self::Insertion,
         q_degree: usize,
-    ) -> Result<Vec<QSeries>, GwError>;
+    ) -> Result<Vec<QSeries<C>>, GwError>;
 
     fn direct_value(
         &self,
@@ -142,7 +143,7 @@ pub trait SemisimpleCohftProvider {
         _degree: usize,
         _insertions: &[Self::Insertion],
         _truncation: Option<&Truncation>,
-    ) -> Result<Option<RatFun>, GwError> {
+    ) -> Result<Option<C>, GwError> {
         Ok(None)
     }
 
@@ -156,18 +157,22 @@ pub trait SemisimpleCohftProvider {
         _degree: usize,
         _insertions: &[Self::Insertion],
         _truncation: Option<&Truncation>,
-    ) -> Result<Option<RatFun>, GwError> {
+    ) -> Result<Option<C>, GwError> {
         Ok(None)
     }
 }
 
-/// Coefficient-generic provider boundary for semisimple graph reconstruction.
+/// Deprecated compatibility boundary for coefficient-generic graph engines.
 ///
-/// This is the extension point for alternate algebra engines such as
-/// `FactoredRatFun`.  The older [`SemisimpleCohftProvider`] remains the public
-/// `RatFun` API; this trait is deliberately parallel rather than replacing it,
-/// so existing projective and twisted providers do not see method-resolution
-/// churn.
+/// New providers implement [`SemisimpleCohftProvider<C>`].  The current graph
+/// engine still calls these prefixed methods, so a one-way blanket impl below
+/// forwards every canonical provider into this legacy view.  There is
+/// intentionally no reverse blanket impl: the canonical trait is the single
+/// source of provider behavior.
+#[deprecated(
+    since = "0.1.0",
+    note = "implement SemisimpleCohftProvider<C>; this prefixed compatibility trait will be removed after graph-engine migration"
+)]
 pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
     type Insertion;
 
@@ -190,6 +195,10 @@ pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
 
     fn coeff_degree_is_effective(&self, _degree: usize) -> bool {
         true
+    }
+
+    fn coeff_vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        usize::try_from(virtual_dimension).ok() != Some(total_degree)
     }
 
     fn coeff_expected_degree_from_dimension(
@@ -258,22 +267,24 @@ pub trait CoefficientSemisimpleCohftProvider<C: Coeff> {
     }
 }
 
-impl<P> CoefficientSemisimpleCohftProvider<RatFun> for P
+#[allow(deprecated)]
+impl<C, P> CoefficientSemisimpleCohftProvider<C> for P
 where
-    P: SemisimpleCohftProvider,
+    C: Coeff,
+    P: SemisimpleCohftProvider<C>,
 {
-    type Insertion = P::Insertion;
+    type Insertion = <P as SemisimpleCohftProvider<C>>::Insertion;
 
     fn coeff_colors(&self) -> usize {
-        SemisimpleCohftProvider::colors(self)
+        <P as SemisimpleCohftProvider<C>>::colors(self)
     }
 
     fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
-        SemisimpleCohftProvider::descendant_power(self, insertion)
+        <P as SemisimpleCohftProvider<C>>::descendant_power(self, insertion)
     }
 
     fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
-        SemisimpleCohftProvider::insertion_degree(self, insertions)
+        <P as SemisimpleCohftProvider<C>>::insertion_degree(self, insertions)
     }
 
     fn coeff_virtual_dimension(
@@ -282,11 +293,19 @@ where
         degree: usize,
         markings: usize,
     ) -> Option<isize> {
-        SemisimpleCohftProvider::virtual_dimension(self, genus, degree, markings)
+        <P as SemisimpleCohftProvider<C>>::virtual_dimension(self, genus, degree, markings)
     }
 
     fn coeff_degree_is_effective(&self, degree: usize) -> bool {
-        SemisimpleCohftProvider::degree_is_effective(self, degree)
+        <P as SemisimpleCohftProvider<C>>::degree_is_effective(self, degree)
+    }
+
+    fn coeff_vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        <P as SemisimpleCohftProvider<C>>::vanishes_by_dimension(
+            self,
+            virtual_dimension,
+            total_degree,
+        )
     }
 
     fn coeff_expected_degree_from_dimension(
@@ -294,7 +313,7 @@ where
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
-        SemisimpleCohftProvider::expected_degree_from_dimension(self, genus, insertions)
+        <P as SemisimpleCohftProvider<C>>::expected_degree_from_dimension(self, genus, insertions)
     }
 
     fn coeff_candidate_degrees_from_dimension(
@@ -303,7 +322,7 @@ where
         degree_max: usize,
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
-        SemisimpleCohftProvider::candidate_degrees_from_dimension(
+        <P as SemisimpleCohftProvider<C>>::candidate_degrees_from_dimension(
             self, genus, degree_max, insertions,
         )
     }
@@ -312,8 +331,8 @@ where
         &self,
         q_degree: usize,
         z_order: usize,
-    ) -> Result<SeriesSMatrix, GwError> {
-        SemisimpleCohftProvider::descendant_s_matrix(self, q_degree, z_order)
+    ) -> Result<SeriesSMatrix<C>, GwError> {
+        <P as SemisimpleCohftProvider<C>>::descendant_s_matrix(self, q_degree, z_order)
     }
 
     fn coeff_graph_kernel(
@@ -321,16 +340,16 @@ where
         q_degree: usize,
         r_order: usize,
         graph_dimension: usize,
-    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
-        SemisimpleCohftProvider::graph_kernel(self, q_degree, r_order, graph_dimension)
+    ) -> Result<Arc<GiventalGraphKernel<C>>, GwError> {
+        <P as SemisimpleCohftProvider<C>>::graph_kernel(self, q_degree, r_order, graph_dimension)
     }
 
     fn coeff_insertion_vector(
         &self,
         insertion: &Self::Insertion,
         q_degree: usize,
-    ) -> Result<Vec<QSeries>, GwError> {
-        SemisimpleCohftProvider::insertion_vector(self, insertion, q_degree)
+    ) -> Result<Vec<QSeries<C>>, GwError> {
+        <P as SemisimpleCohftProvider<C>>::insertion_vector(self, insertion, q_degree)
     }
 
     fn coeff_direct_value(
@@ -339,8 +358,8 @@ where
         degree: usize,
         insertions: &[Self::Insertion],
         truncation: Option<&Truncation>,
-    ) -> Result<Option<RatFun>, GwError> {
-        SemisimpleCohftProvider::direct_value(self, genus, degree, insertions, truncation)
+    ) -> Result<Option<C>, GwError> {
+        <P as SemisimpleCohftProvider<C>>::direct_value(self, genus, degree, insertions, truncation)
     }
 
     fn coeff_scalar_fallback_value(
@@ -349,8 +368,10 @@ where
         degree: usize,
         insertions: &[Self::Insertion],
         truncation: Option<&Truncation>,
-    ) -> Result<Option<RatFun>, GwError> {
-        SemisimpleCohftProvider::scalar_fallback_value(self, genus, degree, insertions, truncation)
+    ) -> Result<Option<C>, GwError> {
+        <P as SemisimpleCohftProvider<C>>::scalar_fallback_value(
+            self, genus, degree, insertions, truncation,
+        )
     }
 }
 
@@ -1091,43 +1112,68 @@ pub(crate) fn projective_space_factored_graph_kernel(
     Ok(kernel)
 }
 
-impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSpaceProvider {
+impl SemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSpaceProvider {
     type Insertion = Insertion;
 
-    fn coeff_colors(&self) -> usize {
-        self.0.colors()
+    fn colors(&self) -> usize {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::colors(&self.0)
     }
 
-    fn coeff_descendant_power(&self, insertion: &Self::Insertion) -> usize {
+    fn descendant_power(&self, insertion: &Self::Insertion) -> usize {
         insertion.descendant_power
     }
 
-    fn coeff_insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
-        self.0.insertion_degree(insertions)
+    fn insertion_degree(&self, insertions: &[Self::Insertion]) -> Option<usize> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::insertion_degree(
+            &self.0, insertions,
+        )
     }
 
-    fn coeff_virtual_dimension(
-        &self,
-        genus: usize,
-        degree: usize,
-        markings: usize,
-    ) -> Option<isize> {
-        self.0.virtual_dimension(genus, degree, markings)
+    fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::virtual_dimension(
+            &self.0, genus, degree, markings,
+        )
     }
 
-    fn coeff_degree_is_effective(&self, degree: usize) -> bool {
-        self.0.degree_is_effective(degree)
+    fn degree_is_effective(&self, degree: usize) -> bool {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::degree_is_effective(
+            &self.0, degree,
+        )
     }
 
-    fn coeff_expected_degree_from_dimension(
+    fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::vanishes_by_dimension(
+            &self.0,
+            virtual_dimension,
+            total_degree,
+        )
+    }
+
+    fn expected_degree_from_dimension(
         &self,
         genus: usize,
         insertions: &[Self::Insertion],
     ) -> Option<usize> {
-        self.0.expected_degree_from_dimension(genus, insertions)
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::expected_degree_from_dimension(
+            &self.0, genus, insertions,
+        )
     }
 
-    fn coeff_descendant_s_matrix(
+    fn candidate_degrees_from_dimension(
+        &self,
+        genus: usize,
+        degree_max: usize,
+        insertions: &[Self::Insertion],
+    ) -> Vec<usize> {
+        <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::candidate_degrees_from_dimension(
+            &self.0,
+            genus,
+            degree_max,
+            insertions,
+        )
+    }
+
+    fn descendant_s_matrix(
         &self,
         q_degree: usize,
         z_order: usize,
@@ -1135,7 +1181,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
         series_s_matrix_to_factored(&self.0.descendant_s_matrix(q_degree, z_order)?)
     }
 
-    fn coeff_graph_kernel(
+    fn graph_kernel(
         &self,
         q_degree: usize,
         r_order: usize,
@@ -1144,7 +1190,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
         projective_space_factored_graph_kernel(self.0.n(), q_degree, r_order, graph_dimension)
     }
 
-    fn coeff_insertion_vector(
+    fn insertion_vector(
         &self,
         insertion: &Self::Insertion,
         q_degree: usize,
@@ -1157,7 +1203,7 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
             .collect())
     }
 
-    fn coeff_scalar_fallback_value(
+    fn scalar_fallback_value(
         &self,
         genus: usize,
         degree: usize,
@@ -1174,6 +1220,53 @@ impl CoefficientSemisimpleCohftProvider<FactoredRatFun> for FactoredProjectiveSp
 #[cfg(test)]
 mod canonical_provider_tests {
     use super::*;
+
+    #[test]
+    #[allow(deprecated)]
+    fn factored_provider_and_compatibility_view_share_dimension_semantics() {
+        let inner = ProjectiveSpaceProvider::new(2, true);
+        let factored = FactoredProjectiveSpaceProvider(inner.clone());
+
+        for (virtual_dimension, total_degree) in [(2, 1), (2, 2), (2, 4), (-1, 0)] {
+            let expected =
+                <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::vanishes_by_dimension(
+                    &inner,
+                    virtual_dimension,
+                    total_degree,
+                );
+            let canonical = <FactoredProjectiveSpaceProvider as SemisimpleCohftProvider<
+                FactoredRatFun,
+            >>::vanishes_by_dimension(
+                &factored, virtual_dimension, total_degree
+            );
+            let compatibility =
+                <FactoredProjectiveSpaceProvider as CoefficientSemisimpleCohftProvider<
+                    FactoredRatFun,
+                >>::coeff_vanishes_by_dimension(
+                    &factored, virtual_dimension, total_degree
+                );
+            assert_eq!(canonical, expected);
+            assert_eq!(compatibility, expected);
+        }
+
+        let nonequivariant_inner = ProjectiveSpaceProvider::new(2, false);
+        let nonequivariant_factored = FactoredProjectiveSpaceProvider(nonequivariant_inner.clone());
+        for total_degree in [1, 2, 4] {
+            let expected =
+                <ProjectiveSpaceProvider as SemisimpleCohftProvider<RatFun>>::vanishes_by_dimension(
+                    &nonequivariant_inner,
+                    2,
+                    total_degree,
+                );
+            let canonical = <FactoredProjectiveSpaceProvider as SemisimpleCohftProvider<
+                FactoredRatFun,
+            >>::vanishes_by_dimension(
+                &nonequivariant_factored, 2, total_degree
+            );
+            assert_eq!(canonical, expected);
+            assert_eq!(canonical, total_degree != 2);
+        }
+    }
 
     #[test]
     fn checked_custom_weights_preserve_theory_and_semisimplicity() {

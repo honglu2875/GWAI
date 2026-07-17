@@ -2,6 +2,11 @@
 //! evaluator and its parallel contraction workers, external-leg kernels, and
 //! the public compute / series / packed-resolvent entry points.
 
+// The coefficient-generic entry points retain the prefixed compatibility
+// trait until their public signatures migrate to the canonical generic
+// provider in a later stage.
+#![allow(deprecated)]
+
 use super::*;
 use crate::factored::FactoredRatFun;
 use std::sync::atomic::{AtomicUsize, Ordering};
