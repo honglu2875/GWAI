@@ -210,6 +210,14 @@ their shape:
 - the native `F_1 = P(O + O(1))` backend checks `L_2`, genus two, class
   `(1,-1)`.  Both genus-reduction and degree-splitting terms contribute
   nontrivially, and requested genus-two descendants are nonzero;
+- the slow rank-three hold-out normalizes
+  `P(O(-2) + O(1) + O(1)) -> P^2` to `P(O + O(3) + O(3))` and checks
+  `L_2`, genus two, class `(1,-2)` in the normalized `(H.beta, xi.beta)`
+  coordinates.  All 281 terms close using 55 backend dependencies, including
+  the nonzero invariant `<H xi^2>_(g=2,(1,-2)) = 1/10`; genus reduction and
+  the genuine split `(1,-2) = (0,1) + (1,-3)` both contribute, and perturbing
+  that genus-two value makes the residual nonzero.  The selected invariant is
+  also reconstructed at a second generic equivariant-weight specialization;
 - the resolved-conifold completion checks an `L_1`, genus-two equation with
   nonzero genus-two descendants; and
 - a non-Calabi--Yau twisted case, `O(-2) -> P^2`, checks an `L_2`, genus-two,
@@ -223,6 +231,13 @@ also has direct product, bundle, and twisted dilaton regressions.  The native
 bundle backend and the exact residual must vanish.  The independent
 `F_2 -> P^1 x P^1` deformation checks remain separate audit oracles rather
 than runtime substitutions.
+
+The rank-three hold-out initially stopped with one missing fiber-class
+descendant.  This exposed an evaluator gap rather than a Virasoro residual:
+stabilization by the fiber divisor must use the theory-owned classical
+product by `xi`, including reduction through `xi (xi + 3H)^2 = 0`.  Bundle
+divisor recursion now expands that product in the canonical cohomology basis
+instead of rejecting all fiber-only descendant corrections.
 
 ## Exact-check semantics
 

@@ -1001,16 +1001,6 @@ fn evaluate_bundle_with_divisor_recursion(
                 .to_string(),
         ));
     };
-    if !use_base_divisor
-        && insertions
-            .iter()
-            .any(|insertion| insertion.descendant_power > 0)
-    {
-        return Err(GwError::UnsupportedInvariant(
-            "fiber-only projective-bundle descendant stabilization requires classical xi multiplication across the bundle relation"
-                .to_string(),
-        ));
-    }
     let mut with_divisor = insertions.clone();
     with_divisor.push(divisor);
     let mut numerator = evaluate_bundle_with_divisor_recursion(
@@ -1023,26 +1013,52 @@ fn evaluate_bundle_with_divisor_recursion(
         total_degree,
         with_divisor,
     )?;
-    if use_base_divisor {
-        let n = theory.base_dimension();
-        for index in 0..insertions.len() {
-            if insertions[index].descendant_power == 0 || insertions[index].h_power == n {
-                continue;
+    for index in 0..insertions.len() {
+        if insertions[index].descendant_power == 0 {
+            continue;
+        }
+        let correction_terms = if use_base_divisor {
+            if insertions[index].h_power == theory.base_dimension() {
+                Vec::new()
+            } else {
+                vec![(
+                    theory
+                        .basis_id(insertions[index].h_power + 1, insertions[index].xi_power)
+                        .expect("multiplication by H stayed in the canonical bundle basis"),
+                    Rational::one(),
+                )]
             }
+        } else {
+            let basis = theory
+                .basis_id(insertions[index].h_power, insertions[index].xi_power)
+                .ok_or_else(|| {
+                    GwError::ConventionMismatch(
+                        "projective-bundle insertion is outside the canonical basis".to_string(),
+                    )
+                })?;
+            theory.multiply_basis_by_xi(basis)?
+        };
+        for (basis, coefficient) in correction_terms {
+            let (h_power, xi_power) = theory.basis_powers(basis).ok_or_else(|| {
+                GwError::AlgebraFailure(
+                    "projective-bundle divisor product returned an invalid basis id".to_string(),
+                )
+            })?;
             let mut correction = insertions.clone();
             correction[index].descendant_power -= 1;
-            correction[index].h_power += 1;
-            numerator = numerator
-                - evaluate_bundle_with_divisor_recursion(
-                    theory,
-                    weights_base,
-                    weights_fiber,
-                    genus,
-                    d1,
-                    d2,
-                    total_degree,
-                    correction,
-                )?;
+            correction[index].h_power = h_power;
+            correction[index].xi_power = xi_power;
+            let correction_value = evaluate_bundle_with_divisor_recursion(
+                theory,
+                weights_base,
+                weights_fiber,
+                genus,
+                d1,
+                d2,
+                total_degree,
+                correction,
+            )?;
+            numerator = numerator - coefficient * correction_value;
         }
     }
     Ok(numerator / intersection)
@@ -1800,6 +1816,92 @@ mod tests {
     }
 
     #[test]
+    fn bundle_fiber_descendant_stabilization_uses_the_reduced_xi_product() {
+        let theory = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        let evaluator = ProjectiveBundleEvaluator::new(theory).unwrap();
+        let theory = evaluator.bundle_theory();
+        let top = theory.basis_id(2, 2).unwrap();
+        let xi = theory.basis_id(0, 1).unwrap();
+        let curve = theory.curve(0, 1);
+        let unstable = CorrelatorKey::new(0, curve.clone(), vec![Descendant::new(1, top)]);
+        let stable = CorrelatorKey::new(
+            0,
+            curve,
+            vec![
+                Descendant::new(1, top),
+                Descendant::new(0, xi),
+                Descendant::new(0, xi),
+            ],
+        );
+
+        let value = evaluator.evaluate_backend(&unstable).unwrap();
+        assert_eq!(
+            value,
+            evaluator.evaluate_backend(&stable).unwrap(),
+            "xi . (H^2 xi^2) = H^2 xi^3 = 0, and xi . beta = 1"
+        );
+        assert!(
+            !value.is_zero(),
+            "the formerly unsupported fiber descendant should exercise a nonzero backend value"
+        );
+    }
+
+    #[test]
+    fn bundle_fiber_descendant_stabilization_keeps_xi_reduction_signs() {
+        let theory = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        let evaluator = ProjectiveBundleEvaluator::new(theory).unwrap();
+        let theory = evaluator.bundle_theory();
+        let h_xi_squared = theory.basis_id(1, 2).unwrap();
+        let h_squared_xi_squared = theory.basis_id(2, 2).unwrap();
+        let xi = theory.basis_id(0, 1).unwrap();
+        let xi_squared = theory.basis_id(0, 2).unwrap();
+        let curve = theory.curve(0, 1);
+
+        let solved = CorrelatorKey::new(
+            0,
+            curve.clone(),
+            vec![
+                Descendant::new(1, h_xi_squared),
+                Descendant::new(0, xi_squared),
+            ],
+        );
+        let stabilized_with_xi = CorrelatorKey::new(
+            0,
+            curve.clone(),
+            vec![
+                Descendant::new(1, h_xi_squared),
+                Descendant::new(0, xi_squared),
+                Descendant::new(0, xi),
+            ],
+        );
+        let primary_correction = CorrelatorKey::new(
+            0,
+            curve,
+            vec![
+                Descendant::new(0, h_squared_xi_squared),
+                Descendant::new(0, xi_squared),
+            ],
+        );
+
+        assert_eq!(
+            evaluator.evaluate_backend(&stabilized_with_xi).unwrap(),
+            RatFun::from_rational(Rational::from(-6))
+        );
+        assert_eq!(
+            evaluator.evaluate_backend(&primary_correction).unwrap(),
+            RatFun::one()
+        );
+        assert_eq!(
+            theory.multiply_basis_by_xi(h_xi_squared).unwrap(),
+            vec![(h_squared_xi_squared, Rational::from(-6))]
+        );
+        assert!(
+            evaluator.evaluate_backend(&solved).unwrap().is_zero(),
+            "-6 - (-6) must cancel in the fiber divisor equation"
+        );
+    }
+
+    #[test]
     fn product_descendant_divisor_recursion_recovers_the_unstable_dilaton_value() {
         let evaluator = ProductProjectiveEvaluator::new(1, 1).unwrap();
         let theory = evaluator.product_theory();
@@ -1945,6 +2047,96 @@ mod tests {
             evaluate_constraint(&perturbed, &constraint).status(),
             ResidualStatus::Nonzero,
             "the relation must detect a corrupted native bundle invariant"
+        );
+    }
+
+    #[test]
+    #[ignore = "slow mixed-sign rank-3 bundle Virasoro acceptance test"]
+    fn p2_rank3_mixed_sign_bundle_genus_two_l2_is_verified_natively() {
+        let theory = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        let evaluator = ProjectiveBundleEvaluator::new(theory).unwrap();
+        let theory = evaluator.bundle_theory();
+        // Tensoring O(-2) + O(1) + O(1) by O(2) gives the canonical
+        // presentation O + O(3) + O(3), with xi_can = xi_original - 2H.
+        // Thus beta=(1,-2) here is beta=(1,0) in the original coordinates.
+        let curve = theory.curve(1, -2);
+        assert_eq!(theory.c1_pairing(&curve).unwrap(), 3);
+        assert_eq!(theory.shifted_bidegree(&curve), Some((1, 1)));
+        let constraint =
+            generate_constraint(theory, 2, 2, curve.clone(), TimeMonomial::one()).unwrap();
+        let report = evaluate_constraint(&evaluator, &constraint);
+        assert_eq!(report.status(), ResidualStatus::VerifiedZero, "{report:?}");
+        assert_eq!(report.exact_residual(), Some(&RatFun::zero()));
+        assert_eq!(report.total_term_count(), 281);
+        assert_eq!(report.backend_correlator_count(), 55);
+        assert_eq!(report.structural_zero_correlator_count(), 185);
+
+        let high_genus_target = CorrelatorKey::new(
+            2,
+            curve.clone(),
+            vec![Descendant::new(0, theory.basis_id(1, 2).unwrap())],
+        );
+        assert!(report.backend_correlators().contains(&high_genus_target));
+        let expected_high_genus_value = RatFun::from_rational(Rational::new(1, 10));
+        assert_eq!(
+            evaluator.evaluate_backend(&high_genus_target).unwrap(),
+            expected_high_genus_value
+        );
+        assert!(has_nonzero_contribution_from(
+            &constraint,
+            &report,
+            TermOrigin::GenusReduction
+        ));
+        assert!(has_nonzero_contribution_from(
+            &constraint,
+            &report,
+            TermOrigin::DegreeSplitting
+        ));
+        let fiber_curve = theory.curve(0, 1);
+        let extremal_curve = theory.curve(1, -3);
+        assert!(
+            report.evaluated_terms().iter().any(|evaluated| {
+                if evaluated.exact_contribution.is_zero() {
+                    return false;
+                }
+                matches!(
+                    &constraint.terms[evaluated.term_index],
+                    ConstraintTerm::Quadratic(term)
+                        if term.origin == TermOrigin::DegreeSplitting
+                            && ((term.left.degree == fiber_curve
+                                && term.right.degree == extremal_curve)
+                                || (term.left.degree == extremal_curve
+                                    && term.right.degree == fiber_curve))
+                )
+            }),
+            "the hold-out must use the genuine (0,1) + (1,-3) curve split"
+        );
+
+        // The two O(3) summands have the same twist.  Recompute the selected
+        // nonzero genus-two dependency at a second generic weight choice so
+        // the hold-out cannot pass through an accidental default-weight
+        // specialization.
+        let alternate_weights = ProjectiveBundleEvaluator::with_weights(
+            ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap(),
+            vec![Rational::from(-2), Rational::from(5), Rational::from(11)],
+            vec![Rational::from(7), Rational::from(29), Rational::from(61)],
+        )
+        .unwrap();
+        assert_eq!(
+            alternate_weights
+                .evaluate_backend(&high_genus_target)
+                .unwrap(),
+            expected_high_genus_value
+        );
+
+        let perturbed = PerturbedEvaluator {
+            inner: &evaluator,
+            target: high_genus_target,
+        };
+        assert_eq!(
+            evaluate_constraint(&perturbed, &constraint).status(),
+            ResidualStatus::Nonzero,
+            "the hold-out must detect a corrupted genus-two bundle invariant"
         );
     }
 

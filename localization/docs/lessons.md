@@ -433,3 +433,23 @@ looked algebraically reasonable.  Convert through the cyclic-basis matrix
 before applying powers of quantum multiplication.  Permutation symmetry and
 the divisor equation are particularly cheap regressions for catching this
 class of error; a single known numerical value is not.
+
+### 19. Divisor stabilization needs the cohomology product
+
+Positive-degree one- and two-point descendants are reconstructed by adding a
+divisor and solving the divisor equation.  For a base divisor `H`, its product
+with the canonical bundle basis is just a shift in `H`-degree (or zero at the
+top).  The fiber divisor `xi` is different: multiplying a top fiber power must
+be reduced through the projective-bundle relation.  For example,
+
+```text
+P(O + O(3) + O(3)) over P^2:  xi^3 = -6 H xi^2 - 9 H^2 xi.
+```
+
+A blanket refusal of fiber-only descendant stabilization left a single hole
+in an otherwise complete 281-term Virasoro hold-out.  The correct repair is
+not a special zero for that correlator: the canonical bundle theory now
+provides multiplication by `xi`, and the evaluator expands every divisor
+correction linearly in that theory-owned basis.  Tests include both a product
+that vanishes only after reduction and a nonzero reduction whose negative
+coefficient reverses sign when the divisor correction is subtracted.

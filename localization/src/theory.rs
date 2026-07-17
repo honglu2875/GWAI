@@ -1128,6 +1128,37 @@ impl ProjectiveBundleTheory {
             .then_some(BasisId(h_power * self.rank() + xi_power))
     }
 
+    /// Multiply one canonical basis element by the tautological divisor
+    /// `xi`, reducing the result through the projective-bundle relation.
+    ///
+    /// The output is expressed in the same canonical `H^h xi^j` basis and
+    /// sorted by basis id.  An empty output represents the zero class.
+    pub fn multiply_basis_by_xi(
+        &self,
+        basis: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        let (h_power, xi_power) = self.basis_powers(basis).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "cannot multiply an element outside the projective-bundle basis by xi".to_string(),
+            )
+        })?;
+        let product_xi_power = xi_power.checked_add(1).ok_or_else(|| {
+            GwError::AlgebraFailure("projective-bundle xi power overflow".to_string())
+        })?;
+        reduce_bundle_monomial(self.n, &self.twists, h_power, product_xi_power)
+            .into_iter()
+            .map(|((out_h, out_xi), coefficient)| {
+                let output = self.basis_id(out_h, out_xi).ok_or_else(|| {
+                    GwError::AlgebraFailure(
+                        "projective-bundle relation reduced outside its canonical basis"
+                            .to_string(),
+                    )
+                })?;
+                Ok((output, coefficient))
+            })
+            .collect()
+    }
+
     pub fn try_curve(&self, d1: usize, d2: i64) -> Result<CurveClass, GwError> {
         let d1 = i64::try_from(d1).map_err(|_| scan_bound_overflow())?;
         Ok(CurveClass::new(vec![d1, d2]))
@@ -1859,6 +1890,37 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left.theory_fingerprint(), right.theory_fingerprint());
         assert_eq!(left.theory_id(), "P(O + O(1) + O(3)) over P^1");
+    }
+
+    #[test]
+    fn bundle_xi_multiplication_reduces_in_the_canonical_theory() {
+        let theory = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        let xi_squared = theory.basis_id(0, 2).unwrap();
+
+        assert_eq!(
+            theory.multiply_basis_by_xi(xi_squared).unwrap(),
+            vec![
+                (theory.basis_id(1, 2).unwrap(), Rational::from(-6)),
+                (theory.basis_id(2, 1).unwrap(), Rational::from(-9)),
+            ],
+            "xi^3 = -6 H xi^2 - 9 H^2 xi for P(O + O(3) + O(3))"
+        );
+        assert!(
+            theory
+                .multiply_basis_by_xi(theory.basis_id(2, 2).unwrap())
+                .unwrap()
+                .is_empty(),
+            "H^2 xi^3 must vanish after H^3=0"
+        );
+    }
+
+    #[test]
+    fn bundle_xi_multiplication_rejects_an_invalid_basis_id() {
+        let theory = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        assert!(matches!(
+            theory.multiply_basis_by_xi(BasisId(9)),
+            Err(GwError::ConventionMismatch(_))
+        ));
     }
 
     #[test]
