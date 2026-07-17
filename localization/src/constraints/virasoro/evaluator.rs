@@ -1,6 +1,6 @@
 use super::{
-    CanonicalVirasoroConstraint, ConstraintTerm, CorrelatorKey, EvaluatedTerm, IncompleteReason,
-    MissingCorrelator, ResidualReport,
+    CanonicalVirasoroConstraint, ConstraintTerm, CorrelatorKey, Descendant, EvaluatedTerm,
+    IncompleteReason, MissingCorrelator, ResidualReport,
 };
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
@@ -846,14 +846,81 @@ fn reconstruct_requested_product_value(
     })
 }
 
-/// Evaluate a positive-degree correlator even when its underlying pointed
-/// curve is unstable.  Adding a divisor `D` and solving
+/// Evaluate a positive-degree correlator whose pointed curve may be unstable.
+///
+/// The canonical theory chooses a positive-pairing divisor and owns its cup
+/// product.  This is the universal descendant divisor equation
 ///
 /// `<D, prod tau_ai(gamma_i)> = (D.beta)<prod ...>
-///    + sum_i <tau_(ai-1)(D cup gamma_i), ...>`
+///    + sum_i <tau_(ai-1)(D cup gamma_i), ...>`.
 ///
-/// recursively includes the descendant corrections that a simple division by
-/// `(D.beta)` would miss.
+/// Target adapters only translate canonical basis ids at the stable backend
+/// boundary; product and bundle theories therefore cannot drift in their
+/// stabilization signs or ring reductions.
+fn evaluate_with_divisor_recursion<F>(
+    theory: &dyn GwTheory,
+    genus: usize,
+    curve: &CurveClass,
+    insertions: Vec<Descendant<BasisId>>,
+    target: &str,
+    evaluate_stable: &F,
+) -> Result<Rational, GwError>
+where
+    F: Fn(&[Descendant<BasisId>]) -> Result<Rational, GwError>,
+{
+    if pointed_curve_is_stable(genus, insertions.len()) {
+        return evaluate_stable(&insertions);
+    }
+    check_divisor_recursion_depth(
+        genus,
+        insertions.len(),
+        insertions.iter().map(|insertion| insertion.psi_power),
+        target,
+    )?;
+    let (divisor, intersection) = theory.stabilizing_divisor(curve)?.ok_or_else(|| {
+        GwError::ConventionMismatch(format!(
+            "degree-zero or non-positive unstable correlators must be removed before {target} reconstruction"
+        ))
+    })?;
+    if intersection <= 0 {
+        return Err(GwError::ConventionMismatch(format!(
+            "{target} stabilizing divisor must pair positively with the curve class"
+        )));
+    }
+    let mut with_divisor = insertions.clone();
+    with_divisor.push(Descendant::new(0, divisor));
+    let mut numerator = evaluate_with_divisor_recursion(
+        theory,
+        genus,
+        curve,
+        with_divisor,
+        target,
+        evaluate_stable,
+    )?;
+    for index in 0..insertions.len() {
+        if insertions[index].psi_power == 0 {
+            continue;
+        }
+        for (product_basis, coefficient) in
+            theory.classical_product(divisor, insertions[index].class)?
+        {
+            let mut correction = insertions.clone();
+            correction[index].psi_power -= 1;
+            correction[index].class = product_basis;
+            let correction_value = evaluate_with_divisor_recursion(
+                theory,
+                genus,
+                curve,
+                correction,
+                target,
+                evaluate_stable,
+            )?;
+            numerator = numerator - coefficient * correction_value;
+        }
+    }
+    Ok(numerator / Rational::from(intersection))
+}
+
 fn evaluate_product_with_divisor_recursion(
     theory: &ProductProjectiveTheory,
     weights_x: &[Rational],
@@ -863,70 +930,54 @@ fn evaluate_product_with_divisor_recursion(
     d2: usize,
     insertions: Vec<ProductInsertion>,
 ) -> Result<Rational, GwError> {
-    if pointed_curve_is_stable(genus, insertions.len()) {
-        return reconstruct_requested_product_value(
+    let curve = theory.try_curve(d1, d2)?;
+    let canonical = insertions
+        .iter()
+        .map(|insertion| {
+            theory
+                .basis_id(insertion.h1_power, insertion.h2_power)
+                .map(|basis| Descendant::new(insertion.descendant_power, basis))
+                .ok_or_else(|| {
+                    GwError::ConventionMismatch(
+                        "product insertion is outside the canonical basis".to_string(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let evaluate_stable = |canonical: &[Descendant<BasisId>]| {
+        let backend_insertions = canonical
+            .iter()
+            .map(|insertion| {
+                theory
+                    .basis_powers(insertion.class)
+                    .map(|(h1_power, h2_power)| {
+                        ProductInsertion::new(insertion.psi_power, h1_power, h2_power)
+                    })
+                    .ok_or_else(|| {
+                        GwError::AlgebraFailure(
+                            "product cup product returned an invalid basis id".to_string(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reconstruct_requested_product_value(
             theory,
             weights_x,
             weights_y,
             genus,
             d1,
             d2,
-            &insertions,
-        );
-    }
-    check_divisor_recursion_depth(
-        genus,
-        insertions.len(),
-        insertions
-            .iter()
-            .map(|insertion| insertion.descendant_power),
-        "product",
-    )?;
-    let (use_first_factor, divisor, intersection) = if d1 > 0 {
-        (true, ProductInsertion::new(0, 1, 0), Rational::from(d1))
-    } else if d2 > 0 {
-        (false, ProductInsertion::new(0, 0, 1), Rational::from(d2))
-    } else {
-        return Err(GwError::ConventionMismatch(
-            "degree-zero unstable correlators must be removed before product reconstruction"
-                .to_string(),
-        ));
+            &backend_insertions,
+        )
     };
-    let mut with_divisor = insertions.clone();
-    with_divisor.push(divisor);
-    let mut numerator = evaluate_product_with_divisor_recursion(
+    evaluate_with_divisor_recursion(
         theory,
-        weights_x,
-        weights_y,
         genus,
-        d1,
-        d2,
-        with_divisor,
-    )?;
-    let (n, m) = theory.dimensions();
-    for index in 0..insertions.len() {
-        if insertions[index].descendant_power == 0 {
-            continue;
-        }
-        let mut correction = insertions.clone();
-        correction[index].descendant_power -= 1;
-        if use_first_factor {
-            if correction[index].h1_power == n {
-                continue;
-            }
-            correction[index].h1_power += 1;
-        } else {
-            if correction[index].h2_power == m {
-                continue;
-            }
-            correction[index].h2_power += 1;
-        }
-        numerator = numerator
-            - evaluate_product_with_divisor_recursion(
-                theory, weights_x, weights_y, genus, d1, d2, correction,
-            )?;
-    }
-    Ok(numerator / intersection)
+        &curve,
+        canonical,
+        "product",
+        &evaluate_stable,
+    )
 }
 
 fn reconstruct_requested_bundle_value(
@@ -971,8 +1022,38 @@ fn evaluate_bundle_with_divisor_recursion(
     total_degree: usize,
     insertions: Vec<BundleInsertion>,
 ) -> Result<Rational, GwError> {
-    if pointed_curve_is_stable(genus, insertions.len()) {
-        return reconstruct_requested_bundle_value(
+    let curve = theory.try_curve(d1, d2)?;
+    let canonical = insertions
+        .iter()
+        .map(|insertion| {
+            theory
+                .basis_id(insertion.h_power, insertion.xi_power)
+                .map(|basis| Descendant::new(insertion.descendant_power, basis))
+                .ok_or_else(|| {
+                    GwError::ConventionMismatch(
+                        "projective-bundle insertion is outside the canonical basis".to_string(),
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let evaluate_stable = |canonical: &[Descendant<BasisId>]| {
+        let backend_insertions = canonical
+            .iter()
+            .map(|insertion| {
+                theory
+                    .basis_powers(insertion.class)
+                    .map(|(h_power, xi_power)| {
+                        BundleInsertion::new(insertion.psi_power, h_power, xi_power)
+                    })
+                    .ok_or_else(|| {
+                        GwError::AlgebraFailure(
+                            "projective-bundle cup product returned an invalid basis id"
+                                .to_string(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reconstruct_requested_bundle_value(
             theory,
             weights_base,
             weights_fiber,
@@ -980,88 +1061,17 @@ fn evaluate_bundle_with_divisor_recursion(
             d1,
             d2,
             total_degree,
-            &insertions,
-        );
-    }
-    check_divisor_recursion_depth(
-        genus,
-        insertions.len(),
-        insertions
-            .iter()
-            .map(|insertion| insertion.descendant_power),
-        "projective-bundle",
-    )?;
-    let (use_base_divisor, divisor, intersection) = if d1 > 0 {
-        (true, BundleInsertion::new(0, 1, 0), Rational::from(d1))
-    } else if d2 > 0 {
-        (false, BundleInsertion::new(0, 0, 1), Rational::from(d2))
-    } else {
-        return Err(GwError::ConventionMismatch(
-            "degree-zero unstable correlators must be removed before projective-bundle reconstruction"
-                .to_string(),
-        ));
+            &backend_insertions,
+        )
     };
-    let mut with_divisor = insertions.clone();
-    with_divisor.push(divisor);
-    let mut numerator = evaluate_bundle_with_divisor_recursion(
+    evaluate_with_divisor_recursion(
         theory,
-        weights_base,
-        weights_fiber,
         genus,
-        d1,
-        d2,
-        total_degree,
-        with_divisor,
-    )?;
-    for index in 0..insertions.len() {
-        if insertions[index].descendant_power == 0 {
-            continue;
-        }
-        let correction_terms = if use_base_divisor {
-            if insertions[index].h_power == theory.base_dimension() {
-                Vec::new()
-            } else {
-                vec![(
-                    theory
-                        .basis_id(insertions[index].h_power + 1, insertions[index].xi_power)
-                        .expect("multiplication by H stayed in the canonical bundle basis"),
-                    Rational::one(),
-                )]
-            }
-        } else {
-            let basis = theory
-                .basis_id(insertions[index].h_power, insertions[index].xi_power)
-                .ok_or_else(|| {
-                    GwError::ConventionMismatch(
-                        "projective-bundle insertion is outside the canonical basis".to_string(),
-                    )
-                })?;
-            theory.multiply_basis_by_xi(basis)?
-        };
-        for (basis, coefficient) in correction_terms {
-            let (h_power, xi_power) = theory.basis_powers(basis).ok_or_else(|| {
-                GwError::AlgebraFailure(
-                    "projective-bundle divisor product returned an invalid basis id".to_string(),
-                )
-            })?;
-            let mut correction = insertions.clone();
-            correction[index].descendant_power -= 1;
-            correction[index].h_power = h_power;
-            correction[index].xi_power = xi_power;
-            let correction_value = evaluate_bundle_with_divisor_recursion(
-                theory,
-                weights_base,
-                weights_fiber,
-                genus,
-                d1,
-                d2,
-                total_degree,
-                correction,
-            )?;
-            numerator = numerator - coefficient * correction_value;
-        }
-    }
-    Ok(numerator / intersection)
+        &curve,
+        canonical,
+        "projective-bundle",
+        &evaluate_stable,
+    )
 }
 
 #[cfg(test)]

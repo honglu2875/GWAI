@@ -3,8 +3,9 @@
 //! Reconstruction engines are algorithms, not independent descriptions of a
 //! target.  The types in this module are the shared source of geometric data
 //! used by constraint generators and by backend adapters: the homogeneous
-//! state space, Poincare pairing, first-Chern action, numerical curve lattice,
-//! effective splittings, and characteristic numbers.
+//! state space, Poincare pairing, classical cup product, first-Chern action,
+//! numerical curve lattice, effective splittings, stabilizing divisors, and
+//! characteristic numbers.
 
 use crate::algebra::Rational;
 use crate::error::GwError;
@@ -428,6 +429,31 @@ pub trait GwTheory: Send + Sync {
     fn curve_class_space(&self) -> &CurveClassSpace;
     fn c1_pairing(&self, curve: &CurveClass) -> Result<i64, GwError>;
     fn effectivity(&self, curve: &CurveClass) -> Result<CurveEffectivity, GwError>;
+    /// Classical cup product of two canonical basis elements.
+    ///
+    /// Universal identities use this for divisor and topological-recursion
+    /// corrections.  Returning a sparse canonical-basis expansion keeps the
+    /// target's ring relation in the same geometric source of truth as its
+    /// pairing and curve lattice.
+    fn classical_product(
+        &self,
+        _left: BasisId,
+        _right: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        Err(GwError::UnsupportedInvariant(format!(
+            "{} does not expose its classical cup product",
+            self.theory_id()
+        )))
+    }
+    /// Choose a divisor with strictly positive pairing against `curve` for
+    /// unstable divisor-equation stabilization.
+    ///
+    /// `None` means no such canonical divisor is available (in particular for
+    /// the zero class).  The returned integer is the exact divisor pairing.
+    fn stabilizing_divisor(&self, curve: &CurveClass) -> Result<Option<(BasisId, i64)>, GwError> {
+        self.curve_class_space().validate(curve)?;
+        Ok(None)
+    }
     fn characteristic_numbers(&self) -> Option<&CharacteristicNumbers>;
     /// Ordered decompositions in the canonical theory's admissible support cone,
     /// including `0+beta` and `beta+0`.  Unknown-effectivity summands must be
@@ -638,6 +664,30 @@ impl GwTheory for ProjectiveSpaceTheory {
                 CurveEffectivity::Effective
             },
         )
+    }
+
+    fn classical_product(
+        &self,
+        left: BasisId,
+        right: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        if left.0 > self.n || right.0 > self.n {
+            return Err(GwError::ConventionMismatch(
+                "projective-space cup product received an invalid basis id".to_string(),
+            ));
+        }
+        let power = left.0.checked_add(right.0).ok_or_else(|| {
+            GwError::AlgebraFailure("projective-space cup-product degree overflow".to_string())
+        })?;
+        Ok((power <= self.n)
+            .then_some((BasisId(power), Rational::one()))
+            .into_iter()
+            .collect())
+    }
+
+    fn stabilizing_divisor(&self, curve: &CurveClass) -> Result<Option<(BasisId, i64)>, GwError> {
+        self.curve_space.validate(curve)?;
+        Ok((self.n > 0 && curve.coordinates[0] > 0).then_some((BasisId(1), curve.coordinates[0])))
     }
 
     fn characteristic_numbers(&self) -> Option<&CharacteristicNumbers> {
@@ -903,6 +953,50 @@ impl GwTheory for ProductProjectiveTheory {
         })
     }
 
+    fn classical_product(
+        &self,
+        left: BasisId,
+        right: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        let (left_h1, left_h2) = self.basis_powers(left).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "product cup product received an invalid basis id".to_string(),
+            )
+        })?;
+        let (right_h1, right_h2) = self.basis_powers(right).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "product cup product received an invalid basis id".to_string(),
+            )
+        })?;
+        let h1 = left_h1.checked_add(right_h1).ok_or_else(|| {
+            GwError::AlgebraFailure("product cup-product degree overflow".to_string())
+        })?;
+        let h2 = left_h2.checked_add(right_h2).ok_or_else(|| {
+            GwError::AlgebraFailure("product cup-product degree overflow".to_string())
+        })?;
+        Ok(self
+            .basis_id(h1, h2)
+            .map(|basis| vec![(basis, Rational::one())])
+            .unwrap_or_default())
+    }
+
+    fn stabilizing_divisor(&self, curve: &CurveClass) -> Result<Option<(BasisId, i64)>, GwError> {
+        self.curve_space.validate(curve)?;
+        if curve.coordinates[0] > 0 {
+            Ok(Some((
+                self.basis_id(1, 0).expect("product first divisor exists"),
+                curve.coordinates[0],
+            )))
+        } else if curve.coordinates[1] > 0 {
+            Ok(Some((
+                self.basis_id(0, 1).expect("product second divisor exists"),
+                curve.coordinates[1],
+            )))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn characteristic_numbers(&self) -> Option<&CharacteristicNumbers> {
         Some(&self.characteristic_numbers)
     }
@@ -1137,26 +1231,10 @@ impl ProjectiveBundleTheory {
         &self,
         basis: BasisId,
     ) -> Result<Vec<(BasisId, Rational)>, GwError> {
-        let (h_power, xi_power) = self.basis_powers(basis).ok_or_else(|| {
-            GwError::ConventionMismatch(
-                "cannot multiply an element outside the projective-bundle basis by xi".to_string(),
-            )
-        })?;
-        let product_xi_power = xi_power.checked_add(1).ok_or_else(|| {
-            GwError::AlgebraFailure("projective-bundle xi power overflow".to_string())
-        })?;
-        reduce_bundle_monomial(self.n, &self.twists, h_power, product_xi_power)
-            .into_iter()
-            .map(|((out_h, out_xi), coefficient)| {
-                let output = self.basis_id(out_h, out_xi).ok_or_else(|| {
-                    GwError::AlgebraFailure(
-                        "projective-bundle relation reduced outside its canonical basis"
-                            .to_string(),
-                    )
-                })?;
-                Ok((output, coefficient))
-            })
-            .collect()
+        let xi = self
+            .basis_id(0, 1)
+            .expect("projective-bundle rank is at least two");
+        self.classical_product(xi, basis)
     }
 
     pub fn try_curve(&self, d1: usize, d2: i64) -> Result<CurveClass, GwError> {
@@ -1276,6 +1354,61 @@ impl GwTheory for ProjectiveBundleTheory {
             Some(_) => CurveEffectivity::Unknown,
             None => CurveEffectivity::Ineffective,
         })
+    }
+
+    fn classical_product(
+        &self,
+        left: BasisId,
+        right: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        let (left_h, left_xi) = self.basis_powers(left).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "projective-bundle cup product received an invalid basis id".to_string(),
+            )
+        })?;
+        let (right_h, right_xi) = self.basis_powers(right).ok_or_else(|| {
+            GwError::ConventionMismatch(
+                "projective-bundle cup product received an invalid basis id".to_string(),
+            )
+        })?;
+        let h_power = left_h.checked_add(right_h).ok_or_else(|| {
+            GwError::AlgebraFailure("projective-bundle cup-product degree overflow".to_string())
+        })?;
+        let xi_power = left_xi.checked_add(right_xi).ok_or_else(|| {
+            GwError::AlgebraFailure("projective-bundle cup-product degree overflow".to_string())
+        })?;
+        reduce_bundle_monomial(self.n, &self.twists, h_power, xi_power)
+            .into_iter()
+            .map(|((out_h, out_xi), coefficient)| {
+                self.basis_id(out_h, out_xi)
+                    .map(|basis| (basis, coefficient))
+                    .ok_or_else(|| {
+                        GwError::AlgebraFailure(
+                            "projective-bundle relation reduced outside its canonical basis"
+                                .to_string(),
+                        )
+                    })
+            })
+            .collect()
+    }
+
+    fn stabilizing_divisor(&self, curve: &CurveClass) -> Result<Option<(BasisId, i64)>, GwError> {
+        self.curve_space.validate(curve)?;
+        if curve.coordinates[0] > 0 {
+            Ok(Some((
+                self.basis_id(1, 0)
+                    .expect("projective-bundle base divisor exists"),
+                curve.coordinates[0],
+            )))
+        } else if curve.coordinates[1] > 0 {
+            Ok(Some((
+                self.basis_id(0, 1)
+                    .expect("projective-bundle fiber divisor exists"),
+                curve.coordinates[1],
+            )))
+        } else {
+            Ok(None)
+        }
     }
 
     fn characteristic_numbers(&self) -> Option<&CharacteristicNumbers> {
@@ -1812,6 +1945,74 @@ fn multiply_total_chern_factor(
 mod tests {
     use super::*;
 
+    fn multiply_expansion(
+        theory: &dyn GwTheory,
+        expansion: &[(BasisId, Rational)],
+        right: BasisId,
+    ) -> BTreeMap<BasisId, Rational> {
+        let mut out = BTreeMap::new();
+        for (left, left_coefficient) in expansion {
+            for (basis, coefficient) in theory.classical_product(*left, right).unwrap() {
+                *out.entry(basis).or_insert_with(Rational::zero) +=
+                    left_coefficient.clone() * coefficient;
+            }
+        }
+        out.retain(|_, coefficient| !coefficient.is_zero());
+        out
+    }
+
+    fn assert_classical_frobenius_algebra(theory: &dyn GwTheory) {
+        let size = theory.state_space().basis.len();
+        let unit = theory.state_space().unit;
+        let metric = &theory.state_space().pairing.as_ref().unwrap().metric;
+        for left in 0..size {
+            let left = BasisId(left);
+            assert_eq!(
+                theory.classical_product(unit, left).unwrap(),
+                vec![(left, Rational::one())]
+            );
+            for right in 0..size {
+                let right = BasisId(right);
+                assert_eq!(
+                    theory.classical_product(left, right).unwrap(),
+                    theory.classical_product(right, left).unwrap(),
+                    "classical product must be commutative"
+                );
+                for third in 0..size {
+                    let third = BasisId(third);
+                    let left_associated = multiply_expansion(
+                        theory,
+                        &theory.classical_product(left, right).unwrap(),
+                        third,
+                    );
+                    let right_associated = multiply_expansion(
+                        theory,
+                        &theory.classical_product(right, third).unwrap(),
+                        left,
+                    );
+                    assert_eq!(
+                        left_associated, right_associated,
+                        "cup product is associative"
+                    );
+
+                    let pairing = |product: Vec<(BasisId, Rational)>, basis: BasisId| {
+                        product.into_iter().fold(
+                            Rational::zero(),
+                            |total, (output, coefficient)| {
+                                total + coefficient * metric.entry(output.0, basis.0).clone()
+                            },
+                        )
+                    };
+                    assert_eq!(
+                        pairing(theory.classical_product(left, right).unwrap(), third),
+                        pairing(theory.classical_product(right, third).unwrap(), left),
+                        "Poincare pairing must be Frobenius-invariant"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn projective_space_data_and_anomaly_are_exact() {
         let p2 = ProjectiveSpaceTheory::new(2);
@@ -1911,6 +2112,40 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "H^2 xi^3 must vanish after H^3=0"
+        );
+    }
+
+    #[test]
+    fn canonical_theories_own_consistent_classical_frobenius_algebras() {
+        assert_classical_frobenius_algebra(&ProjectiveSpaceTheory::new(2));
+        assert_classical_frobenius_algebra(&ProductProjectiveTheory::new(1, 2).unwrap());
+        assert_classical_frobenius_algebra(&ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap());
+    }
+
+    #[test]
+    fn canonical_theories_choose_positive_stabilizing_divisors() {
+        let projective = ProjectiveSpaceTheory::new(2);
+        assert_eq!(
+            projective
+                .stabilizing_divisor(&projective.curve(3))
+                .unwrap(),
+            Some((BasisId(1), 3))
+        );
+
+        let product = ProductProjectiveTheory::new(1, 2).unwrap();
+        assert_eq!(
+            product.stabilizing_divisor(&product.curve(0, 4)).unwrap(),
+            Some((product.basis_id(0, 1).unwrap(), 4))
+        );
+
+        let bundle = ProjectiveBundleTheory::new(2, vec![0, 3, 3]).unwrap();
+        assert_eq!(
+            bundle.stabilizing_divisor(&bundle.curve(1, -3)).unwrap(),
+            Some((bundle.basis_id(1, 0).unwrap(), 1))
+        );
+        assert_eq!(
+            bundle.stabilizing_divisor(&bundle.curve(0, 2)).unwrap(),
+            Some((bundle.basis_id(0, 1).unwrap(), 2))
         );
     }
 

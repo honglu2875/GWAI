@@ -51,7 +51,7 @@ inspects `GwTheory`.
 | `src/series.rs` | `QSeries<C>` (truncated Novikov series), `SeriesMatrix<C>`, plain-series utilities (exp, compose, mirror-map inversion) |
 | `src/graphs.rs` | stable-graph generation, individualization–refinement canonicalization, automorphisms, disk cache |
 | `src/tautological.rs` | Witten–Kontsevich psi integrals (string/dilaton/DVV), shared process-wide cache |
-| `src/theory.rs` | canonical `GwTheory` data: state space, pairing, grading, `c1`, numerical curve classes, admissible splittings, characteristic numbers; concrete compact and local theory records |
+| `src/theory.rs` | canonical `GwTheory` data: state space, pairing, classical cup product, grading, `c1`, numerical curve classes, admissible splittings, stabilizing divisors, characteristic numbers; concrete compact and local theory records |
 | `src/spaces/` | target-oriented source and public discovery hierarchy; each peer module exposes its canonical theory beside provider, insertion, reconstruction, and Virasoro adapters without duplicating geometry; ordinary projective-space equivariant cohomology and Frobenius code already live here |
 | `src/constraints/` | backend-independent identity ASTs; Getzler Virasoro generation, text/TeX rendering, exact evaluation reports, and bounded scans |
 | `src/geometry.rs`, `src/frobenius.rs` | compatibility reexports for the projective-space implementations under `src/spaces/projective_space/` |
