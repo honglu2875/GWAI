@@ -418,6 +418,16 @@ factor used in the flat metric.  When a validation battery looks green, ask
 what *order* of each object it actually reaches — coverage of cases is not
 coverage of structure.
 
+The same warning applies to direct localization.  A degree-one fixed-locus
+test cannot validate a multiple-cover prefactor because every candidate
+factorial and degree ratio becomes one.  The first independent bundle conic
+test exposed the historical ratio immediately: the tangent `O(2)` summand for
+a degree-`d` orbit cover contributes
+`(-1)^d d^(2d) e_p e_q / ((d!)^2 alpha^(2d))`.  Reversing the factorial/degree
+ratio is invisible at `d=1` and produces torus-weight-dependent nonsense at
+`d=2`.  Every localization oracle should therefore include at least one
+genuine cover and repeat it at disjoint generic weights.
+
 ### 18. A coefficient vector is meaningless without its basis
 
 The three-primary twisted shortcut constructs multiplication by `H` and uses

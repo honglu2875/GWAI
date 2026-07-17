@@ -52,11 +52,11 @@ inspects `GwTheory`.
 | `src/graphs.rs` | stable-graph generation, individualization–refinement canonicalization, automorphisms, disk cache |
 | `src/tautological.rs` | Witten–Kontsevich psi integrals (string/dilaton/DVV), shared process-wide cache |
 | `src/theory.rs` | canonical `GwTheory` data: state space, pairing, classical cup product, grading, `c1`, numerical curve classes, admissible splittings, stabilizing divisors, characteristic numbers; concrete compact and local theory records |
-| `src/spaces/` | target-oriented source and public discovery hierarchy; each peer module exposes its canonical theory beside provider, insertion, reconstruction, and Virasoro adapters without duplicating geometry; ordinary projective-space equivariant cohomology and Frobenius code already live here |
+| `src/spaces/` | target-oriented source and public discovery hierarchy; each peer module exposes its canonical theory beside provider, insertion, reconstruction, and Virasoro adapters without duplicating geometry; ordinary projective-space algebra and the negative-split implementation live here |
 | `src/constraints/` | backend-independent identity ASTs; Getzler Virasoro generation, text/TeX rendering, exact evaluation reports, and bounded scans |
 | `src/geometry.rs`, `src/frobenius.rs` | compatibility reexports for the projective-space implementations under `src/spaces/projective_space/` |
 | `src/givental.rs` + submodules | the contraction engine, calibration machinery, and canonical-correlator evaluation adapters (below) |
-| `src/twisted.rs` + submodules | negative split-bundle target, hypergeometric coefficients, QRR calibration, and the remaining H-Laurent / mirror-coordinate code (see Recipes) |
+| `src/twisted.rs` | compatibility reexport for `src/spaces/negative_split_projective/` |
 | `src/reconstruction/` | target-neutral coefficient-matrix algebra and graded Novikov Birkhoff factorization shared by twisted and bundle providers |
 | `src/formula/` | human-readable stable-graph formula rendering (text/TeX), distinct from Virasoro constraint rendering |
 | `src/resolvent.rs` | labelled resolvent generating functions |
@@ -346,16 +346,20 @@ dictionary, and the normalized mixed-sign rank-three bundle
 `P(O + O(4))` and tested non-nef rank-three presentations `[0,1,2]` and
 `[0,4,5]` retain higher-primary `z^-1` coordinates and therefore fail closed;
 their former isolated deformation coincidences are no longer validation
-claims.  See lessons.md §§15–17.
+claims.  A separate validation-only toric fixed-tree backend covers
+genus-zero primary bundle classes through shifted total degree two and checks
+the `[0,3,3]` fiber/section/mixed values `1,-27,19` plus a degree-two fiber
+conic, without using any reconstruction object.  See lessons.md §§15–17.
 
-**Twisted/local evaluators.** `twisted.rs` evaluates negative split-bundle
-twists over `P^n` and hosts the historical I-function pipeline, including
-factored-coefficient wrappers for symbolic fiber weights.  Its provider is an
-evaluator adapter for the canonical local record, not a second source of
-state-space or curve-lattice semantics.  Ordinary invariant evaluation is
-available, but compact Virasoro checking is not: the correct local operator
-is obtained by Quantum Riemann--Roch conjugation and needs the twisted
-pairing and degree-zero sector.  The explicitly separate
+**Twisted/local evaluators.** `spaces/negative_split_projective/` evaluates
+negative split-bundle twists over `P^n` and hosts the historical I-function
+pipeline, including factored-coefficient wrappers for symbolic fiber weights.
+`twisted.rs` is only the old import path.  The provider is an evaluator adapter
+for the canonical local record, not a second source of state-space or
+curve-lattice semantics.  Ordinary invariant evaluation is available, but
+compact Virasoro checking is not: the correct local operator is obtained by
+Quantum Riemann--Roch conjugation and needs the twisted pairing and degree-zero
+sector.  The explicitly separate
 `NegativeSplitCompletionEvaluator` is a compact-section audit adapter: its
 compact projective-bundle theory remains the source of Virasoro data and
 degree-zero invariants, while positive section classes `(d,-A d)` restrict by

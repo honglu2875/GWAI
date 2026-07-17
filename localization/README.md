@@ -359,6 +359,13 @@ dictionary through genus one, the normalized mixed-sign rank-three bundle
 `P(O + O(3) + O(3)) -> P^2`, and a zero-twist `P(O + O)` calibration check
 against the product engine through higher `R` order.
 
+A validation-only toric fixed-tree backend independently checks genus-zero
+primary bundle invariants through shifted total degree two, without calling
+the I-function, Birkhoff, ray, `S`/`R`, or Givental paths.  For
+`P(O + O(3) + O(3)) -> P^2` it recovers the fiber, negative-section, and mixed
+rows `1`, `-27`, and `19`, as well as a genuine degree-two fiber conic count
+`1`, at two disjoint generic torus-weight specializations.
+
 Non-Fano support is deliberately fail-closed.  After the bidegree Birkhoff
 projection, the backend removes positive-degree `z^-1` mirror coordinates in
 the unit and the two divisor directions.  If a `z^-1` component remains in a
@@ -924,10 +931,10 @@ under two seconds.
   native layer would share one run across all bidegrees).
 - Finish relocating the H-Laurent and mirror-coordinate machinery into the
   target-neutral `reconstruction` layer.  Generic coefficient-matrix algebra
-  and graded Novikov Birkhoff factorization already live there; the remaining
-  compatibility reexports can disappear after the twisted submodules import
-  that layer directly.  With the I-function recipe in place, further toric
-  evaluators can then reuse the same reconstruction machinery.
+  and graded Novikov Birkhoff factorization already live there, and all
+  cross-target callers now use the canonical reconstruction/space paths.  With
+  the I-function recipe in place, further toric evaluators can then reuse the
+  same reconstruction machinery.
 - Implement the generalized mirror transformation needed to return a
   Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
   to the small quantum slice; until then those bundle presentations fail

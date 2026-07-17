@@ -3,7 +3,11 @@
 //! This module is intentionally not a production computation path. It preserves
 //! the old direct fixed-locus code for narrow tests and convention checks. It is
 //! not actively maintained for new features, and it deliberately does not fall
-//! back to seed formulas or the Givental backend.
+//! back to seed formulas or the Givental backend.  Its projective-space entry
+//! point remains explicitly degree-one-only; higher-cover validation belongs in
+//! purpose-built modules such as [`projective_bundle`].
+
+pub mod projective_bundle;
 
 use crate::algebra::{lambda, LaurentSeries, RatFun, Rational};
 use crate::error::GwError;

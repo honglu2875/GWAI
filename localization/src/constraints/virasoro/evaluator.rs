@@ -10,12 +10,12 @@ use crate::givental::{
     reconstruct_bundle_invariants_in_theory, BundleInsertion, ProductInsertion,
     ProjectiveSpaceProvider,
 };
+use crate::spaces::negative_split_projective::TwistedProjectiveSpaceProvider;
 use crate::tau;
 use crate::theory::{
     BasisId, CurveClass, CurveEffectivity, GwTheory, NegativeSplitProjectiveCompletion,
     ProductProjectiveTheory, ProjectiveBundleTheory, ProjectiveSpaceTheory,
 };
-use crate::twisted::TwistedProjectiveSpaceProvider;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 

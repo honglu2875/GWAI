@@ -53,8 +53,8 @@ use super::*;
 use crate::reconstruction::{
     solve_rational_system, BidegreeLaurentFactor, ExactRayInterpolation, LaurentCoeffMatrix,
 };
+use crate::spaces::negative_split_projective::HLaurentSeries;
 use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
-use crate::twisted::HLaurentSeries;
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -1606,13 +1606,13 @@ impl ProjectiveBundleRay {
         calibration: CalibrationId,
     ) -> Result<SeriesSMatrix<Rational>, GwError> {
         let fundamental =
-            crate::twisted::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
+            crate::spaces::negative_split_projective::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
                 self.size() - 1,
                 q_degree,
                 cone_point,
                 &self.h_power_relation(),
             );
-        crate::twisted::birkhoff_descendant_s_matrix_from_fundamental_coeff(
+        crate::spaces::negative_split_projective::birkhoff_descendant_s_matrix_from_fundamental_coeff(
             self.size(),
             q_degree,
             z_order,
@@ -1791,7 +1791,7 @@ impl ProjectiveBundleRay {
         }
 
         let fundamental_s = self.fundamental_s_rational(q_degree, z_order)?;
-        crate::twisted::metric_adjoint_descendant_s_matrix_coeff(
+        crate::spaces::negative_split_projective::metric_adjoint_descendant_s_matrix_coeff(
             fundamental_s,
             &self.flat_metric_series(q_degree),
         )
@@ -2883,7 +2883,9 @@ mod tests {
                 .get(&grade)
                 .and_then(|laurent| laurent.get(&z_power))
                 .cloned()
-                .unwrap_or_else(|| crate::twisted::zero_coeff_matrix(target.size()))
+                .unwrap_or_else(|| {
+                    crate::spaces::negative_split_projective::zero_coeff_matrix(target.size())
+                })
         };
         for total in 1..=q_degree {
             for first in 0..=total {
