@@ -1,5 +1,5 @@
-//! Generic coefficient-matrix and Birkhoff q-degree factorization helpers
-//! used by the twisted calibration path.
+//! Generic coefficient-matrix and Birkhoff factorization over graded Novikov
+//! rings.
 
 use crate::algebra::Coeff;
 use crate::error::GwError;

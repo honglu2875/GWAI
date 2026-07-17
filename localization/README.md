@@ -922,11 +922,12 @@ under two seconds.
   reconstruction for higher Picard rank (rays scale as one engine run per
   reconstruction point and cannot carry symbolic equivariant weights; a
   native layer would share one run across all bidegrees).
-- Relocate the H-Laurent / mirror-map / Birkhoff machinery from the twisted
-  module into `givental` (the recipe entry points are already the seam).
-  With the I-function recipe in place, further toric evaluators (complete
-  intersections, more general toric varieties) can be paired with canonical
-  `GwTheory` descriptions in the same way as projective bundles.
+- Finish relocating the H-Laurent and mirror-coordinate machinery into the
+  target-neutral `reconstruction` layer.  Generic coefficient-matrix algebra
+  and graded Novikov Birkhoff factorization already live there; the remaining
+  compatibility reexports can disappear after the twisted submodules import
+  that layer directly.  With the I-function recipe in place, further toric
+  evaluators can then reuse the same reconstruction machinery.
 - Implement the generalized mirror transformation needed to return a
   Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
   to the small quantum slice; until then those bundle presentations fail

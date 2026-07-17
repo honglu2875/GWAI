@@ -534,7 +534,7 @@ pub fn operator_lagrange_frame(
         }
     }
     let transition_to_flat = SeriesMatrix::from_entries(transition_columns);
-    let flat_to_canonical = crate::twisted::invert_series_matrix_coeff(&transition_to_flat)?;
+    let flat_to_canonical = crate::reconstruction::invert_series_matrix_coeff(&transition_to_flat)?;
 
     let canonical_metric = transition_to_flat
         .transpose()

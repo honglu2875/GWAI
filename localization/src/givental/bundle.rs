@@ -50,8 +50,9 @@
 //! coincidences are not small-theory validation.
 
 use super::*;
+use crate::reconstruction::{BidegreeLaurentFactor, LaurentCoeffMatrix};
 use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
-use crate::twisted::{BidegreeLaurentFactor, HLaurentSeries, LaurentCoeffMatrix};
+use crate::twisted::HLaurentSeries;
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::time::Instant;
@@ -1246,7 +1247,7 @@ fn quantum_cyclic_coordinates(
     q_degree: usize,
 ) -> Result<Vec<QSeries<Rational>>, GwError> {
     let basis = quantum_cyclic_basis_matrix(quantum_grading, q_degree);
-    let inverse = crate::twisted::invert_series_matrix_coeff(&basis)?;
+    let inverse = crate::reconstruction::invert_series_matrix_coeff(&basis)?;
     Ok(apply_rational_series_matrix_to_vector(
         &inverse, vector, q_degree,
     ))
@@ -1662,7 +1663,7 @@ impl ProjectiveBundleRay {
             );
         }
         let birkhoff_started = Instant::now();
-        let negative = crate::twisted::birkhoff_negative_factor_by_bidegree_with_z_bounds(
+        let negative = crate::reconstruction::birkhoff_negative_factor_by_bidegree_with_z_bounds(
             self.size(),
             q_degree,
             &fundamental,
@@ -2869,17 +2870,21 @@ mod tests {
             .is_some_and(|margin| margin > 10));
         let deep_cone = target.i_container(q_degree, deep_min_z).unwrap();
         let deep_fundamental = target.fundamental_bidegree_matrix(q_degree, &deep_cone);
-        let (_, full_negative) =
-            crate::twisted::birkhoff_factor_by_bidegree(target.size(), q_degree, &deep_fundamental)
-                .unwrap();
-        let bounded_negative = crate::twisted::birkhoff_negative_factor_by_bidegree_with_z_bounds(
+        let (_, full_negative) = crate::reconstruction::birkhoff_factor_by_bidegree(
             target.size(),
             q_degree,
-            &bounded_fundamental,
-            &bounds.positive_z_windows,
-            &bounds.negative_z_depths,
+            &deep_fundamental,
         )
         .unwrap();
+        let bounded_negative =
+            crate::reconstruction::birkhoff_negative_factor_by_bidegree_with_z_bounds(
+                target.size(),
+                q_degree,
+                &bounded_fundamental,
+                &bounds.positive_z_windows,
+                &bounds.negative_z_depths,
+            )
+            .unwrap();
 
         let matrix_at = |factor: &BidegreeLaurentFactor<Rational>, grade: Grade, z_power: i32| {
             factor

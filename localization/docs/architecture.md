@@ -56,7 +56,8 @@ inspects `GwTheory`.
 | `src/geometry.rs` | equivariant cohomology of `P^n`: classes, fixed-point restriction, Atiyah–Bott pairing |
 | `src/frobenius.rs` | `P^n` quantum Frobenius data: root series, quantum idempotents (historical; the generic path lives in `recipe`) |
 | `src/givental.rs` + submodules | the contraction engine, calibration machinery, and canonical-correlator evaluation adapters (below) |
-| `src/twisted.rs` + submodules | negative split-bundle evaluators; also hosts the H-Laurent / mirror / Birkhoff machinery (see Recipes) |
+| `src/twisted.rs` + submodules | negative split-bundle target, hypergeometric coefficients, QRR calibration, and the remaining H-Laurent / mirror-coordinate code (see Recipes) |
+| `src/reconstruction/` | target-neutral coefficient-matrix algebra and graded Novikov Birkhoff factorization shared by twisted and bundle providers |
 | `src/formula/` | human-readable stable-graph formula rendering (text/TeX), distinct from Virasoro constraint rendering |
 | `src/resolvent.rs` | labelled resolvent generating functions |
 | `src/validation.rs`, `src/testsuite.rs`, `src/validation_backends/` | seed formulas, oracle tables, legacy localization, the built-in `gw-pn tests` suite |

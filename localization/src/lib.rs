@@ -31,6 +31,7 @@ mod fused;
 pub mod geometry;
 pub mod givental;
 pub mod graphs;
+pub(crate) mod reconstruction;
 pub mod resolvent;
 pub mod series;
 pub mod symbolic;

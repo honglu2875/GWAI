@@ -40,10 +40,10 @@ use crate::{Insertion, InvariantResult, Truncation};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
-mod birkhoff_factor;
-pub(crate) use birkhoff_factor::*;
-mod qseries_matrix;
-pub(crate) use qseries_matrix::*;
+// Compatibility flattening for the target-specific submodules, which
+// historically imported these generic helpers through `super::*`.  New
+// target-neutral callers should import them from `crate::reconstruction`.
+pub(crate) use crate::reconstruction::*;
 mod numeric;
 pub(crate) use numeric::*;
 mod hypergeometric;
