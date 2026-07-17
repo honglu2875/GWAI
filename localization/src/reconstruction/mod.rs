@@ -7,6 +7,8 @@
 
 mod birkhoff;
 pub(crate) use birkhoff::*;
+mod cyclic;
+pub(crate) use cyclic::{CyclicCoordinates, CyclicQuantumAlgebra};
 mod interpolation;
 pub(crate) use interpolation::ExactRayInterpolation;
 pub use interpolation::MAX_EXACT_RECONSTRUCTION_RAYS;
@@ -14,3 +16,5 @@ mod linear;
 pub(crate) use linear::*;
 mod series_matrix;
 pub(crate) use series_matrix::*;
+mod truncation;
+pub(crate) use truncation::*;

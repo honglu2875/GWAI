@@ -68,10 +68,19 @@ pub fn stable_graph_generation_bounds(
                 "stable-graph complexity is not representable for (g,n)=({genus},{markings})"
             ))
         })?;
-    if complexity > MAX_STABLE_GRAPH_COMPLEXITY || markings > MAX_STABLE_GRAPH_MARKINGS {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "stable-graph generation for (g,n)=({genus},{markings}) exceeds the built-in envelope 2g-2+n <= {MAX_STABLE_GRAPH_COMPLEXITY}, n <= {MAX_STABLE_GRAPH_MARKINGS}"
-        )));
+    if markings > MAX_STABLE_GRAPH_MARKINGS {
+        return Err(GwError::ResourceLimit {
+            operation: "stable-graph markings".to_string(),
+            requested: markings,
+            limit: MAX_STABLE_GRAPH_MARKINGS,
+        });
+    }
+    if complexity > MAX_STABLE_GRAPH_COMPLEXITY {
+        return Err(GwError::ResourceLimit {
+            operation: "stable-graph complexity 2g-2+n".to_string(),
+            requested: complexity,
+            limit: MAX_STABLE_GRAPH_COMPLEXITY,
+        });
     }
     Ok(StableGraphBounds {
         max_vertices: complexity.max(1),
@@ -1357,11 +1366,19 @@ mod tests {
         assert!(stable_graph_generation_bounds(4, 2).is_ok());
         assert!(matches!(
             stable_graph_generation_bounds(5, 1),
-            Err(GwError::UnsupportedInvariant(_))
+            Err(GwError::ResourceLimit {
+                operation,
+                requested: 9,
+                limit: MAX_STABLE_GRAPH_COMPLEXITY,
+            }) if operation == "stable-graph complexity 2g-2+n"
         ));
         assert!(matches!(
             stable_graph_generation_bounds(0, 9),
-            Err(GwError::UnsupportedInvariant(_))
+            Err(GwError::ResourceLimit {
+                operation,
+                requested: 9,
+                limit: MAX_STABLE_GRAPH_MARKINGS,
+            }) if operation == "stable-graph markings"
         ));
         assert!(matches!(
             try_stable_graphs(usize::MAX, 0),

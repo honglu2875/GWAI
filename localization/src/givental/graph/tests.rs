@@ -14,8 +14,29 @@ fn stable_range_predicate_is_overflow_free_at_extreme_genus() {
         Err(GwError::UnsupportedInvariant(_))
     ));
 }
+
+#[test]
+fn exact_seed_fallback_survives_the_structured_graph_work_limit() {
+    let point = InvariantRequest::new(0, 5, 0, vec![tau(13, CohomologyClass::one(0))]);
+    assert!(matches!(
+        compute_by_givental_graphs(&point),
+        Err(GwError::ResourceLimit { .. })
+    ));
+    let result = compute(&point).unwrap();
+    assert_eq!(result.engine, "givental-seed");
+    assert_eq!(
+        result.value,
+        RatFun::from_rational(WittenKontsevich::shared().psi_integral(5, &[13]))
+    );
+
+    let unsupported_seed = InvariantRequest::new(1, 5, 0, vec![tau(9, CohomologyClass::one(1))]);
+    assert!(matches!(
+        compute(&unsupported_seed),
+        Err(GwError::ResourceLimit { .. })
+    ));
+}
 use crate::factored::FactoredRatFun;
-use crate::geometry::CohomologyClass;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::{tau, ComputeMode, InvariantRequest};
 
 fn usize_factorial(n: usize) -> usize {
@@ -384,7 +405,7 @@ fn rational_graph_path_matches_dense_evaluator_without_insertions() {
     let kernel = provider
         .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
         .unwrap();
-    let graphs = prepared_stable_graphs(genus, 0, provider.colors());
+    let graphs = prepared_stable_graphs(genus, 0, provider.colors()).unwrap();
 
     let mut dense_profile = GraphEvalProfile::new();
     let dense = evaluate_scalar_graphs_parallel(
@@ -419,7 +440,7 @@ fn rational_graph_path_matches_dense_evaluator_with_insertions() {
     let kernel = provider
         .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
         .unwrap();
-    let graphs = prepared_stable_graphs(genus, markings, provider.colors());
+    let graphs = prepared_stable_graphs(genus, markings, provider.colors()).unwrap();
 
     let insertions = vec![tau(4, CohomologyClass::h_power(1, 1))];
     let descendant_s = provider.descendant_s_matrix(q_degree, 4).unwrap();
@@ -555,7 +576,7 @@ fn factored_graph_path_matches_symbolic_evaluator() {
     let kernel = provider
         .graph_kernel(q_degree, graph_dimension + 1, graph_dimension)
         .unwrap();
-    let graphs = prepared_stable_graphs(genus, markings, provider.colors());
+    let graphs = prepared_stable_graphs(genus, markings, provider.colors()).unwrap();
 
     let insertions = vec![tau(2, CohomologyClass::h_power(1, 1))];
     let descendant_s = provider.descendant_s_matrix(q_degree, 2).unwrap();
@@ -755,7 +776,7 @@ fn coloring_orbits_reduce_vertex_automorphism_symmetry() {
         edges: vec![crate::graphs::StableEdge::new(0, 1)],
         legs: Vec::new(),
     };
-    let orbits = vertex_coloring_orbits(&graph, 3);
+    let orbits = vertex_coloring_orbits(&graph, 3).unwrap();
     assert_eq!(orbits.len(), 6);
     assert_eq!(
         orbits.iter().map(|orbit| orbit.multiplicity).sum::<usize>(),
@@ -764,14 +785,39 @@ fn coloring_orbits_reduce_vertex_automorphism_symmetry() {
 }
 
 #[test]
+fn vertex_coloring_work_is_checked_before_materialization() {
+    assert!(matches!(
+        vertex_colorings(8, 64),
+        Err(GwError::ResourceLimit {
+            operation,
+            limit: MAX_STABLE_GRAPH_COLORING_BYTES,
+            ..
+        }) if operation == "estimated vertex-coloring storage"
+    ));
+
+    let one_vertex_limit = MAX_STABLE_GRAPH_COLORING_BYTES
+        / ((std::mem::size_of::<Vec<usize>>() + std::mem::size_of::<usize>())
+            * COLORING_STORAGE_AMPLIFICATION);
+    assert!(matches!(
+        prepared_stable_graphs(0, 3, one_vertex_limit + 1),
+        Err(GwError::ResourceLimit {
+            operation,
+            requested,
+            limit: MAX_STABLE_GRAPH_COLORING_BYTES,
+        }) if operation == "estimated prepared stable-graph coloring storage"
+            && requested > MAX_STABLE_GRAPH_COLORING_BYTES
+    ));
+}
+
+#[test]
 fn prepared_stable_graphs_cache_metadata_matches_raw_graphs() {
-    let first = prepared_stable_graphs(2, 0, 3);
-    let second = prepared_stable_graphs(2, 0, 3);
+    let first = prepared_stable_graphs(2, 0, 3).unwrap();
+    let second = prepared_stable_graphs(2, 0, 3).unwrap();
     assert!(std::sync::Arc::ptr_eq(&first, &second));
     assert!(!first.is_empty());
 
     for prepared in first.iter() {
-        let raw_colorings = vertex_coloring_orbits(&prepared.graph, 3);
+        let raw_colorings = vertex_coloring_orbits(&prepared.graph, 3).unwrap();
         assert_eq!(prepared.colorings.len(), raw_colorings.len());
         assert_eq!(
             prepared.vertex_power_caps.len(),
@@ -1258,7 +1304,7 @@ fn scalar_graph_contraction_accepts_factored_coefficients() {
     let graph_dimension = 0;
     let size = 1;
     let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
-    let graphs = prepared_stable_graphs(0, 3, size);
+    let graphs = prepared_stable_graphs(0, 3, size).unwrap();
     let unit_leg = LegFactorOption {
         power: 0,
         coefficient: scalar,
@@ -1301,7 +1347,7 @@ fn external_leg_contraction_accepts_factored_coefficients() {
     let size = 1;
     let markings = 3;
     let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
-    let graphs = prepared_stable_graphs(0, markings, size);
+    let graphs = prepared_stable_graphs(0, markings, size).unwrap();
     let mut profile = GraphEvalProfile::new();
     let external_kernel = evaluate_external_graphs_parallel(
         graphs.as_ref(),
@@ -1331,7 +1377,7 @@ fn restricted_external_leg_contraction_accepts_factored_coefficients() {
     let size = 1;
     let markings = 3;
     let (kernel, scalar) = factored_identity_kernel(q_degree, graph_dimension);
-    let graphs = prepared_stable_graphs(0, markings, size);
+    let graphs = prepared_stable_graphs(0, markings, size).unwrap();
 
     let ratfun_unit_leg = LegFactorOption {
         power: 0,

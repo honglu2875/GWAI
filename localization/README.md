@@ -371,9 +371,9 @@ projection, the backend removes positive-degree `z^-1` mirror coordinates in
 the unit and the two divisor directions.  If a `z^-1` component remains in a
 higher cohomology direction, the cone point lies on a genuinely big-quantum
 path: `q d/dq` is no longer insertion of the grading divisor alone.  Such a
-request returns `UnsupportedInvariant` until generalized mirror normalization
-is implemented.  This currently includes the normalized `F_4` presentation
-`P(O + O(4))` and the tested non-nef rank-three presentations
+request returns a structured `UnsupportedFeature` until generalized mirror
+normalization is implemented.  This currently includes the normalized `F_4`
+presentation `P(O + O(4))` and the tested non-nef rank-three presentations
 `P(O + O(1) + O(2))` and `P(O + O(4) + O(5))`.  Earlier isolated numerical
 agreements for those targets are not treated as validation of their small GW
 theories.  `F_2` and `P(O + O(3) + O(3)) -> P^2` pass the higher-primary check
@@ -511,6 +511,9 @@ unbounded interpolation system or spawning an unbounded thread family.
 The shared stable-graph generator accepts `2g-2+n <= 8` and at most eight
 labelled markings.  Formula and backend requests beyond that explicit work
 envelope fail before graph-cache lookup, calibration, or worker creation.
+Prepared graph contraction additionally applies a conservative 64 MiB
+estimated-storage budget to aggregate target-color assignments and checks it
+before recursive coloring generation.
 
 Both `virasoro formula` and `virasoro check` expose `--term-limit` (default
 `1000000`).  A check also accepts `--dependency-limit` (default `100000`) and
@@ -877,8 +880,9 @@ computation shortcuts.
 
 `theory::GwTheory` is the sole canonical source of target geometry.  It owns
 the homogeneous state space and unit, Poincare pairing, complex grading,
-`c_1` action, numerical curve lattice, effectivity/admissible cone and degree
-splittings, virtual dimension, and characteristic numbers.  The concrete
+classical cup product, `c_1` action, numerical curve lattice,
+effectivity/admissible cone and degree splittings, the choice of a stabilizing
+divisor, virtual dimension, and characteristic numbers.  The concrete
 canonical theories are `ProjectiveSpaceTheory`, `ProductProjectiveTheory`,
 `ProjectiveBundleTheory`, and the deliberately incomplete
 `NegativeSplitTotalSpaceTheory`.
@@ -899,6 +903,25 @@ compatibility is checked at that boundary.  In particular, `GwTarget` must
 return its canonical theory and cannot independently restate dimension,
 first-Chern degree, or effectivity.
 
+For source-code navigation, start in `src/spaces/`.  Its four peer modules are
+the mathematical target hierarchy:
+
+- `projective_space/` contains the ordinary `P^n` cohomology and Frobenius
+  implementations and reexports its canonical theory and evaluators;
+- `product_projective/` and `projective_bundle/` are discovery facades over
+  their canonical theories and the current evaluator implementations in
+  `givental/product.rs` and `givental/bundle.rs`; and
+- `negative_split_projective/` contains the local/twisted implementation and
+  reexports its canonical local theory record.
+
+The root `geometry`, `frobenius`, and `twisted` modules are compatibility
+import paths, not parallel implementations.  Target-neutral reconstruction
+algebra lives in `src/reconstruction/`: coefficient-generic series matrices,
+graded Birkhoff factorization, cyclic-coordinate algebra, exact ray
+interpolation, and Laurent-window planning.  Keeping the `spaces/` modules as
+the discovery layer does not move geometry out of `GwTheory` or duplicate it
+inside a provider.
+
 Below the adapter boundary, the semisimple-CohFT engine consumes a
 calibration and descendant `S`-matrix and contracts stable graphs without
 inspecting target geometry.  `givental::recipe` constructs those calibrations
@@ -907,6 +930,14 @@ accepts a direct calibration for experiments.  Picard-rank-two evaluators
 specialize `(q1,q2)=(t,bt)` and reconstruct geometric bidegrees exactly by a
 rational Vandermonde solve; the canonical theory, not the ray, remains the
 authority for curve classes and their splittings.
+
+Finite-work boundaries and mathematical support boundaries are distinct in
+the library API.  New guarded paths return structured `GwError::ResourceLimit`
+values with the operation, request, and limit, while a recognized target that
+needs missing mathematics (for example a generalized bundle mirror
+normalization) returns `GwError::UnsupportedFeature` with a witness.  Older
+call sites still use the broader string-valued `UnsupportedInvariant`; callers
+should not parse display text when a structured variant is available.
 
 See [docs/architecture.md](docs/architecture.md) for the full layer map and
 [docs/virasoro.md](docs/virasoro.md) for the constraint convention.
@@ -921,7 +952,13 @@ isomorphism with individualization-refinement canonicalization and cached on
 disk once generation is expensive.  Representative timings on `P^1` stationary
 descendants: genus 3 in well under a second, genus 4 in about a minute (a few
 seconds once the graph table is cached), genus-2 fully symbolic equivariant in
-under two seconds.
+under two seconds.  Target/calibration reconstruction caches are separately
+bounded to 64 entries with deterministic eviction, so scanning many targets
+does not retain every large calibration forever.  Stable-graph caches have a
+separate hard work envelope; prepared coloring metadata is target-rank
+dependent and therefore uses smaller deterministic eight-entry caches.  Only
+universal graph-topology tables and the shared point-theory table remain
+process-wide and are not byte-bounded.
 
 ## TODO
 
@@ -929,12 +966,13 @@ under two seconds.
   reconstruction for higher Picard rank (rays scale as one engine run per
   reconstruction point and cannot carry symbolic equivariant weights; a
   native layer would share one run across all bidegrees).
-- Finish relocating the H-Laurent and mirror-coordinate machinery into the
-  target-neutral `reconstruction` layer.  Generic coefficient-matrix algebra
-  and graded Novikov Birkhoff factorization already live there, and all
-  cross-target callers now use the canonical reconstruction/space paths.  With
-  the I-function recipe in place, further toric evaluators can then reuse the
-  same reconstruction machinery.
+- Generalize the remaining target-shaped Laurent representations only when a
+  second target needs the same representation.  The genuinely shared pieces
+  (coefficient-matrix algebra, graded Birkhoff factorization, cyclic
+  coordinates, exact ray interpolation, and safe Laurent-window planning)
+  already live in `reconstruction`; the `H`-power quotient representation
+  remains with the negative-split target and the bidegree representation with
+  the projective-bundle evaluator.
 - Implement the generalized mirror transformation needed to return a
   Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
   to the small quantum slice; until then those bundle presentations fail

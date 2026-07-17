@@ -18,6 +18,7 @@
 //! rationals.  [`reconstruct_bidegree_invariants`] packages this.
 
 use super::*;
+use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
 use crate::reconstruction::ExactRayInterpolation;
 use crate::theory::{CurveClass, GwTheory, ProductProjectiveTheory};
 use std::time::Instant;
@@ -502,10 +503,11 @@ impl SemisimpleCohftProvider for ProductRayProvider {
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError> {
-        static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), SeriesSMatrix>>> =
+        static CACHE: OnceLock<Mutex<BoundedCache<(String, usize, usize), SeriesSMatrix>>> =
             OnceLock::new();
         let key = (self.target.cache_key(), q_degree, z_order);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(descendant_s) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(descendant_s);
         }
@@ -529,10 +531,11 @@ impl SemisimpleCohftProvider for ProductRayProvider {
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         static CACHE: OnceLock<
-            Mutex<HashMap<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
+            Mutex<BoundedCache<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
         let key = (self.target.cache_key(), q_degree, r_order, graph_dimension);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(kernel);
         }
@@ -748,8 +751,8 @@ mod tests {
             &[],
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("Novikov rays"));
+        assert!(matches!(error, GwError::ResourceLimit { .. }));
+        assert!(error.to_string().contains("Novikov-ray"));
     }
 
     #[test]

@@ -39,8 +39,22 @@ impl<C> ResidualOutcome<C> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum IncompleteReason {
+    /// Legacy broad backend support gap.
     Unsupported(String),
+    /// Recognized target requiring missing mathematical machinery.
+    UnsupportedFeature {
+        target: String,
+        feature: String,
+        witness: String,
+    },
+    /// Explicit finite-work or retained-state boundary.
+    ResourceLimit {
+        operation: String,
+        requested: usize,
+        limit: usize,
+    },
     OutsideBounds,
     EvaluationError(String),
     Other(String),

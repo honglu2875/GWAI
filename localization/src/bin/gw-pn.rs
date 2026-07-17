@@ -8,25 +8,25 @@ use gw_pn::constraints::virasoro::{
 };
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
-use gw_pn::geometry::CohomologyClass;
-use gw_pn::givental::{
-    bidegree_dimension_matches_in_theory, bundle_dimension_matches_in_theory,
-    reconstruct_bidegree_invariants_in_theory, reconstruct_bundle_invariants_in_theory,
-    BundleInsertion, ProductInsertion,
-};
 use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
-use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
-use gw_pn::testsuite::run_builtin_tests;
-use gw_pn::theory::{
-    BasisId, CurveClass, GwTheory, NegativeSplitTotalSpaceTheory, ProductProjectiveTheory,
-    ProjectiveBundleTheory, ProjectiveSpaceTheory,
-};
-use gw_pn::twisted::{
+use gw_pn::spaces::negative_split_projective::{
     compute_negative_split_twisted, compute_negative_split_twisted_factored,
     compute_negative_split_twisted_resolvent_packed,
     compute_negative_split_twisted_resolvent_packed_factored, NegativeSplitBundleTwist,
-    TwistedInvariantRequest,
+    NegativeSplitTotalSpaceTheory, TwistedInvariantRequest,
 };
+use gw_pn::spaces::product_projective::{
+    bidegree_dimension_matches_in_theory, reconstruct_bidegree_invariants_in_theory,
+    ProductInsertion, ProductProjectiveTheory,
+};
+use gw_pn::spaces::projective_bundle::{
+    bundle_dimension_matches_in_theory, reconstruct_bundle_invariants_in_theory, BundleInsertion,
+    ProjectiveBundleTheory,
+};
+use gw_pn::spaces::projective_space::{CohomologyClass, ProjectiveSpaceTheory};
+use gw_pn::tautological::{TautologicalOracle, WittenKontsevich};
+use gw_pn::testsuite::run_builtin_tests;
+use gw_pn::theory::{BasisId, CurveClass, GwTheory};
 use gw_pn::{
     algebra::Rational, compute, compute_series, tau, ComputeMode, InvariantRequest, SeriesRequest,
 };
@@ -1137,14 +1137,27 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
             )
         })
     };
+    let fallback_after_packed_error = |packed_error: GwError| {
+        let restore_limit = matches!(packed_error, GwError::ResourceLimit { .. });
+        let packed_message = match &packed_error {
+            GwError::UnsupportedInvariant(message) => message.clone(),
+            other => other.to_string(),
+        };
+        match compute_invariant_wise() {
+            Ok(result) => Ok((result, packed_message)),
+            Err(GwError::UnsupportedInvariant(_)) if restore_limit => Err(packed_error),
+            Err(error) => Err(error),
+        }
+    };
     if equivariant {
         if let Some(degrees) = twist.as_ref() {
             let packed =
                 compute_negative_split_twisted_resolvent_packed_factored(n, degrees.clone(), &req);
             let (result, used_packed) = match packed {
                 Ok(result) => (result, true),
-                Err(GwError::UnsupportedInvariant(message)) => {
-                    let mut result = compute_invariant_wise()?;
+                Err(error @ GwError::UnsupportedInvariant(_))
+                | Err(error @ GwError::ResourceLimit { .. }) => {
+                    let (mut result, message) = fallback_after_packed_error(error)?;
                     result.notes.insert(
                         0,
                         format!(
@@ -1234,8 +1247,9 @@ fn run_resolvent(args: ResolventArgs) -> Result<(), GwError> {
     };
     let (result, used_packed) = match packed {
         Ok(result) => (result, true),
-        Err(GwError::UnsupportedInvariant(message)) => {
-            let mut result = compute_invariant_wise()?;
+        Err(error @ GwError::UnsupportedInvariant(_))
+        | Err(error @ GwError::ResourceLimit { .. }) => {
+            let (mut result, message) = fallback_after_packed_error(error)?;
             result.notes.insert(
                 0,
                 format!(
@@ -1434,6 +1448,14 @@ fn parse_formula_basis(basis: Option<&str>) -> Result<FormulaBasisMode, GwError>
     }
 }
 
+fn batch_skip_reason(error: GwError) -> Result<String, GwError> {
+    match error {
+        GwError::UnsupportedInvariant(message) => Ok(message),
+        limit @ GwError::ResourceLimit { .. } => Ok(limit.to_string()),
+        other => Err(other),
+    }
+}
+
 fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
     let n = args.n;
     let genus = args.g;
@@ -1475,10 +1497,10 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
                             println!("q^{degree} [{label}] = {}", result.value);
                         }
                     }
-                    Err(GwError::UnsupportedInvariant(msg)) => {
+                    Err(error) => {
+                        let msg = batch_skip_reason(error)?;
                         warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
                     }
-                    Err(err) => return Err(err),
                 }
             }
         }
@@ -1511,10 +1533,10 @@ fn run_degree_series(args: DegreeSeriesArgs) -> Result<(), GwError> {
                                 println!("q^{degree} [{label}] = {}", result.value);
                             }
                         }
-                        Err(GwError::UnsupportedInvariant(msg)) => {
+                        Err(error) => {
+                            let msg = batch_skip_reason(error)?;
                             warnings.push(format!("skipped q^{degree} [{label}]: {msg}"))
                         }
-                        Err(err) => return Err(err),
                     }
                 }
             }
@@ -1570,10 +1592,10 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
                             println!("g={genus} q^{degree} [{label}] = {}", result.value);
                         }
                     }
-                    Err(GwError::UnsupportedInvariant(msg)) => {
+                    Err(error) => {
+                        let msg = batch_skip_reason(error)?;
                         warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
                     }
-                    Err(err) => return Err(err),
                 }
             }
         }
@@ -1606,10 +1628,10 @@ fn run_genus_series(args: GenusSeriesArgs) -> Result<(), GwError> {
                                 println!("g={genus} q^{degree} [{label}] = {}", result.value);
                             }
                         }
-                        Err(GwError::UnsupportedInvariant(msg)) => {
+                        Err(error) => {
+                            let msg = batch_skip_reason(error)?;
                             warnings.push(format!("skipped g={genus} q^{degree} [{label}]: {msg}"))
                         }
-                        Err(err) => return Err(err),
                     }
                 }
             }
@@ -1863,12 +1885,7 @@ fn run_bundle(args: BundleArgs) -> Result<(), GwError> {
     let weights_fiber = match args.weights_fiber.as_deref() {
         Some(raw) => {
             let raw_weights = parse_integer_weights(raw, twists_in_input_order.len())?;
-            let mut paired = twists_in_input_order
-                .into_iter()
-                .zip(raw_weights)
-                .collect::<Vec<_>>();
-            paired.sort_by_key(|(twist, _)| *twist);
-            paired.into_iter().map(|(_, weight)| weight).collect()
+            theory.canonicalize_summand_payloads(twists_in_input_order.clone(), raw_weights)?
         }
         None => {
             let maximum = twists.iter().copied().max().expect("nonempty twists");
@@ -2466,7 +2483,7 @@ mod tests {
             TimeMonomial::one(),
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
         assert!(error.to_string().contains("QRR"));
     }
 
@@ -2483,6 +2500,36 @@ mod tests {
             validate: true,
         })
         .unwrap();
+    }
+
+    #[test]
+    fn point_resolvent_falls_back_past_the_packed_graph_work_limit() {
+        run_resolvent(ResolventArgs {
+            n: 0,
+            g: 5,
+            d: 0,
+            markings: 1,
+            twist: None,
+            mode: None,
+            equivariant: false,
+            validate: false,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn batch_scans_skip_structured_work_limits_but_not_real_failures() {
+        let message = batch_skip_reason(GwError::ResourceLimit {
+            operation: "stable-graph complexity".to_string(),
+            requested: 9,
+            limit: 8,
+        })
+        .unwrap();
+        assert!(message.contains("requested 9, limit 8"));
+        assert!(matches!(
+            batch_skip_reason(GwError::AlgebraFailure("deliberate".to_string())),
+            Err(GwError::AlgebraFailure(message)) if message == "deliberate"
+        ));
     }
 
     #[test]

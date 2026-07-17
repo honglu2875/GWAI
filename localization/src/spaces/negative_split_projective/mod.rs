@@ -24,7 +24,6 @@ use crate::algebra::{Coeff, RatFun, Rational};
 pub use crate::constraints::virasoro::NegativeSplitCompletionEvaluator;
 use crate::error::GwError;
 use crate::factored::FactoredRatFun;
-pub use crate::geometry::CohomologyClass;
 use crate::givental::{
     compute_semisimple_graph_value_with_coeff, CalibrationId, CanonicalFrameConvention,
     GiventalGraphKernel, ProjectiveSpaceProvider, SemisimpleCalibration, SemisimpleCohftProvider,
@@ -35,10 +34,11 @@ use crate::series::{
     compose_plain_series, integrate_q_derivative_zero_constant_matrix, invert_mirror_map,
     mul_plain_series, QSeries, SeriesMatrix,
 };
+pub use crate::spaces::projective_space::CohomologyClass;
 use crate::theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 pub use crate::theory::{NegativeSplitProjectiveCompletion, NegativeSplitTotalSpaceTheory};
 pub use crate::{Insertion, InvariantResult, Truncation};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // Compatibility flattening for the target-specific submodules, which
@@ -56,7 +56,7 @@ pub use calibration::*;
 mod provider;
 pub use provider::*;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct NegativeSplitBundleTwist {
     degrees: Vec<usize>,
 }
@@ -84,6 +84,17 @@ impl NegativeSplitBundleTwist {
         // gives every downstream model the same theory presentation.
         degrees.sort_unstable();
         Ok(Self { degrees })
+    }
+
+    /// Build the hypergeometric twist recipe from canonical target geometry.
+    ///
+    /// Providers use this path so summand order, rank, and degree data come
+    /// from [`NegativeSplitTotalSpaceTheory`] rather than a second parsing and
+    /// normalization pass.
+    pub fn from_theory(theory: &NegativeSplitTotalSpaceTheory) -> Self {
+        Self {
+            degrees: theory.degrees().to_vec(),
+        }
     }
 
     pub fn degrees(&self) -> &[usize] {

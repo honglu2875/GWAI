@@ -8,6 +8,7 @@
 #![allow(deprecated)]
 
 use super::*;
+use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
 use crate::factored::FactoredRatFun;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -20,6 +21,17 @@ pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
                 Err(GwError::UnsupportedInvariant(message))
             } else {
                 validation::seed_compute(req, "givental-seed")
+            }
+        }
+        Err(limit @ GwError::ResourceLimit { .. }) => {
+            // A graph-enumeration envelope must not hide an exact closed-form
+            // seed (notably point theory). If no seed covers the request,
+            // preserve the structured limit instead of replacing it with the
+            // seed backend's broad UnsupportedInvariant error.
+            match validation::seed_compute(req, "givental-seed") {
+                Ok(result) => Ok(result),
+                Err(GwError::UnsupportedInvariant(_)) => Err(limit),
+                Err(error) => Err(error),
             }
         }
         Err(err) => Err(err),
@@ -257,7 +269,7 @@ pub(crate) fn projective_space_graph_kernel(
     equivariant: bool,
     weights: &[Rational],
 ) -> Result<Arc<GiventalGraphKernel>, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<GraphKernelCacheKey, Arc<GiventalGraphKernel>>>> =
+    static CACHE: OnceLock<Mutex<BoundedCache<GraphKernelCacheKey, Arc<GiventalGraphKernel>>>> =
         OnceLock::new();
     let key = GraphKernelCacheKey {
         n,
@@ -271,7 +283,8 @@ pub(crate) fn projective_space_graph_kernel(
             weights.to_vec()
         },
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
         return Ok(kernel);
     }
@@ -558,7 +571,7 @@ pub fn projective_graph_bounded_potential_coefficients(
     })?;
     let graph_kernel = provider.graph_kernel(degree_max, needed_r_order, graph_dimension)?;
     let mut profile = GraphEvalProfile::new();
-    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile);
+    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile)?;
     let prepared = graphs.get(graph_index).ok_or_else(|| {
         GwError::UnsupportedInvariant(format!(
             "stable graph index {graph_index} is out of range for (g,m)=({genus},{markings})"
@@ -711,7 +724,7 @@ where
     }
 
     let graphs =
-        profiled_prepared_stable_graphs(genus, insertions.len(), provider.colors(), &mut profile);
+        profiled_prepared_stable_graphs(genus, insertions.len(), provider.colors(), &mut profile)?;
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -884,7 +897,7 @@ where
         insertions.len(),
         provider.coeff_colors(),
         &mut profile,
-    );
+    )?;
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -1395,7 +1408,7 @@ where
         req.markings,
         provider.coeff_colors(),
         &mut profile,
-    );
+    )?;
     profile.stable_graphs = graphs.len();
     profile.edge_options = graph_kernel
         .edge_options
@@ -1806,7 +1819,7 @@ where
         );
         let mut profile = GraphEvalProfile::new();
         let graphs =
-            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile);
+            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile)?;
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
             .edge_options
@@ -1906,7 +1919,7 @@ where
         let graph_kernel = self.graph_kernel_for_markings(markings)?;
         let mut profile = GraphEvalProfile::new();
         let graphs =
-            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile);
+            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile)?;
         profile.stable_graphs = graphs.len();
         profile.edge_options = graph_kernel
             .edge_options
@@ -4468,7 +4481,93 @@ pub(crate) fn translation_excess_partitions(total: usize) -> Vec<Vec<(usize, usi
     out
 }
 
-pub(crate) fn vertex_colorings(vertices: usize, colors: usize) -> Vec<Vec<usize>> {
+/// Conservative retained/transient-memory envelope for materialized color
+/// assignments across one prepared stable-graph table.  The estimator charges
+/// each coloring for its `Vec` header and `usize` payload, then multiplies by
+/// eight for the raw list, orbit/visited hash sets, prepared copy, allocator
+/// metadata, and the short overlap between cached representations.
+pub(crate) const MAX_STABLE_GRAPH_COLORING_BYTES: usize = 64 * 1024 * 1024;
+const COLORING_STORAGE_AMPLIFICATION: usize = 8;
+const PREPARED_COLORING_CACHE_CAPACITY: usize = 8;
+
+fn coloring_resource_limit(operation: &str, requested: usize) -> GwError {
+    GwError::ResourceLimit {
+        operation: operation.to_string(),
+        requested,
+        limit: MAX_STABLE_GRAPH_COLORING_BYTES,
+    }
+}
+
+fn vertex_coloring_count(vertices: usize, colors: usize) -> Result<usize, GwError> {
+    let mut count = 1usize;
+    for _ in 0..vertices {
+        count = count.checked_mul(colors).ok_or_else(|| {
+            coloring_resource_limit("estimated vertex-coloring storage", usize::MAX)
+        })?;
+    }
+    Ok(count)
+}
+
+fn estimated_vertex_coloring_storage(
+    vertices: usize,
+    count: usize,
+    operation: &str,
+) -> Result<usize, GwError> {
+    let payload_bytes = vertices
+        .checked_mul(std::mem::size_of::<usize>())
+        .ok_or_else(|| coloring_resource_limit(operation, usize::MAX))?;
+    std::mem::size_of::<Vec<usize>>()
+        .checked_add(payload_bytes)
+        .and_then(|per_coloring| per_coloring.checked_mul(count))
+        .and_then(|bytes| bytes.checked_mul(COLORING_STORAGE_AMPLIFICATION))
+        .ok_or_else(|| coloring_resource_limit(operation, usize::MAX))
+}
+
+pub(crate) fn checked_vertex_coloring_count(
+    vertices: usize,
+    colors: usize,
+) -> Result<usize, GwError> {
+    let count = vertex_coloring_count(vertices, colors)?;
+    let requested =
+        estimated_vertex_coloring_storage(vertices, count, "estimated vertex-coloring storage")?;
+    if requested > MAX_STABLE_GRAPH_COLORING_BYTES {
+        return Err(coloring_resource_limit(
+            "estimated vertex-coloring storage",
+            requested,
+        ));
+    }
+    Ok(count)
+}
+
+fn checked_prepared_coloring_storage(
+    graphs: &[StableGraph],
+    colors: usize,
+) -> Result<usize, GwError> {
+    let mut total = 0usize;
+    for graph in graphs {
+        let count = vertex_coloring_count(graph.vertices.len(), colors)?;
+        let requested = estimated_vertex_coloring_storage(
+            graph.vertices.len(),
+            count,
+            "estimated prepared stable-graph coloring storage",
+        )?;
+        total = total.checked_add(requested).ok_or_else(|| {
+            coloring_resource_limit(
+                "estimated prepared stable-graph coloring storage",
+                usize::MAX,
+            )
+        })?;
+    }
+    if total > MAX_STABLE_GRAPH_COLORING_BYTES {
+        return Err(coloring_resource_limit(
+            "estimated prepared stable-graph coloring storage",
+            total,
+        ));
+    }
+    Ok(total)
+}
+
+pub(crate) fn vertex_colorings(vertices: usize, colors: usize) -> Result<Vec<Vec<usize>>, GwError> {
     fn rec(vertices: usize, colors: usize, current: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
         if current.len() == vertices {
             out.push(current.clone());
@@ -4480,9 +4579,15 @@ pub(crate) fn vertex_colorings(vertices: usize, colors: usize) -> Vec<Vec<usize>
             current.pop();
         }
     }
+    let count = checked_vertex_coloring_count(vertices, colors)?;
     let mut out = Vec::new();
+    out.try_reserve_exact(count).map_err(|_| {
+        GwError::UnsupportedInvariant(format!(
+            "cannot allocate {count} stable-graph vertex colorings"
+        ))
+    })?;
     rec(vertices, colors, &mut Vec::new(), &mut out);
-    out
+    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4508,23 +4613,29 @@ pub(crate) fn prepared_stable_graphs(
     genus: usize,
     markings: usize,
     colors: usize,
-) -> Arc<Vec<PreparedStableGraph>> {
+) -> Result<Arc<Vec<PreparedStableGraph>>, GwError> {
     // Stable graphs and color orbits depend only on (g,n,number of idempotents),
     // not on insertions or degree.  Precomputing automorphism factors and vertex
     // dimension caps avoids repeating graph-theoretic work in series mode.
-    static CACHE: OnceLock<Mutex<HashMap<(usize, usize, usize), Arc<Vec<PreparedStableGraph>>>>> =
-        OnceLock::new();
+    static CACHE: OnceLock<
+        Mutex<BoundedCache<(usize, usize, usize), Arc<Vec<PreparedStableGraph>>>>,
+    > = OnceLock::new();
     let key = (genus, markings, colors);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(PREPARED_COLORING_CACHE_CAPACITY)));
     if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
-        return cached;
+        return Ok(cached);
     }
 
-    let graphs = stable_graphs(genus, markings)
+    let stable_graphs = try_stable_graphs(genus, markings)?;
+    // Bound the whole table, not only each graph: thousands of individually
+    // modest coloring sets can otherwise retain an unbounded aggregate.
+    checked_prepared_coloring_storage(&stable_graphs, colors)?;
+    let graphs = stable_graphs
         .into_iter()
-        .map(|graph| {
+        .map(|graph| -> Result<PreparedStableGraph, GwError> {
             let automorphism_factor = Rational::one() / Rational::from(graph.automorphism_order());
-            let colorings = vertex_coloring_orbits(&graph, colors)
+            let colorings = vertex_coloring_orbits(&graph, colors)?
                 .iter()
                 .map(|orbit| PreparedColoringOrbit {
                     colors: orbit.colors.clone(),
@@ -4543,16 +4654,16 @@ pub(crate) fn prepared_stable_graphs(
                     .expect("stable-graph generation produced only stable vertices")
                 })
                 .collect::<Vec<_>>();
-            PreparedStableGraph {
+            Ok(PreparedStableGraph {
                 graph,
                 vertex_power_caps,
                 colorings: Arc::new(colorings),
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, GwError>>()?;
     let graphs = Arc::new(graphs);
     cache.lock().unwrap().insert(key, graphs.clone());
-    graphs
+    Ok(graphs)
 }
 
 fn profiled_prepared_stable_graphs(
@@ -4560,11 +4671,12 @@ fn profiled_prepared_stable_graphs(
     markings: usize,
     colors: usize,
     profile: &mut GraphEvalProfile,
-) -> Arc<Vec<PreparedStableGraph>> {
+) -> Result<Arc<Vec<PreparedStableGraph>>, GwError> {
     let started = Instant::now();
     let graphs = prepared_stable_graphs(genus, markings, colors);
     let elapsed = started.elapsed();
     profile.add_stable_graph_elapsed(elapsed);
+    let graphs = graphs?;
     profile.prepared_stable_graphs = graphs.len();
     if profile.enabled {
         eprintln!(
@@ -4576,23 +4688,24 @@ fn profiled_prepared_stable_graphs(
             graphs.len()
         );
     }
-    graphs
+    Ok(graphs)
 }
 
 pub(crate) fn vertex_coloring_orbits(
     graph: &StableGraph,
     colors: usize,
-) -> Arc<Vec<ColoringOrbit>> {
-    static CACHE: OnceLock<Mutex<HashMap<(StableGraph, usize), Arc<Vec<ColoringOrbit>>>>> =
+) -> Result<Arc<Vec<ColoringOrbit>>, GwError> {
+    static CACHE: OnceLock<Mutex<BoundedCache<(StableGraph, usize), Arc<Vec<ColoringOrbit>>>>> =
         OnceLock::new();
     let key = (graph.clone(), colors);
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(PREPARED_COLORING_CACHE_CAPACITY)));
     if let Some(cached) = cache.lock().unwrap().get(&key).cloned() {
-        return cached;
+        return Ok(cached);
     }
 
     let automorphisms = graph.vertex_automorphism_permutations();
-    let all_colorings = vertex_colorings(graph.vertices.len(), colors);
+    let all_colorings = vertex_colorings(graph.vertices.len(), colors)?;
     let orbits = if automorphisms.len() <= 1 {
         all_colorings
             .into_iter()
@@ -4625,7 +4738,7 @@ pub(crate) fn vertex_coloring_orbits(
 
     let orbits = Arc::new(orbits);
     cache.lock().unwrap().insert(key, orbits.clone());
-    orbits
+    Ok(orbits)
 }
 
 pub(crate) fn permute_coloring(coloring: &[usize], permutation: &[usize]) -> Vec<usize> {

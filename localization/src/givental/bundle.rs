@@ -45,13 +45,15 @@
 //! engine, including genus-one cases, and the normalized mixed-sign bundle
 //! `P(O + O(3) + O(3)) -> P^2`.  The normalized `F_4` presentation `[0,4]`
 //! and tested non-nef rank-three presentations `[0,1,2]` and `[0,4,5]`
-//! retain higher-primary `z^{-1}` coordinates and return `UnsupportedInvariant`
+//! retain higher-primary `z^{-1}` coordinates and return `UnsupportedFeature`
 //! pending generalized mirror normalization; their former isolated numerical
 //! coincidences are not small-theory validation.
 
 use super::*;
+use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
 use crate::reconstruction::{
-    solve_rational_system, BidegreeLaurentFactor, ExactRayInterpolation, LaurentCoeffMatrix,
+    plan_birkhoff_windows, solve_rational_system, BidegreeLaurentFactor, CyclicCoordinates,
+    CyclicQuantumAlgebra, ExactRayInterpolation, LaurentCoeffMatrix,
 };
 use crate::spaces::negative_split_projective::HLaurentSeries;
 use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
@@ -105,14 +107,11 @@ impl ProjectiveBundleRay {
         weights_fiber: Vec<Rational>,
         ray: Rational,
     ) -> Result<Self, GwError> {
-        // Direct-sum order is not geometry, but each equivariant fiber weight
-        // belongs to one summand.  Canonicalize the zipped data before the
-        // theory performs its own order-independent validation so the weight
-        // specialization stays attached to the correct twist.
-        let mut summands = twists.into_iter().zip(weights_fiber).collect::<Vec<_>>();
-        summands.sort_by_key(|(twist, _)| *twist);
-        let (twists, weights_fiber): (Vec<_>, Vec<_>) = summands.into_iter().unzip();
-        let theory = ProjectiveBundleTheory::new(n, twists)?;
+        // Validate the target geometry before adapting equivariant weights.
+        // In particular, do not let `zip` silently discard summands when a
+        // caller supplies too few fiber weights.
+        let theory = ProjectiveBundleTheory::new(n, twists.clone())?;
+        let weights_fiber = theory.canonicalize_summand_payloads(twists, weights_fiber)?;
         Self::from_theory(theory, weights_base, weights_fiber, ray)
     }
 
@@ -324,10 +323,11 @@ impl ProjectiveBundleRay {
     }
 
     fn classical_data(&self) -> Arc<ProjectiveBundleClassicalData> {
-        static CACHE: OnceLock<Mutex<HashMap<String, Arc<ProjectiveBundleClassicalData>>>> =
+        static CACHE: OnceLock<Mutex<BoundedCache<String, Arc<ProjectiveBundleClassicalData>>>> =
             OnceLock::new();
         let key = self.rayless_cache_key();
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(data) = cache.lock().unwrap().get(&key).cloned() {
             return data;
         }
@@ -433,13 +433,35 @@ impl ProjectiveBundleRay {
         let preview_cone = self.i_container(k_max, preview_min_z)?;
         let preview = self.fundamental_bidegree_matrix(k_max, &preview_cone);
         let raw_positive_windows = max_nonnegative_z_power_by_grade(&preview);
-        let positive_windows = positive_factor_z_windows(k_max, &raw_positive_windows);
         let base_depth = z_order.checked_add(column_shift).ok_or_else(|| {
             GwError::UnsupportedInvariant(
                 "bundle Birkhoff Laurent-depth calculation overflowed".to_string(),
             )
         })?;
-        let negative_depths = bidegree_negative_depths(k_max, base_depth, &positive_windows)?;
+        let grades = (1..=k_max)
+            .flat_map(|total| (0..=total).map(move |first| (first, total - first)))
+            .collect::<Vec<_>>();
+        let truncation_plan = plan_birkhoff_windows(
+            &grades,
+            &raw_positive_windows,
+            base_depth,
+            |grade| {
+                let mut splits = Vec::new();
+                for left_first in 0..=grade.0 {
+                    for left_second in 0..=grade.1 {
+                        let left_grade = (left_first, left_second);
+                        if left_grade == (0, 0) || left_grade == *grade {
+                            continue;
+                        }
+                        splits.push((left_grade, (grade.0 - left_first, grade.1 - left_second)));
+                    }
+                }
+                splits
+            },
+            "bundle Birkhoff Laurent-depth calculation overflowed",
+        )?;
+        let positive_windows = truncation_plan.positive_windows;
+        let negative_depths = truncation_plan.negative_depths;
         let max_depth = negative_depths
             .values()
             .copied()
@@ -720,73 +742,6 @@ fn max_nonnegative_z_power_by_grade(
                 .map(|z_power| (grade, z_power as usize))
         })
         .collect()
-}
-
-fn positive_factor_z_windows(
-    max_total_degree: usize,
-    raw_windows: &BTreeMap<Grade, usize>,
-) -> BTreeMap<Grade, usize> {
-    let mut windows: BTreeMap<Grade, usize> = BTreeMap::new();
-    for total in 1..=max_total_degree {
-        for first in 0..=total {
-            let grade = (first, total - first);
-            let mut window = raw_windows.get(&grade).copied().unwrap_or(0);
-            for left_first in 0..=grade.0 {
-                for left_second in 0..=grade.1 {
-                    let left_grade = (left_first, left_second);
-                    if left_grade == (0, 0) || left_grade == grade {
-                        continue;
-                    }
-                    let right_grade = (grade.0 - left_first, grade.1 - left_second);
-                    if let Some(right_window) = windows.get(&right_grade).copied() {
-                        window = window.max(right_window.saturating_sub(1));
-                    }
-                }
-            }
-            windows.insert(grade, window);
-        }
-    }
-    windows
-}
-
-fn bidegree_negative_depths(
-    max_total_degree: usize,
-    base_depth: usize,
-    positive_windows: &BTreeMap<Grade, usize>,
-) -> Result<BTreeMap<Grade, usize>, GwError> {
-    let mut depths: BTreeMap<Grade, usize> = BTreeMap::new();
-    for total in 1..=max_total_degree {
-        for first in 0..=total {
-            depths.insert((first, total - first), base_depth);
-        }
-    }
-
-    for total in (1..=max_total_degree).rev() {
-        for first in 0..=total {
-            let grade = (first, total - first);
-            let target_depth = depths.get(&grade).copied().unwrap_or(base_depth);
-            for left_first in 0..=grade.0 {
-                for left_second in 0..=grade.1 {
-                    let left_grade = (left_first, left_second);
-                    if left_grade == (0, 0) || left_grade == grade {
-                        continue;
-                    }
-                    let right_grade = (grade.0 - left_first, grade.1 - left_second);
-                    let right_window = positive_windows.get(&right_grade).copied().unwrap_or(0);
-                    let needed_depth = target_depth.checked_add(right_window).ok_or_else(|| {
-                        GwError::UnsupportedInvariant(
-                            "bundle Birkhoff Laurent-depth calculation overflowed".to_string(),
-                        )
-                    })?;
-                    depths
-                        .entry(left_grade)
-                        .and_modify(|depth| *depth = (*depth).max(needed_depth))
-                        .or_insert(needed_depth);
-                }
-            }
-        }
-    }
-    Ok(depths)
 }
 
 fn zl_one() -> ZLaurent {
@@ -1211,92 +1166,6 @@ fn genus_zero_three_primary_bundle_layout(insertions: &[BundleInsertion]) -> boo
             .all(|insertion| insertion.descendant_power == 0)
 }
 
-fn apply_rational_series_matrix_to_vector(
-    matrix: &SeriesMatrix<Rational>,
-    vector: &[QSeries<Rational>],
-    q_degree: usize,
-) -> Vec<QSeries<Rational>> {
-    debug_assert_eq!(matrix.cols(), vector.len());
-    (0..matrix.rows())
-        .map(|row| {
-            let mut total = QSeries::<Rational>::zero(q_degree);
-            for (col, vector_coeff) in vector.iter().enumerate() {
-                if vector_coeff.is_structurally_zero()
-                    || matrix.entry(row, col).is_structurally_zero()
-                {
-                    continue;
-                }
-                total = total.add(&matrix.entry(row, col).mul(vector_coeff));
-            }
-            total
-        })
-        .collect()
-}
-
-fn rational_series_column_matrix(columns: &[Vec<QSeries<Rational>>]) -> SeriesMatrix<Rational> {
-    let rows = columns.first().map(Vec::len).unwrap_or_default();
-    SeriesMatrix::from_entries(
-        (0..rows)
-            .map(|row| columns.iter().map(|column| column[row].clone()).collect())
-            .collect(),
-    )
-}
-
-fn quantum_cyclic_basis_matrix(
-    quantum_grading: &SeriesMatrix<Rational>,
-    q_degree: usize,
-) -> SeriesMatrix<Rational> {
-    let size = quantum_grading.rows();
-    let mut columns = Vec::with_capacity(size);
-    let mut current = vec![QSeries::<Rational>::zero(q_degree); size];
-    current[0] = QSeries::<Rational>::one(q_degree);
-    for _ in 0..size {
-        columns.push(current.clone());
-        current = apply_rational_series_matrix_to_vector(quantum_grading, &current, q_degree);
-    }
-    rational_series_column_matrix(&columns)
-}
-
-fn quantum_cyclic_coordinates(
-    quantum_grading: &SeriesMatrix<Rational>,
-    vector: &[QSeries<Rational>],
-    q_degree: usize,
-) -> Result<Vec<QSeries<Rational>>, GwError> {
-    let basis = quantum_cyclic_basis_matrix(quantum_grading, q_degree);
-    let inverse = crate::reconstruction::invert_series_matrix_coeff(&basis)?;
-    Ok(apply_rational_series_matrix_to_vector(
-        &inverse, vector, q_degree,
-    ))
-}
-
-fn quantum_product_from_left_coordinates(
-    quantum_grading: &SeriesMatrix<Rational>,
-    left_coordinates: &[QSeries<Rational>],
-    right: &[QSeries<Rational>],
-    q_degree: usize,
-) -> Vec<QSeries<Rational>> {
-    let size = quantum_grading.rows();
-    debug_assert_eq!(left_coordinates.len(), size);
-    debug_assert_eq!(right.len(), size);
-    let mut result = vec![QSeries::<Rational>::zero(q_degree); size];
-    let mut grading_power_right = right.to_vec();
-    for (power, coefficient) in left_coordinates.iter().enumerate() {
-        if !coefficient.is_structurally_zero() {
-            for row in 0..size {
-                result[row] = result[row].add(&grading_power_right[row].mul(coefficient));
-            }
-        }
-        if power + 1 < left_coordinates.len() {
-            grading_power_right = apply_rational_series_matrix_to_vector(
-                quantum_grading,
-                &grading_power_right,
-                q_degree,
-            );
-        }
-    }
-    result
-}
-
 fn pair_rational_series_vectors(
     metric: &SeriesMatrix<Rational>,
     left: &[QSeries<Rational>],
@@ -1524,10 +1393,14 @@ impl ProjectiveBundleRay {
                     continue;
                 };
                 if !coefficient.is_zero() {
-                    return Err(GwError::UnsupportedInvariant(format!(
-                        "projective-bundle Birkhoff cone retains a higher-primary z^-1 mirror coordinate at shifted bidegree ({}, {}), D-power {}; generalized mirror normalization is required",
-                        grade.0, grade.1, power
-                    )));
+                    return Err(GwError::UnsupportedFeature {
+                        target: self.theory.theory_id(),
+                        feature: "generalized mirror normalization".to_string(),
+                        witness: format!(
+                            "Birkhoff cone retains a higher-primary z^-1 mirror coordinate at shifted bidegree ({}, {}), D-power {}",
+                            grade.0, grade.1, power
+                        ),
+                    });
                 }
             }
         }
@@ -1556,10 +1429,12 @@ impl ProjectiveBundleRay {
     ) -> Result<HLaurentBidegreeSeries, GwError> {
         let profile_enabled = crate::env_flag("GW_PROFILE");
         let started = Instant::now();
-        static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), HLaurentBidegreeSeries>>> =
-            OnceLock::new();
+        static CACHE: OnceLock<
+            Mutex<BoundedCache<(String, usize, usize), HLaurentBidegreeSeries>>,
+        > = OnceLock::new();
         let key = (self.rayless_cache_key(), q_degree, z_order);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(cone_point) = cache.lock().unwrap().get(&key).cloned() {
             if profile_enabled {
                 eprintln!(
@@ -1629,10 +1504,11 @@ impl ProjectiveBundleRay {
         let profile_enabled = crate::env_flag("GW_PROFILE");
         let started = Instant::now();
         static CACHE: OnceLock<
-            Mutex<HashMap<(String, usize, usize), BidegreeLaurentFactor<Rational>>>,
+            Mutex<BoundedCache<(String, usize, usize), BidegreeLaurentFactor<Rational>>>,
         > = OnceLock::new();
         let key = (self.rayless_cache_key(), q_degree, z_order);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(negative) = cache.lock().unwrap().get(&key).cloned() {
             if profile_enabled {
                 eprintln!(
@@ -1710,11 +1586,13 @@ impl ProjectiveBundleRay {
     ) -> Result<SeriesSMatrix<Rational>, GwError> {
         let profile_enabled = crate::env_flag("GW_PROFILE");
         let started = Instant::now();
-        static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), SeriesSMatrix<Rational>>>> =
-            OnceLock::new();
+        static CACHE: OnceLock<
+            Mutex<BoundedCache<(String, usize, usize), SeriesSMatrix<Rational>>>,
+        > = OnceLock::new();
         let target_key = self.cache_key();
         let key = (target_key.clone(), q_degree, z_order);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         {
             let cache = cache.lock().unwrap();
             if let Some(fundamental_s) = cache.get(&key).cloned() {
@@ -1728,15 +1606,15 @@ impl ProjectiveBundleRay {
                 }
                 return Ok(fundamental_s);
             }
-            if let Some(fundamental_s) = cache
+            let truncated = cache
                 .iter()
                 .find(|((cached_key, cached_q_degree, cached_z_order), _)| {
                     cached_key == &target_key
                         && *cached_q_degree == q_degree
                         && *cached_z_order >= z_order
                 })
-                .map(|(_, fundamental_s)| fundamental_s.truncated(z_order))
-            {
+                .map(|(_, fundamental_s)| fundamental_s.truncated(z_order));
+            if let Some(fundamental_s) = truncated {
                 if profile_enabled {
                     eprintln!(
                         "GW_PROFILE bundle_fundamental_s_cache_truncate={:.3}s q_degree={} z_order={}",
@@ -1910,10 +1788,11 @@ impl SemisimpleCohftProvider for BundleRayProvider {
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         static CACHE: OnceLock<
-            Mutex<HashMap<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
+            Mutex<BoundedCache<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
         let key = (self.target.cache_key(), q_degree, r_order, graph_dimension);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(kernel);
         }
@@ -2063,8 +1942,12 @@ impl SemisimpleCohftProvider for BundleRayProvider {
             );
         }
         let coordinates_started = Instant::now();
-        let left_coordinates =
-            quantum_cyclic_coordinates(&quantum_grading, &insertion_vectors[0], degree)?;
+        let quantum_algebra = CyclicQuantumAlgebra::try_new(
+            quantum_grading,
+            "projective-bundle quantum grading multiplication",
+        )?;
+        let left_coordinates: CyclicCoordinates<Rational> =
+            quantum_algebra.coordinates(&insertion_vectors[0])?;
         if profile_enabled {
             eprintln!(
                 "GW_PROFILE bundle_direct_coordinates={:.3}s degree={} ray={}",
@@ -2074,12 +1957,7 @@ impl SemisimpleCohftProvider for BundleRayProvider {
             );
         }
         let product_started = Instant::now();
-        let product = quantum_product_from_left_coordinates(
-            &quantum_grading,
-            &left_coordinates,
-            &insertion_vectors[1],
-            degree,
-        );
+        let product = quantum_algebra.left_product(&left_coordinates, &insertion_vectors[1])?;
         let value = pair_rational_series_vectors(
             &self.target.flat_metric_series(degree),
             &product,
@@ -2204,20 +2082,10 @@ pub fn reconstruct_bundle_invariants(
     total_degree: usize,
     insertions: &[BundleInsertion],
 ) -> Result<Vec<(usize, isize, Rational)>, GwError> {
-    if weights_fiber.len() != twists.len() {
-        return Err(GwError::ConventionMismatch(format!(
-            "bundle fiber weights must have length {}",
-            twists.len()
-        )));
-    }
-    let mut summands = twists
-        .iter()
-        .copied()
-        .zip(weights_fiber.iter().cloned())
-        .collect::<Vec<_>>();
-    summands.sort_by_key(|(twist, _)| *twist);
-    let (twists, weights_fiber): (Vec<_>, Vec<_>) = summands.into_iter().unzip();
-    let theory = ProjectiveBundleTheory::new(n, twists)?;
+    let input_twists = twists.to_vec();
+    let theory = ProjectiveBundleTheory::new(n, input_twists.clone())?;
+    let weights_fiber =
+        theory.canonicalize_summand_payloads(input_twists, weights_fiber.to_vec())?;
     reconstruct_bundle_invariants_in_theory(
         &theory,
         weights_base,
@@ -2388,8 +2256,8 @@ mod tests {
             &[],
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("Novikov rays"));
+        assert!(matches!(error, GwError::ResourceLimit { .. }));
+        assert!(error.to_string().contains("Novikov-ray"));
     }
 
     #[test]
@@ -2602,7 +2470,7 @@ mod tests {
             assert!(!generic.is_zero(), "degree-{degree} probe must be nonzero");
             for permutation in &permutations {
                 let direct = provider
-                    .direct_value(0, degree, &permutation, None)
+                    .direct_value(0, degree, permutation, None)
                     .unwrap()
                     .expect("three primary insertions must use the shortcut");
                 assert_eq!(
@@ -2699,13 +2567,13 @@ mod tests {
         let error = target
             .normalized_flat_bidegree_cone_point(1, 1)
             .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
         assert!(error.to_string().contains(
             "higher-primary z^-1 mirror coordinate at shifted bidegree (1, 0), D-power 2"
         ));
         assert!(error
             .to_string()
-            .contains("generalized mirror normalization is required"));
+            .contains("unsupported generalized mirror normalization"));
     }
 
     #[test]
@@ -2719,6 +2587,20 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+    }
+
+    #[test]
+    fn bundle_ray_rejects_missing_fiber_weights_without_dropping_summands() {
+        let error = ProjectiveBundleRay::new(
+            1,
+            vec![0, 2],
+            base_weights(),
+            vec![Rational::from(11)],
+            Rational::one(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, GwError::ConventionMismatch(_)));
+        assert!(error.to_string().contains("must have length 2"));
     }
 
     #[test]
@@ -3122,9 +3004,7 @@ mod tests {
         let error = target
             .normalized_flat_bidegree_cone_point(1, 1)
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("generalized mirror normalization is required"));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
     }
 
     #[test]
@@ -3144,9 +3024,7 @@ mod tests {
         let error = target
             .normalized_flat_bidegree_cone_point(1, 1)
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("generalized mirror normalization is required"));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
     }
 
     #[test]
@@ -3165,9 +3043,7 @@ mod tests {
         let error = target
             .normalized_flat_bidegree_cone_point(1, 1)
             .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("generalized mirror normalization is required"));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
     }
 
     #[test]
@@ -3285,6 +3161,33 @@ mod tests {
                 (0, 2, Rational::zero()),
             ]
         );
+    }
+
+    #[test]
+    fn zero_twist_bundle_reconstruction_is_independent_of_ray_nodes() {
+        let theory = ProjectiveBundleTheory::new(1, vec![0, 0]).unwrap();
+        let point = BundleInsertion::new(0, 1, 1);
+        let insertions = [point.clone(), point.clone(), point];
+        let canonical = reconstruct_bundle_invariants_in_theory(
+            &theory,
+            &base_weights(),
+            &fiber_weights(),
+            0,
+            2,
+            &insertions,
+        )
+        .unwrap();
+        let alternate = reconstruct_bundle_invariants_in_theory_with_nodes(
+            &theory,
+            &base_weights(),
+            &fiber_weights(),
+            0,
+            2,
+            &insertions,
+            Some(&[Rational::from(5), Rational::from(7), Rational::from(11)]),
+        )
+        .unwrap();
+        assert_eq!(alternate, canonical);
     }
 
     #[test]

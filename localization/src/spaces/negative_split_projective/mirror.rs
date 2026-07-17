@@ -6,6 +6,7 @@ use super::*;
 use crate::algebra::{Coeff, Rational};
 use crate::error::GwError;
 use crate::givental::{CalibrationId, SeriesSMatrix};
+use crate::reconstruction::plan_birkhoff_windows;
 use crate::series::SeriesMatrix;
 use std::collections::BTreeMap;
 
@@ -223,9 +224,15 @@ fn birkhoff_q_z_bounds<C: Coeff>(
     z_order: usize,
 ) -> Result<(BTreeMap<usize, usize>, BTreeMap<usize, usize>), GwError> {
     let raw_positive_windows = max_nonnegative_z_power_by_q_degree(fundamental, q_degree);
-    let positive_windows = positive_factor_q_z_windows(q_degree, &raw_positive_windows);
-    let negative_depths = q_negative_z_depths(q_degree, z_order, &positive_windows)?;
-    Ok((positive_windows, negative_depths))
+    let grades = (1..=q_degree).collect::<Vec<_>>();
+    let plan = plan_birkhoff_windows(
+        &grades,
+        &raw_positive_windows,
+        z_order,
+        |degree| (1..*degree).map(|left| (left, degree - left)).collect(),
+        "twisted Birkhoff negative Laurent depth overflow",
+    )?;
+    Ok((plan.positive_windows, plan.negative_depths))
 }
 
 fn max_nonnegative_z_power_by_q_degree<C: Coeff>(
@@ -247,50 +254,6 @@ fn max_nonnegative_z_power_by_q_degree<C: Coeff>(
         }
     }
     out
-}
-
-fn positive_factor_q_z_windows(
-    q_degree: usize,
-    raw_windows: &BTreeMap<usize, usize>,
-) -> BTreeMap<usize, usize> {
-    let mut windows: BTreeMap<usize, usize> = BTreeMap::new();
-    for degree in 1..=q_degree {
-        let mut window = raw_windows.get(&degree).copied().unwrap_or(0);
-        for split in 1..degree {
-            if let Some(right_window) = windows.get(&(degree - split)).copied() {
-                window = window.max(right_window.saturating_sub(1));
-            }
-        }
-        windows.insert(degree, window);
-    }
-    windows
-}
-
-fn q_negative_z_depths(
-    q_degree: usize,
-    base_depth: usize,
-    positive_windows: &BTreeMap<usize, usize>,
-) -> Result<BTreeMap<usize, usize>, GwError> {
-    let mut depths = (1..=q_degree)
-        .map(|degree| (degree, base_depth))
-        .collect::<BTreeMap<_, _>>();
-    for degree in (1..=q_degree).rev() {
-        let target_depth = depths.get(&degree).copied().unwrap_or(base_depth);
-        for split in 1..degree {
-            let right_degree = degree - split;
-            let right_window = positive_windows.get(&right_degree).copied().unwrap_or(0);
-            let needed_depth = target_depth.checked_add(right_window).ok_or_else(|| {
-                GwError::UnsupportedInvariant(
-                    "twisted Birkhoff negative Laurent depth overflow".to_string(),
-                )
-            })?;
-            depths
-                .entry(split)
-                .and_modify(|depth| *depth = (*depth).max(needed_depth))
-                .or_insert(needed_depth);
-        }
-    }
-    Ok(depths)
 }
 
 pub(crate) fn exp_minus_h_mirror_over_z_coefficients(

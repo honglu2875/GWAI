@@ -22,6 +22,7 @@
 //! target (`GWAI_DISABLE_FACTORED_GRAPH`).
 
 pub mod algebra;
+pub(crate) mod bounded_cache;
 pub mod constraints;
 pub mod error;
 pub mod factored;
@@ -46,7 +47,7 @@ pub mod validation_backends;
 
 use algebra::RatFun;
 use error::GwError;
-use geometry::CohomologyClass;
+use spaces::projective_space::CohomologyClass;
 use theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,28 +254,32 @@ impl SeriesRequest {
             GwError::UnsupportedInvariant("series target dimension overflow".to_string())
         })?;
         if state_space_rank > MAX_SERIES_STATE_SPACE_RANK {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "series state-space rank {state_space_rank} exceeds the explicit limit {MAX_SERIES_STATE_SPACE_RANK}"
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "series state-space rank".to_string(),
+                requested: state_space_rank,
+                limit: MAX_SERIES_STATE_SPACE_RANK,
+            });
         }
         if self.degree_max > MAX_SERIES_DEGREE {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "series degree bound {} exceeds the explicit limit {MAX_SERIES_DEGREE}",
-                self.degree_max
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "series degree bound".to_string(),
+                requested: self.degree_max,
+                limit: MAX_SERIES_DEGREE,
+            });
         }
         if self.max_markings > graphs::MAX_STABLE_GRAPH_MARKINGS {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "series marking bound {} exceeds the explicit limit {}",
-                self.max_markings,
-                graphs::MAX_STABLE_GRAPH_MARKINGS
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "series marking bound".to_string(),
+                requested: self.max_markings,
+                limit: graphs::MAX_STABLE_GRAPH_MARKINGS,
+            });
         }
         if self.max_descendant_power > MAX_SERIES_DESCENDANT_POWER {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "series descendant bound {} exceeds the explicit limit {MAX_SERIES_DESCENDANT_POWER}",
-                self.max_descendant_power
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "series descendant bound".to_string(),
+                requested: self.max_descendant_power,
+                limit: MAX_SERIES_DESCENDANT_POWER,
+            });
         }
         for markings in 0..=self.max_markings {
             if graphs::is_stable_moduli_range(self.genus, markings) {
@@ -306,9 +311,11 @@ impl SeriesRequest {
                     GwError::UnsupportedInvariant("series profile count overflow".to_string())
                 })?;
             if profiles > MAX_SERIES_CANDIDATE_COEFFICIENTS {
-                return Err(GwError::UnsupportedInvariant(format!(
-                    "series insertion-profile count exceeds the explicit coefficient limit {MAX_SERIES_CANDIDATE_COEFFICIENTS}"
-                )));
+                return Err(GwError::ResourceLimit {
+                    operation: "series insertion profiles".to_string(),
+                    requested: profiles,
+                    limit: MAX_SERIES_CANDIDATE_COEFFICIENTS,
+                });
             }
         }
         let degree_count = self.degree_max.checked_add(1).ok_or_else(|| {
@@ -318,9 +325,11 @@ impl SeriesRequest {
             GwError::UnsupportedInvariant("series coefficient count overflow".to_string())
         })?;
         if coefficient_bound > MAX_SERIES_CANDIDATE_COEFFICIENTS {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "series candidate coefficient bound {coefficient_bound} exceeds the explicit limit {MAX_SERIES_CANDIDATE_COEFFICIENTS}"
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "series candidate coefficients".to_string(),
+                requested: coefficient_bound,
+                limit: MAX_SERIES_CANDIDATE_COEFFICIENTS,
+            });
         }
         Ok(())
     }
@@ -650,29 +659,43 @@ mod tests {
 
     #[test]
     fn sparse_series_rejects_unbounded_public_bounds_before_allocation() {
-        for request in [
-            SeriesRequest::new(1, 0, usize::MAX, 0),
-            SeriesRequest::new(1, 0, 0, usize::MAX),
-            SeriesRequest::new(usize::MAX, 0, 0, 0),
-        ] {
-            assert!(matches!(
-                request.validate(),
-                Err(GwError::UnsupportedInvariant(_))
-            ));
-        }
+        assert!(matches!(
+            SeriesRequest::new(1, 0, usize::MAX, 0).validate(),
+            Err(GwError::ResourceLimit {
+                operation,
+                requested: usize::MAX,
+                limit: MAX_SERIES_DEGREE,
+            }) if operation == "series degree bound"
+        ));
+        assert!(matches!(
+            SeriesRequest::new(1, 0, 0, usize::MAX).validate(),
+            Err(GwError::ResourceLimit {
+                operation,
+                requested: usize::MAX,
+                limit: graphs::MAX_STABLE_GRAPH_MARKINGS,
+            }) if operation == "series marking bound"
+        ));
+        assert!(matches!(
+            SeriesRequest::new(usize::MAX, 0, 0, 0).validate(),
+            Err(GwError::UnsupportedInvariant(_))
+        ));
 
         let mut descendants = SeriesRequest::new(1, 0, 0, 0);
         descendants.max_descendant_power = usize::MAX;
         assert!(matches!(
             descendants.validate(),
-            Err(GwError::UnsupportedInvariant(_))
+            Err(GwError::ResourceLimit {
+                operation,
+                requested: usize::MAX,
+                limit: MAX_SERIES_DESCENDANT_POWER,
+            }) if operation == "series descendant bound"
         ));
 
         let mut combinatorial = SeriesRequest::new(2, 0, 0, 8);
         combinatorial.max_descendant_power = 3;
         assert!(matches!(
             compute_series(combinatorial),
-            Err(GwError::UnsupportedInvariant(_))
+            Err(GwError::ResourceLimit { .. })
         ));
     }
 

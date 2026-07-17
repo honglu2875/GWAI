@@ -2152,8 +2152,8 @@ mod tests {
 
         let representable_but_unbounded = FormulaRequest::new(isize::MAX as usize / 2 + 1, 0, 1);
         let error = build_formula_skeleton(representable_but_unbounded).unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("built-in envelope"));
+        assert!(matches!(error, GwError::ResourceLimit { .. }));
+        assert!(error.to_string().contains("stable-graph complexity"));
     }
 
     #[test]

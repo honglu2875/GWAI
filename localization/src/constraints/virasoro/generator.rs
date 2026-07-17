@@ -62,22 +62,27 @@ pub fn generate_constraint_with_term_limit<T: GwTheory + ?Sized>(
     if usize::try_from(operator_index)
         .is_ok_and(|index| index > MAX_STANDARD_VIRASORO_OPERATOR_INDEX)
     {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "standard Virasoro generation currently caps the operator index at {MAX_STANDARD_VIRASORO_OPERATOR_INDEX}"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "standard Virasoro operator index".to_string(),
+            requested: operator_index as usize,
+            limit: MAX_STANDARD_VIRASORO_OPERATOR_INDEX,
+        });
     }
     match theory.virasoro_operator_kind() {
         VirasoroOperatorKind::StandardCompactGetzler => {}
         VirasoroOperatorKind::QrrConjugatedRequired => {
-            return Err(GwError::UnsupportedInvariant(
-                "this theory explicitly requires QRR-conjugated Virasoro operators; the standard compact Getzler operator is not valid"
-                    .to_string(),
-            ));
+            return Err(GwError::UnsupportedFeature {
+                target: theory.theory_id(),
+                feature: "Virasoro operator generation".to_string(),
+                witness: "the theory requires a QRR-conjugated operator; the standard compact Getzler operator is not valid".to_string(),
+            });
         }
         VirasoroOperatorKind::Unsupported => {
-            return Err(GwError::UnsupportedInvariant(
-                "the canonical theory does not declare a Virasoro operator model".to_string(),
-            ));
+            return Err(GwError::UnsupportedFeature {
+                target: theory.theory_id(),
+                feature: "Virasoro operator generation".to_string(),
+                witness: "the canonical theory does not declare an operator model".to_string(),
+            });
         }
     }
     theory.curve_class_space().validate(&degree)?;
@@ -90,15 +95,19 @@ pub fn generate_constraint_with_term_limit<T: GwTheory + ?Sized>(
             GwError::UnsupportedInvariant("string coefficient expansion size overflow".to_string())
         })?;
         if estimate > term_limit {
-            return Err(GwError::UnsupportedInvariant(format!(
-                "string coefficient expansion exceeds term limit {term_limit}"
-            )));
+            return Err(GwError::ResourceLimit {
+                operation: "string Virasoro coefficient expansion".to_string(),
+                requested: estimate,
+                limit: term_limit,
+            });
         }
     }
     if marking_count > MAX_VIRASORO_MARKINGS {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "Virasoro coefficient has {marking_count} markings, exceeding the single-equation cap {MAX_VIRASORO_MARKINGS}"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "Virasoro markings in one equation".to_string(),
+            requested: marking_count,
+            limit: MAX_VIRASORO_MARKINGS,
+        });
     }
     let degree_split_count = if operator_index <= 0 || effectivity == CurveEffectivity::Ineffective
     {
@@ -673,9 +682,11 @@ fn enforce_term_budget(
     )?;
     let estimate = checked_add(checked_add(linear_slots, second_slots)?, 2)?;
     if estimate > term_limit {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "Virasoro coefficient expansion upper bound {estimate} exceeds term limit {term_limit}"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "Virasoro coefficient expansion upper bound".to_string(),
+            requested: estimate,
+            limit: term_limit,
+        });
     }
     Ok(())
 }
@@ -770,9 +781,11 @@ fn labelled_marking_splits(
             GwError::UnsupportedInvariant("too many markings for labelled partitions".to_string())
         })?;
     if split_count > term_limit {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "labelled marking split count {split_count} exceeds term limit {term_limit}"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "labelled Virasoro marking splits".to_string(),
+            requested: split_count,
+            limit: term_limit,
+        });
     }
     let mut out = Vec::new();
     out.try_reserve_exact(split_count).map_err(|_| {
@@ -1105,8 +1118,14 @@ mod tests {
             TimeMonomial::one(),
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("operator index"));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested: 65,
+                limit: 64,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1147,7 +1166,7 @@ mod tests {
         let error =
             generate_constraint(&local, 0, 0, CurveClass::new(vec![0]), TimeMonomial::one())
                 .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(matches!(error, GwError::UnsupportedFeature { .. }));
         assert!(error.to_string().contains("QRR"));
     }
 
@@ -1227,8 +1246,14 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("term limit 1"));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested: 2,
+                limit: 1,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1250,8 +1275,14 @@ mod tests {
         let error =
             generate_constraint_with_term_limit(&point, -1, 0, point.curve(0), time, usize::MAX)
                 .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("single-equation cap"));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested,
+                limit: MAX_VIRASORO_MARKINGS,
+                ..
+            } if requested == usize::MAX - 2
+        ));
     }
 
     #[test]
@@ -1265,8 +1296,14 @@ mod tests {
         let error =
             generate_constraint_with_term_limit(&point, 0, 0, point.curve(0), time, usize::MAX)
                 .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("single-equation cap"));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested,
+                limit: MAX_VIRASORO_MARKINGS,
+                ..
+            } if requested == MAX_VIRASORO_MARKINGS + 1
+        ));
     }
 
     #[test]
@@ -1281,8 +1318,7 @@ mod tests {
             100,
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("term limit"));
+        assert!(matches!(error, GwError::ResourceLimit { limit: 100, .. }));
     }
 
     #[test]

@@ -168,9 +168,11 @@ pub fn scan_constraints(
         ));
     }
     if bounds.markings_max > MAX_VIRASORO_SCAN_MARKINGS {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "Virasoro coefficient extraction currently caps scan markings at {MAX_VIRASORO_SCAN_MARKINGS} because disconnected terms enumerate labelled partitions"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "Virasoro scan markings".to_string(),
+            requested: bounds.markings_max,
+            limit: MAX_VIRASORO_SCAN_MARKINGS,
+        });
     }
     let theory = evaluator.theory();
     let operator_count_i64 = i64::from(bounds.operator_max)
@@ -209,10 +211,11 @@ pub fn scan_constraints(
         .and_then(|count| count.checked_mul(profile_count))
         .ok_or_else(|| GwError::AlgebraFailure("Virasoro scan size overflow".to_string()))?;
     if projected > bounds.equation_limit {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "Virasoro scan would generate {projected} equations, exceeding --equation-limit {}",
-            bounds.equation_limit
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: "Virasoro scan equations".to_string(),
+            requested: projected,
+            limit: bounds.equation_limit,
+        });
     }
     let curves = theory.bounded_admissible_classes(bounds.degree_grading_max)?;
     if curves.len() != curve_count {
@@ -287,10 +290,11 @@ pub fn scan_constraints(
                             )
                         })?;
                     if retained_terms > bounds.total_generated_term_limit {
-                        return Err(GwError::UnsupportedInvariant(format!(
-                            "Virasoro scan would retain more than {} generated terms; raise --total-term-limit explicitly or narrow the scan",
-                            bounds.total_generated_term_limit
-                        )));
+                        return Err(GwError::ResourceLimit {
+                            operation: "retained Virasoro scan terms".to_string(),
+                            requested: retained_terms,
+                            limit: bounds.total_generated_term_limit,
+                        });
                     }
                     let report = evaluate_constraint_with_bounds(
                         evaluator,
@@ -429,8 +433,7 @@ mod tests {
         let mut bounds = VirasoroScanBounds::small();
         bounds.equation_limit = 1;
         let error = scan_constraints(&evaluator, bounds).unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("exceeding"));
+        assert!(matches!(error, GwError::ResourceLimit { limit: 1, .. }));
     }
 
     #[test]
@@ -439,10 +442,14 @@ mod tests {
         let mut bounds = VirasoroScanBounds::small();
         bounds.markings_max = MAX_VIRASORO_SCAN_MARKINGS + 1;
         let error = scan_constraints(&evaluator, bounds).unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error
-            .to_string()
-            .contains(&MAX_VIRASORO_SCAN_MARKINGS.to_string()));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested,
+                limit: MAX_VIRASORO_SCAN_MARKINGS,
+                ..
+            } if requested == MAX_VIRASORO_SCAN_MARKINGS + 1
+        ));
     }
 
     #[test]
@@ -452,8 +459,7 @@ mod tests {
         bounds.degree_grading_max = 0;
         bounds.total_generated_term_limit = 0;
         let error = scan_constraints(&evaluator, bounds).unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("--total-term-limit"));
+        assert!(matches!(error, GwError::ResourceLimit { limit: 0, .. }));
     }
 
     #[test]
@@ -475,8 +481,14 @@ mod tests {
             },
         )
         .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
-        assert!(error.to_string().contains("50015001 equations"));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested: 50_015_001,
+                limit: 1,
+                ..
+            }
+        ));
     }
 
     #[test]

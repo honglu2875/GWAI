@@ -7,8 +7,10 @@
 //! not introduce another source of geometric data. Their original paths
 //! remain available for compatibility.
 //!
-//! Generic theory data still lives in [`crate::theory`], and the universal
-//! reconstruction machinery still lives in [`crate::givental`].
+//! Generic theory contracts live in [`crate::theory`]. Target-neutral formal
+//! reconstruction algebra lives in the crate-private `reconstruction` module,
+//! while [`crate::givental`] owns the universal CohFT calibration and stable-
+//! graph engine. The historical root paths remain compatibility shims only.
 
 pub mod negative_split_projective;
 pub mod product_projective;

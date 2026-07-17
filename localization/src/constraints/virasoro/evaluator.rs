@@ -4,13 +4,13 @@ use super::{
 };
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
-use crate::geometry::CohomologyClass;
 use crate::givental::{
     compute_semisimple_graph_value, reconstruct_bidegree_invariants_in_theory,
     reconstruct_bundle_invariants_in_theory, BundleInsertion, ProductInsertion,
     ProjectiveSpaceProvider,
 };
 use crate::spaces::negative_split_projective::TwistedProjectiveSpaceProvider;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::tau;
 use crate::theory::{
     BasisId, CurveClass, CurveEffectivity, GwTheory, NegativeSplitProjectiveCompletion,
@@ -97,6 +97,31 @@ impl Default for CorrelatorEvaluationBounds {
 enum CorrelatorResolution {
     Backend(RatFun),
     StructuralZero(RatFun),
+}
+
+fn incomplete_reason_from_error(error: GwError) -> IncompleteReason {
+    match error {
+        GwError::UnsupportedInvariant(message) => IncompleteReason::Unsupported(message),
+        GwError::UnsupportedFeature {
+            target,
+            feature,
+            witness,
+        } => IncompleteReason::UnsupportedFeature {
+            target,
+            feature,
+            witness,
+        },
+        GwError::ResourceLimit {
+            operation,
+            requested,
+            limit,
+        } => IncompleteReason::ResourceLimit {
+            operation,
+            requested,
+            limit,
+        },
+        other => IncompleteReason::EvaluationError(other.to_string()),
+    }
 }
 
 impl CorrelatorResolution {
@@ -318,7 +343,7 @@ fn resolve_correlator(
     theory
         .curve_class_space()
         .validate(&correlator.degree)
-        .map_err(|error| IncompleteReason::EvaluationError(error.to_string()))?;
+        .map_err(incomplete_reason_from_error)?;
     // Validate every public key before any mathematical zero shortcut.  A
     // malformed class must never pass merely because its curve is ineffective
     // or its constant-map sector is unstable.
@@ -342,7 +367,7 @@ fn resolve_correlator(
     }
     match theory
         .effectivity(&correlator.degree)
-        .map_err(|error| IncompleteReason::EvaluationError(error.to_string()))?
+        .map_err(incomplete_reason_from_error)?
     {
         CurveEffectivity::Ineffective => {
             return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()))
@@ -368,7 +393,7 @@ fn resolve_correlator(
             &correlator.degree,
             correlator.insertions().len(),
         )
-        .map_err(|error| IncompleteReason::EvaluationError(error.to_string()))?;
+        .map_err(incomplete_reason_from_error)?;
     if virtual_dimension < 0 || usize::try_from(virtual_dimension).ok() != Some(insertion_degree) {
         return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()));
     }
@@ -376,10 +401,7 @@ fn resolve_correlator(
     evaluator
         .evaluate_backend(correlator)
         .map(CorrelatorResolution::Backend)
-        .map_err(|error| match error {
-            GwError::UnsupportedInvariant(message) => IncompleteReason::Unsupported(message),
-            other => IncompleteReason::EvaluationError(other.to_string()),
-        })
+        .map_err(incomplete_reason_from_error)
 }
 
 pub struct ProjectiveSpaceEvaluator {
@@ -1814,6 +1836,70 @@ mod tests {
         let report = evaluate_constraint(&evaluator, &constraint);
         assert_eq!(report.status(), ResidualStatus::Incomplete);
         assert_eq!(report.missing_correlator_count(), 1);
+        assert_eq!(
+            report.missing_correlators()[0].reason,
+            IncompleteReason::Unsupported("deliberate gap".to_string())
+        );
+    }
+
+    struct StructuredErrorEvaluator {
+        theory: ProjectiveSpaceTheory,
+        error: GwError,
+    }
+
+    impl CanonicalCorrelatorEvaluator for StructuredErrorEvaluator {
+        fn theory(&self) -> &dyn GwTheory {
+            &self.theory
+        }
+
+        fn evaluate_backend(
+            &self,
+            _correlator: &CorrelatorKey<CurveClass, BasisId>,
+        ) -> Result<RatFun, GwError> {
+            Err(self.error.clone())
+        }
+    }
+
+    #[test]
+    fn structured_backend_gaps_remain_machine_readable_in_audit_reports() {
+        let correlator = CorrelatorKey::new(
+            1,
+            CurveClass::new(vec![0]),
+            vec![Descendant::new(1, BasisId(0))],
+        );
+        let feature = StructuredErrorEvaluator {
+            theory: ProjectiveSpaceTheory::new(0),
+            error: GwError::UnsupportedFeature {
+                target: "test target".to_string(),
+                feature: "test feature".to_string(),
+                witness: "test witness".to_string(),
+            },
+        };
+        assert!(matches!(
+            resolve_correlator(&feature.theory, &feature, &correlator),
+            Err(IncompleteReason::UnsupportedFeature {
+                target,
+                feature,
+                witness,
+            }) if target == "test target" && feature == "test feature" && witness == "test witness"
+        ));
+
+        let resource = StructuredErrorEvaluator {
+            theory: ProjectiveSpaceTheory::new(0),
+            error: GwError::ResourceLimit {
+                operation: "test operation".to_string(),
+                requested: 9,
+                limit: 8,
+            },
+        };
+        assert!(matches!(
+            resolve_correlator(&resource.theory, &resource, &correlator),
+            Err(IncompleteReason::ResourceLimit {
+                operation,
+                requested: 9,
+                limit: 8,
+            }) if operation == "test operation"
+        ));
     }
 
     #[test]

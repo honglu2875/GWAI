@@ -3,6 +3,7 @@
 //! S-matrix, and H-multiplication construction.
 
 use super::*;
+use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
 use crate::factored::FactoredRatFun;
 use crate::theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
@@ -689,14 +690,15 @@ pub fn projective_space_j_calibration(
     q_degree: usize,
     z_order: usize,
 ) -> Result<ProjectiveSpaceJCalibration, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<CalibrationCacheKey, ProjectiveSpaceJCalibration>>> =
+    static CACHE: OnceLock<Mutex<BoundedCache<CalibrationCacheKey, ProjectiveSpaceJCalibration>>> =
         OnceLock::new();
     let key = CalibrationCacheKey {
         n,
         q_degree,
         z_order,
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     if let Some(calibration) = cache.lock().unwrap().get(&key).cloned() {
         return Ok(calibration);
     }
@@ -728,15 +730,17 @@ pub(crate) fn projective_space_j_calibration_at_lambda_weights(
     z_order: usize,
     weights: &[Rational],
 ) -> Result<ProjectiveSpaceJCalibration, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<LambdaCalibrationCacheKey, ProjectiveSpaceJCalibration>>> =
-        OnceLock::new();
+    static CACHE: OnceLock<
+        Mutex<BoundedCache<LambdaCalibrationCacheKey, ProjectiveSpaceJCalibration>>,
+    > = OnceLock::new();
     let key = LambdaCalibrationCacheKey {
         n,
         q_degree,
         z_order,
         weights: weights.to_vec(),
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     if let Some(calibration) = cache.lock().unwrap().get(&key).cloned() {
         return Ok(calibration);
     }
@@ -896,13 +900,15 @@ pub fn projective_space_descendant_s_matrix(
     q_degree: usize,
     z_order: usize,
 ) -> Result<SeriesSMatrix, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<CalibrationCacheKey, SeriesSMatrix>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<BoundedCache<CalibrationCacheKey, SeriesSMatrix>>> =
+        OnceLock::new();
     let key = CalibrationCacheKey {
         n,
         q_degree,
         z_order,
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     {
         let cache = cache.lock().unwrap();
         if let Some(descendant_s) = cache.get(&key).cloned() {
@@ -918,7 +924,7 @@ pub fn projective_space_descendant_s_matrix(
             .map(|(_, descendant_s)| descendant_s.truncated(z_order))
         {
             return Ok(descendant_s);
-        }
+        };
     }
 
     let quantum_h = series_h_multiplication_matrix(n, q_degree, true);
@@ -939,7 +945,7 @@ pub(crate) fn projective_space_descendant_s_matrix_at_lambda_weights(
     z_order: usize,
     weights: &[Rational],
 ) -> Result<SeriesSMatrix, GwError> {
-    static CACHE: OnceLock<Mutex<HashMap<LambdaCalibrationCacheKey, SeriesSMatrix>>> =
+    static CACHE: OnceLock<Mutex<BoundedCache<LambdaCalibrationCacheKey, SeriesSMatrix>>> =
         OnceLock::new();
     let key = LambdaCalibrationCacheKey {
         n,
@@ -947,7 +953,8 @@ pub(crate) fn projective_space_descendant_s_matrix_at_lambda_weights(
         z_order,
         weights: weights.to_vec(),
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     {
         let cache = cache.lock().unwrap();
         if let Some(descendant_s) = cache.get(&key).cloned() {
@@ -964,7 +971,7 @@ pub(crate) fn projective_space_descendant_s_matrix_at_lambda_weights(
             .map(|(_, descendant_s)| descendant_s.truncated(z_order))
         {
             return Ok(descendant_s);
-        }
+        };
     }
 
     let quantum_h = series_h_multiplication_matrix_at_lambda_weights(n, q_degree, true, weights)?;
@@ -1090,7 +1097,7 @@ pub(crate) fn projective_space_factored_graph_kernel(
     graph_dimension: usize,
 ) -> Result<Arc<GiventalGraphKernel<FactoredRatFun>>, GwError> {
     static CACHE: OnceLock<
-        Mutex<HashMap<FactoredKernelCacheKey, Arc<GiventalGraphKernel<FactoredRatFun>>>>,
+        Mutex<BoundedCache<FactoredKernelCacheKey, Arc<GiventalGraphKernel<FactoredRatFun>>>>,
     > = OnceLock::new();
     let key = FactoredKernelCacheKey {
         n,
@@ -1098,7 +1105,8 @@ pub(crate) fn projective_space_factored_graph_kernel(
         r_order,
         graph_dimension,
     };
-    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let cache =
+        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
     if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
         return Ok(kernel);
     }

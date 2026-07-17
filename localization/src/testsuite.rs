@@ -1,11 +1,13 @@
 use crate::algebra::{RatFun, Rational};
-use crate::frobenius::{canonical_root_series, characteristic_series, FrobeniusData};
-use crate::geometry::{CohomologyClass, EquivariantProjectiveSpace};
 use crate::givental::{
     compute_by_givental_graphs, projective_space_descendant_s_matrix,
     projective_space_j_calibration, CanonicalFrameConvention, SeriesRMatrix,
 };
 use crate::series::{QSeries, SeriesMatrix};
+use crate::spaces::projective_space::{
+    canonical_root_series, characteristic_series, CohomologyClass, EquivariantProjectiveSpace,
+    FrobeniusData, SeriesCohomologyClass,
+};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation_backends::growi::{
     disputed_p2_genus_two_descendants, fast_positive_genus_cases, oracle_cases,
@@ -272,11 +274,13 @@ fn test_quantum_canonical_p1_data() -> Result<(), String> {
     let data = frob
         .quantum_canonical_data(1)
         .map_err(|err| err.to_string())?;
-    let sum = data.idempotents.iter().fold(
-        crate::frobenius::SeriesCohomologyClass::zero(1, 1),
-        |acc, idempotent| acc.add(idempotent),
-    );
-    expect_eq(sum, crate::frobenius::SeriesCohomologyClass::one(1, 1))
+    let sum = data
+        .idempotents
+        .iter()
+        .fold(SeriesCohomologyClass::zero(1, 1), |acc, idempotent| {
+            acc.add(idempotent)
+        });
+    expect_eq(sum, SeriesCohomologyClass::one(1, 1))
 }
 
 fn test_identity_r_matrix_unitarity() -> Result<(), String> {

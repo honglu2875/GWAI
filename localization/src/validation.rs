@@ -7,7 +7,7 @@
 
 use crate::algebra::{RatFun, Rational};
 use crate::error::GwError;
-use crate::geometry::CohomologyClass;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::{InvariantRequest, InvariantResult};
 
@@ -170,7 +170,7 @@ fn compute_genus_zero_constant_maps(
         .map(|insertion| &insertion.class)
         .collect::<Vec<_>>();
     let class_integral = if req.equivariant {
-        let target = crate::geometry::EquivariantProjectiveSpace::new(req.n);
+        let target = crate::spaces::projective_space::EquivariantProjectiveSpace::new(req.n);
         let mut product = CohomologyClass::one(req.n);
         for class in &classes {
             product = product.multiply_classical_equivariant(class);
@@ -410,7 +410,7 @@ fn multiply_coefficients(terms: &[(usize, RatFun)]) -> RatFun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::CohomologyClass;
+    use crate::spaces::projective_space::CohomologyClass;
 
     #[test]
     fn classical_product_picks_hn_coefficient() {

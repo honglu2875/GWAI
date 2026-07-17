@@ -1069,8 +1069,33 @@ pub struct ProjectiveBundleTheory {
     characteristic_numbers: CharacteristicNumbers,
 }
 
+fn canonicalize_line_summand_payloads<T>(
+    degrees: Vec<usize>,
+    payloads: Vec<T>,
+    presentation: &str,
+) -> Result<(Vec<usize>, Vec<T>), GwError> {
+    if degrees.len() != payloads.len() {
+        return Err(GwError::ConventionMismatch(format!(
+            "{presentation} summand payloads must have length {}",
+            degrees.len()
+        )));
+    }
+    let mut summands = degrees.into_iter().zip(payloads).collect::<Vec<_>>();
+    // Stable sorting keeps caller-supplied payloads deterministic when
+    // several isomorphic summands have the same twist.
+    summands.sort_by_key(|(twist, _)| *twist);
+    Ok(summands.into_iter().unzip())
+}
+
 impl ProjectiveBundleTheory {
-    pub fn new(n: usize, mut twists: Vec<usize>) -> Result<Self, GwError> {
+    pub fn new(n: usize, twists: Vec<usize>) -> Result<Self, GwError> {
+        let rank = twists.len();
+        let (twists, _) =
+            canonicalize_line_summand_payloads(twists, vec![(); rank], "projective-bundle")?;
+        Self::from_canonical_twists(n, twists)
+    }
+
+    fn from_canonical_twists(n: usize, twists: Vec<usize>) -> Result<Self, GwError> {
         if n == 0 || twists.len() < 2 {
             return Err(GwError::ConventionMismatch(
                 "projective-bundle theory requires a positive-dimensional base and rank at least two"
@@ -1082,10 +1107,6 @@ impl ProjectiveBundleTheory {
                 "projective-bundle twists must be normalized so their minimum is zero".to_string(),
             ));
         }
-        // Direct-sum order is not geometric data.  Canonicalize it so
-        // isomorphic presentations have identical theory fingerprints and
-        // backend compatibility checks.
-        twists.sort_unstable();
         let rank = twists.len();
         let n_plus_one = n.checked_add(1).ok_or_else(|| {
             GwError::UnsupportedInvariant("projective-bundle dimension is too large".to_string())
@@ -1198,6 +1219,29 @@ impl ProjectiveBundleTheory {
             },
             characteristic_numbers,
         })
+    }
+
+    /// Reorder data attached to input summands into this theory's canonical
+    /// direct-sum order.
+    ///
+    /// The input twists must describe this same bundle presentation. Keeping
+    /// this permutation on the canonical theory prevents ray adapters, CLI
+    /// weights, and reconstruction entry points from implementing their own
+    /// potentially divergent sorting rules.
+    pub fn canonicalize_summand_payloads<T>(
+        &self,
+        twists: Vec<usize>,
+        payloads: Vec<T>,
+    ) -> Result<Vec<T>, GwError> {
+        let (canonical_twists, payloads) =
+            canonicalize_line_summand_payloads(twists, payloads, "projective-bundle")?;
+        if canonical_twists != self.twists {
+            return Err(GwError::ConventionMismatch(
+                "projective-bundle summand payloads do not describe the canonical theory"
+                    .to_string(),
+            ));
+        }
+        Ok(payloads)
     }
 
     pub fn base_dimension(&self) -> usize {
@@ -1497,7 +1541,7 @@ pub struct NegativeSplitTotalSpaceTheory {
 }
 
 impl NegativeSplitTotalSpaceTheory {
-    pub fn new(base_n: usize, mut degrees: Vec<usize>) -> Result<Self, GwError> {
+    pub fn new(base_n: usize, degrees: Vec<usize>) -> Result<Self, GwError> {
         if degrees.is_empty() || degrees.contains(&0) {
             return Err(GwError::ConventionMismatch(
                 "negative split degrees are stored as positive absolute values".to_string(),
@@ -1527,7 +1571,9 @@ impl NegativeSplitTotalSpaceTheory {
         // Direct-sum order is not geometric data.  Keep theory identity,
         // formula rendering, and backend compatibility canonical under a
         // permutation of the line-bundle summands.
-        degrees.sort_unstable();
+        let rank = degrees.len();
+        let (degrees, _) =
+            canonicalize_line_summand_payloads(degrees, vec![(); rank], "negative-split")?;
         let mut basis = Vec::new();
         basis.try_reserve_exact(size).map_err(|_| {
             GwError::UnsupportedInvariant(format!(
@@ -1559,6 +1605,26 @@ impl NegativeSplitTotalSpaceTheory {
 
     pub fn degrees(&self) -> &[usize] {
         &self.degrees
+    }
+
+    /// Reorder data attached to input line summands into this theory's
+    /// canonical direct-sum order.
+    ///
+    /// Providers use this operation for custom equivariant weights so the
+    /// target theory remains the sole owner of summand normalization.
+    pub fn canonicalize_summand_payloads<T>(
+        &self,
+        degrees: Vec<usize>,
+        payloads: Vec<T>,
+    ) -> Result<Vec<T>, GwError> {
+        let (canonical_degrees, payloads) =
+            canonicalize_line_summand_payloads(degrees, payloads, "negative-split")?;
+        if canonical_degrees != self.degrees {
+            return Err(GwError::ConventionMismatch(
+                "negative-split summand payloads do not describe the canonical theory".to_string(),
+            ));
+        }
+        Ok(payloads)
     }
 }
 
@@ -2091,6 +2157,19 @@ mod tests {
         assert_eq!(left, right);
         assert_eq!(left.theory_fingerprint(), right.theory_fingerprint());
         assert_eq!(left.theory_id(), "P(O + O(1) + O(3)) over P^1");
+        assert_eq!(
+            left.canonicalize_summand_payloads(vec![3, 0, 1], vec!["three", "zero", "one"],)
+                .unwrap(),
+            vec!["zero", "one", "three"]
+        );
+        assert!(matches!(
+            left.canonicalize_summand_payloads(vec![0, 1, 3], vec!["too", "short"]),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        assert!(matches!(
+            left.canonicalize_summand_payloads(vec![0, 1, 4], vec!["zero", "one", "four"],),
+            Err(GwError::ConventionMismatch(_))
+        ));
     }
 
     #[test]
@@ -2166,6 +2245,25 @@ mod tests {
         assert_eq!(left.degrees(), &[1, 2, 3]);
         assert_eq!(left.theory_fingerprint(), right.theory_fingerprint());
         assert_eq!(left.theory_id(), "Tot(O(-[1, 2, 3])) over P^2");
+        assert_eq!(
+            left.canonicalize_summand_payloads(
+                vec![3, 1, 2],
+                vec!["degree-three", "degree-one", "degree-two"],
+            )
+            .unwrap(),
+            vec!["degree-one", "degree-two", "degree-three"]
+        );
+        assert!(matches!(
+            left.canonicalize_summand_payloads(vec![3, 1, 2], vec!["too", "short"]),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        assert!(matches!(
+            left.canonicalize_summand_payloads(
+                vec![4, 1, 2],
+                vec!["degree-four", "degree-one", "degree-two"],
+            ),
+            Err(GwError::ConventionMismatch(_))
+        ));
     }
 
     #[test]

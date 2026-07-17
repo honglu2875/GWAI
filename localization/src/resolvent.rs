@@ -18,7 +18,7 @@ use std::fmt;
 use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
 use crate::factored::FactoredRatFun;
-use crate::geometry::CohomologyClass;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::theory::{GwTheory, ProjectiveSpaceTheory};
 use crate::{tau, Insertion, InvariantResult};
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::algebra::Rational;
-use crate::geometry::CohomologyClass;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::tau;
 use std::collections::BTreeMap;
 

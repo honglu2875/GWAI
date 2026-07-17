@@ -658,9 +658,11 @@ fn check_candidate_budget(
             .ok_or_else(|| localization_overflow("fixed-tree candidate count"))?;
     }
     if candidates > MAX_FIXED_TREE_CANDIDATES {
-        return Err(unsupported(
-            "direct projective-bundle localization fixed-tree budget exceeded",
-        ));
+        return Err(GwError::ResourceLimit {
+            operation: "direct projective-bundle localization fixed-tree candidates".to_string(),
+            requested: candidates,
+            limit: MAX_FIXED_TREE_CANDIDATES,
+        });
     }
     Ok(())
 }
@@ -898,6 +900,19 @@ mod tests {
                 &[BundleInsertion::new(0, 2, 2), BundleInsertion::new(0, 0, 2)]
             ),
             Err(GwError::UnsupportedInvariant(_))
+        ));
+    }
+
+    #[test]
+    fn fixed_tree_work_guard_is_machine_readable() {
+        let error = check_candidate_budget(100, 10, 2).unwrap_err();
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested,
+                limit: MAX_FIXED_TREE_CANDIDATES,
+                ..
+            } if requested > MAX_FIXED_TREE_CANDIDATES
         ));
     }
 }

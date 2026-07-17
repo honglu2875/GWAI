@@ -5,7 +5,7 @@
 //! not restate its dimension, state space, or curve geometry.
 
 pub mod equivariant;
-pub use equivariant::{CohomologyClass, EquivariantProjectiveSpace};
+pub use equivariant::*;
 pub mod frobenius;
 pub use frobenius::*;
 

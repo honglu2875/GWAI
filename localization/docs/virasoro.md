@@ -116,10 +116,11 @@ corrections, or they will be counted twice.
 The compact generator is for ordinary, non-equivariant descendant theories
 with an even state space.  A canonical target theory must supply the homogeneous
 basis, Poincare pairing and inverse, unit, complex grading, multiplication by
-`c_1(TX)`, characteristic number `rho(X)`, a tri-state effectivity answer,
-and the theory-owned admissible degree splittings required by the requested
-coefficient.  Unknown effectivity means "query the backend", not "assume
-effective".
+`c_1(TX)`, the classical cup product and a stabilizing-divisor policy for
+unstable recursion, characteristic number `rho(X)`, a tri-state effectivity
+answer, and the theory-owned admissible degree splittings required by the
+requested coefficient.  Unknown effectivity means "query the backend", not
+"assume effective".
 
 In this crate that scope covers ordinary projective spaces, products of
 projective spaces, and compact projective toric bundles once their true
@@ -307,6 +308,15 @@ closure truncated instead of allocating the full remainder.  Either case
 makes the residual `Incomplete`, even if the exact partial sum is zero.  This
 fail-closed distinction prevents resource limits from becoming mathematical
 assumptions.
+
+Construction guards return the structured
+`GwError::ResourceLimit { operation, requested, limit }` variant.  This is a
+work-envelope result, not evidence that the invariant or identity is
+mathematically unsupported; an audit must preserve the distinction rather
+than convert either case to zero.  Backend `ResourceLimit` and
+`UnsupportedFeature` errors retain their fields in the corresponding
+`IncompleteReason` variants of a residual report; they are not flattened into
+generic evaluation failures.
 
 Outcome counts (`VerifiedZero`, `Nonzero`, and `Incomplete`) answer whether an
 equation closed and what its exact residual was.  The scan also partitions

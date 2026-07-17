@@ -384,7 +384,7 @@ fn binomial_rational(n: usize, k: usize) -> Rational {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::CohomologyClass;
+    use crate::spaces::projective_space::CohomologyClass;
     use crate::{tau, ComputeMode};
 
     #[test]

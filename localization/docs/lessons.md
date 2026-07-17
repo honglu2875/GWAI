@@ -249,8 +249,11 @@ the descendant↔ancestor dictionary — plus an insertion dictionary and an
 optional dimension oracle used only for pruning.  Once stated this way,
 "support a new space" decomposes cleanly:
 
-- a **target** supplies geometry (basis, classical ring, pairing, fixed
-  points with tangent weights, c₁ data);
+- a **canonical theory** supplies geometry (basis, classical ring, pairing,
+  `c_1`, curve lattice/cone/splittings, and characteristic numbers);
+- an **evaluation adapter** supplies computational coordinates (fixed points
+  with tangent weights, an I-function or quantum multiplication, insertion
+  conversion, and possibly Novikov rays) while returning that same theory;
 - a **recipe** manufactures the contract from whichever datum the target
   naturally has: the quantum ring (S from the QDE, R from flatness +
   weight asymptotics) or an I-function (mirror map, Birkhoff factorization,
@@ -259,6 +262,17 @@ optional dimension oracle used only for pruning.  Once stated this way,
 
 Targets with both data (ℙⁿ; anything with a rank-zero-twist description)
 give the cross-recipe oracle of Lesson 7 for free.
+
+The source tree should preserve the same distinction.  A peer module under
+`spaces/` is the discovery point for each mathematical target, `theory` is the
+single source of its universal geometry, and `reconstruction`/`givental` hold
+algorithms shared across targets.  A `spaces/` facade may reexport an adapter;
+it must not restate the pairing, ring, or curve cone.  Conversely, a Laurent
+representation should not move into a generic module merely because two
+pipelines both use the word "Birkhoff": extract only the coefficient-generic
+matrix, cyclic-basis, interpolation, or truncation operation actually shared.
+The old root `geometry`, `frobenius`, and `twisted` paths are compatibility
+reexports, never a second hierarchy to extend.
 
 ### 14. Miscellaneous scars, briefly
 
@@ -279,6 +293,18 @@ give the cross-recipe oracle of Lesson 7 for free.
   fields of which one was read; callers were configuring behavior that did
   not exist.  An API that accepts and ignores input is worse than a smaller
   API.
+- **Bound caches whose keys contain target parameters**: unlike a stable-graph
+  table, the set of weight choices, twists, and truncation orders explored by
+  one process has no useful natural bound.  Deterministic fixed-capacity
+  eviction prevents an audit sweep from retaining every large calibration;
+  keep this policy separate from universal combinatorial caches.  A coloring
+  table keyed by the number of idempotents is target-dependent too, even when
+  the graph topology is universal; check its exponential work envelope before
+  recursion and bound its retention separately from the topology table.
+- **A work limit is local to an algorithm**: exhausting the stable-graph
+  envelope must not disable an independent exact point-theory seed.  Try the
+  cheaper certified path, but restore the structured graph limit when no seed
+  applies instead of replacing it with a vague unsupported error.
 
 ---
 
@@ -368,7 +394,8 @@ projected cone point lies on the *small* quantum slice.
   divisor *plus higher primary fields*, so feeding it to the small divisor
   reconstruction corrupts the quantum product and the R/graph theory.  A
   generalized mirror transformation is required to return to the small
-  slice; until it exists, the correct behavior is `UnsupportedInvariant`.
+  slice; until it exists, the correct behavior is a structured
+  `UnsupportedFeature` carrying the offending grade and cohomology direction.
 - This gives a sharper support boundary than the word "non-Fano."  `F_2` and
   the normalized mixed-sign holdout `P(O ⊕ O(3) ⊕ O(3)) -> P^2` have no
   higher-primary remainder after unit/divisor normalization and remain

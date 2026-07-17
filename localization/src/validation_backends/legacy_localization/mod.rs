@@ -11,7 +11,7 @@ pub mod projective_bundle;
 
 use crate::algebra::{lambda, LaurentSeries, RatFun, Rational};
 use crate::error::GwError;
-use crate::geometry::EquivariantProjectiveSpace;
+use crate::spaces::projective_space::EquivariantProjectiveSpace;
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::{InvariantRequest, InvariantResult};
 use std::collections::BTreeSet;
@@ -742,7 +742,7 @@ impl DisjointSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CohomologyClass, EquivariantProjectiveSpace};
+    use crate::spaces::projective_space::{CohomologyClass, EquivariantProjectiveSpace};
     use crate::{tau, ComputeMode};
 
     #[test]

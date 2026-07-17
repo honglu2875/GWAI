@@ -24,6 +24,7 @@
 //! equal by tests.
 
 use super::*;
+use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
 use crate::theory::{CurveClass, CurveEffectivity, GwTheory, ProjectiveSpaceTheory};
 
 /// Semisimple calibration data attached to one canonical target theory.
@@ -52,7 +53,7 @@ pub trait GwTarget: Send + Sync {
     /// Flat-basis coefficients of a user-facing insertion class.
     fn insertion_vector(
         &self,
-        class: &crate::geometry::CohomologyClass,
+        class: &crate::spaces::projective_space::CohomologyClass,
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError>;
 }
@@ -233,10 +234,11 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
         q_degree: usize,
         z_order: usize,
     ) -> Result<SeriesSMatrix, GwError> {
-        static CACHE: OnceLock<Mutex<HashMap<(String, usize, usize), SeriesSMatrix>>> =
+        static CACHE: OnceLock<Mutex<BoundedCache<(String, usize, usize), SeriesSMatrix>>> =
             OnceLock::new();
         let key = (self.target.cache_key(), q_degree, z_order);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(descendant_s) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(descendant_s);
         }
@@ -260,10 +262,11 @@ impl<T: GwTarget> SemisimpleCohftProvider for TargetProvider<T> {
         graph_dimension: usize,
     ) -> Result<Arc<GiventalGraphKernel>, GwError> {
         static CACHE: OnceLock<
-            Mutex<HashMap<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
+            Mutex<BoundedCache<(String, usize, usize, usize), Arc<GiventalGraphKernel>>>,
         > = OnceLock::new();
         let key = (self.target.cache_key(), q_degree, r_order, graph_dimension);
-        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let cache = CACHE
+            .get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
         if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
             return Ok(kernel);
         }
@@ -400,7 +403,7 @@ impl GwTarget for ProjectiveTarget {
 
     fn insertion_vector(
         &self,
-        class: &crate::geometry::CohomologyClass,
+        class: &crate::spaces::projective_space::CohomologyClass,
         q_degree: usize,
     ) -> Result<Vec<QSeries>, GwError> {
         let coeffs = class.coeffs();
@@ -423,7 +426,7 @@ impl GwTarget for ProjectiveTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::CohomologyClass;
+    use crate::spaces::projective_space::CohomologyClass;
     use crate::tau;
 
     fn lambda_eval(value: &RatFun, target_n: usize, weights: &[Rational]) -> Rational {

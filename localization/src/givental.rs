@@ -16,15 +16,15 @@
 //! - unstable translations -> insertions of `T(psi) = psi(1 - R^{-1})1`;
 //! - vertices -> products of point-theory psi integrals and the diagonal TFT.
 //!
-//! The graph code is intentionally target-agnostic.  Projective-space and
-//! twisted-projective-space code only differ in how they construct the
-//! calibration package.
+//! The graph code is intentionally target-agnostic. Ordinary projective
+//! spaces, products, projective bundles, and negative-split twists differ in
+//! how their providers construct the calibration package; exact ray
+//! interpolation, Birkhoff window planning, and cyclic-basis algebra are
+//! shared through the crate-private `reconstruction` module.
 
 use crate::algebra::{Coeff, RatFun, Rational};
 use crate::error::GwError;
-use crate::frobenius::FrobeniusData;
-use crate::geometry::elementary_symmetric_weights;
-use crate::graphs::{stable_graphs, StableGraph};
+use crate::graphs::{try_stable_graphs, StableGraph};
 use crate::resolvent::{
     enumerate_resolvent_indices, ResolventIndex, ResolventPolynomial, ResolventRequest,
     ResolventResult,
@@ -32,6 +32,7 @@ use crate::resolvent::{
 use crate::series::{
     integrate_q_derivative_zero_constant_matrix, QSeries, RationalQSeries, SeriesMatrix,
 };
+use crate::spaces::projective_space::{elementary_symmetric_weights, FrobeniusData};
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation;
 use crate::{

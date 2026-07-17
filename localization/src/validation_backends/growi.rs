@@ -5,7 +5,7 @@
 //! cross-check paths.
 
 use crate::algebra::{RatFun, Rational};
-use crate::geometry::CohomologyClass;
+use crate::spaces::projective_space::CohomologyClass;
 use crate::{tau, InvariantRequest};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

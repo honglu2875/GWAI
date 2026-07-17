@@ -146,9 +146,11 @@ pub(crate) fn checked_reconstruction_ray_count(
         GwError::UnsupportedInvariant(format!("{target} reconstruction degree is too large"))
     })?;
     if ray_count > MAX_EXACT_RECONSTRUCTION_RAYS {
-        return Err(GwError::UnsupportedInvariant(format!(
-            "{target} reconstruction requires {ray_count} Novikov rays, exceeding the explicit limit {MAX_EXACT_RECONSTRUCTION_RAYS}"
-        )));
+        return Err(GwError::ResourceLimit {
+            operation: format!("{target} exact Novikov-ray reconstruction"),
+            requested: ray_count,
+            limit: MAX_EXACT_RECONSTRUCTION_RAYS,
+        });
     }
     Ok(ray_count)
 }
@@ -235,7 +237,14 @@ mod tests {
     fn oversized_plan_is_rejected_before_evaluation() {
         let error = ExactRayInterpolation::for_total_degree("test", MAX_EXACT_RECONSTRUCTION_RAYS)
             .unwrap_err();
-        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(matches!(
+            error,
+            GwError::ResourceLimit {
+                requested: 65,
+                limit: 64,
+                ..
+            }
+        ));
 
         let error = ExactRayInterpolation::for_total_degree("test", usize::MAX).unwrap_err();
         assert!(matches!(error, GwError::UnsupportedInvariant(_)));
