@@ -324,18 +324,28 @@ fact alone forces neither zero nor nonzero, and the backend is queried unless
 another structural rule applies.  The whole ring is cyclic over the grading
 divisor `D = xi + (A+1)H`, and the raw
 fundamental solution is Birkhoff-factored over the finite bidegree Novikov
-ring before any ray restriction.  Its projected first column is
-mirror-corrected in the bidegree Novikov ring, then restricted to rays and
-regenerated into a one-variable fundamental solution.  Per ray, this
+ring before any ray restriction.  Its projected first column is normalized
+in the bidegree Novikov ring: the positive-degree unit coordinate is gauged
+away, and the two divisor mirror coordinates are gauged away and inverted.
+The result is accepted only if no positive-degree `z^-1` coordinate remains
+in a higher cohomology direction.  Such a remainder describes a big-quantum
+path for which `q d/dq` contains higher-primary derivatives, not just
+insertion of the grading divisor, so the backend returns
+`UnsupportedInvariant` until a generalized mirror transformation is
+available.  Only a cone point that passes this check is restricted to rays
+and regenerated into a one-variable fundamental solution.  Per ray, this
 fundamental solution gives quantum multiplication
 `A_q = A_cl + t d/dt S_1`; its metric-adjoint gives the descendant insertion
 operator, the frame comes from `operator_lagrange_frame`, and R from
 flatness.  `reconstruct_bundle_invariants` runs `total_degree + 1` rays and
-a rational Vandermonde solve, under the same shared explicit ray cap.  Validated
-against `P^1 x P^1` zero twists and
-Hirzebruch deformation checks including non-Fano `F_2` and `F_4` cases, plus
-rank-three negative-direction deformations to `P^1 x P^2`.  See lessons.md
-§§15–17.
+a rational Vandermonde solve, under the same shared explicit ray cap.
+Validated against `P^1 x P^1` zero twists, the non-Fano `F_2` deformation
+dictionary, and the normalized mixed-sign rank-three bundle
+`P(O + O(3) + O(3)) -> P^2`.  The normalized `F_4` presentation
+`P(O + O(4))` and tested non-nef rank-three presentations `[0,1,2]` and
+`[0,4,5]` retain higher-primary `z^-1` coordinates and therefore fail closed;
+their former isolated deformation coincidences are no longer validation
+claims.  See lessons.md §§15–17.
 
 **Twisted/local evaluators.** `twisted.rs` evaluates negative split-bundle
 twists over `P^n` and hosts the historical I-function pipeline, including

@@ -353,12 +353,24 @@ cargo run --quiet -- bundle --n 1 --twists 0,1 --g 0 --d 1 --insert xi --insert 
 Optional `--weights-base`/`--weights-fiber` set the rational equivariant
 weights; the defaults keep all grading eigenvalues distinct.
 
-Validated scope: genus-zero curve-counting invariants of Fano bundles (`F_0`,
-`F_1`, and the like), non-Fano Hirzebruch deformation checks against
-`P^1 x P^1` including `F_2` genus-one and `F_4 = P(O(2)+O(-2))` middle-class
-cases, rank-three negative-direction checks against `P^1 x P^2`, and a
-zero-twist `P(O + O)` calibration check against the product engine through
-higher `R` order.
+Validated scope includes genus-zero curve-counting invariants of Fano bundles
+(`F_0`, `F_1`, and the like), the non-Fano `F_2 = P(O + O(2))` deformation
+dictionary through genus one, the normalized mixed-sign rank-three bundle
+`P(O + O(3) + O(3)) -> P^2`, and a zero-twist `P(O + O)` calibration check
+against the product engine through higher `R` order.
+
+Non-Fano support is deliberately fail-closed.  After the bidegree Birkhoff
+projection, the backend removes positive-degree `z^-1` mirror coordinates in
+the unit and the two divisor directions.  If a `z^-1` component remains in a
+higher cohomology direction, the cone point lies on a genuinely big-quantum
+path: `q d/dq` is no longer insertion of the grading divisor alone.  Such a
+request returns `UnsupportedInvariant` until generalized mirror normalization
+is implemented.  This currently includes the normalized `F_4` presentation
+`P(O + O(4))` and the tested non-nef rank-three presentations
+`P(O + O(1) + O(2))` and `P(O + O(4) + O(5))`.  Earlier isolated numerical
+agreements for those targets are not treated as validation of their small GW
+theories.  `F_2` and `P(O + O(3) + O(3)) -> P^2` pass the higher-primary check
+and remain supported.
 
 ## `virasoro`
 
@@ -915,6 +927,10 @@ under two seconds.
   With the I-function recipe in place, further toric evaluators (complete
   intersections, more general toric varieties) can be paired with canonical
   `GwTheory` descriptions in the same way as projective bundles.
+- Implement the generalized mirror transformation needed to return a
+  Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
+  to the small quantum slice; until then those bundle presentations fail
+  closed rather than feeding a big-quantum path to divisor reconstruction.
 - Add the twisted pairing, degree-zero twisted sector, and independently
   generated QRR-conjugated Virasoro operators needed to audit
   negative-split/local theories without misusing the compact operator.

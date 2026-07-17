@@ -338,67 +338,70 @@ The lesson is general to toric-ish targets: negative or awkward curve
 classes are a *grading* problem, not a *geometry* problem.  Find a shift and
 a cyclic generator; the vanishing takes care of the rest.
 
-### 17. Non-Fano is where the mirror map stops being a change of variables
+### 17. Non-Fano mirror normalization can leave the small quantum slice
 
 The naive mirror transform — read the mirror map off the `1/z` divisor part,
-exponential-gauge it away, invert, re-expand — works for Fano targets and
-quietly fails for non-Fano ones.  The mechanism, made concrete on
-`F_2 = P(O ⊕ O(2))`:
+exponential-gauge it away, invert, re-expand — works for Fano targets and can
+quietly fail for non-Fano ones.  A full bidegree Birkhoff projection is
+necessary there, but it is not by itself sufficient to prove that the
+projected cone point lies on the *small* quantum slice.
 
-- `F_2` has an effective curve of *anticanonical degree zero*: the
-  `(-2)`-section `B_-`, with `c_1·B_- = 0`.  (Fano surfaces like `F_0`, `F_1`
-  have `c_1·β > 0` for every effective class.)
-- For such a class the I-function term `I_β(z)` starts at `z^{0}` and can carry
-  a **positive power of `z`** and a `z^0` part that is *not a multiple of the
-  unit*.  So `I ≠ 1 + O(1/z)`, and projecting it onto the J-slice is a genuine
-  Birkhoff (upper-triangular loop-group) step, not a divisor change of
-  variables.
-- The precise, cheap detector: the naive divisor-mirror exponent acquires a
-  **nonzero unit component** exactly for these classes.  For Fano targets it is
-  identically zero.  That detector was useful while the full projection was
-  missing, but it is not the fix.
-- The fix is to keep the bidegree Novikov grading through the Birkhoff stage:
-  build the raw bidegree fundamental frame from the I-function and factor it
-  directly over the finite bidegree Novikov ring.  The positive factor is the
-  full cone projection, including mirror-coordinate and higher positive-`z`
-  corrections.  A prior exponential "full-vector mirror gauge" is not
-  equivalent; it passes `F_2` but fails already for `P(O(2) ⊕ O(-2))`.
-  The negative factor's first column is still not ready for graph evaluation:
-  the two divisor mirror-coordinate series must be extracted and inverted in
-  bidegree before restricting to rays.  This is what fixes the higher
-  `F_2` negative-section descendants.
-- Truncating the Laurent tail is part of the math, not an implementation
-  detail.  Once the positive factor has a term `z^p`, the recursive split can
-  pull a lower-degree negative coefficient `z^{-s-p}` back into `z^{-s}`.
-  The safe window is determined by the actual nonnegative `z` support of the
-  raw bidegree fundamental frame and the maximum length of a lower-degree
-  dependency chain.  A fixed local margin passed rank two and failed the
-  rank-three deformation `P(O(2) ⊕ O(1) ⊕ O(-3)) ~ P^1 x P^2`.
+- `F_2 = P(O ⊕ O(2))` has an effective curve of *anticanonical degree zero*:
+  the `(-2)`-section `B_-`, with `c_1·B_- = 0`.  (Fano surfaces like `F_0`,
+  `F_1` have `c_1·β > 0` for every effective class.)
+- For such a class the I-function term `I_β(z)` starts at `z^{0}` and can
+  carry a **positive power of `z`** and a `z^0` part that is *not a multiple of
+  the unit*.  Thus `I ≠ 1 + O(1/z)`, and projection onto the J-slice is a
+  genuine upper-triangular loop-group step rather than only a divisor change
+  of variables.  The implementation therefore keeps the bidegree Novikov
+  grading through the Birkhoff factorization; the positive factor performs
+  the full cone projection, including higher positive-`z` corrections.
+- The negative factor's first column still needs a hierarchy of
+  normalizations.  A positive-degree `z^-1` **unit coordinate** moves the cone
+  point in the string direction and is removed by a unit gauge.  The two
+  **divisor coordinates** are gauged away and their bidegree mirror map is
+  inverted.  These operations suffice only when every remaining
+  positive-degree `z^-1` coefficient is zero.
+- A surviving `z^-1` coefficient in a **higher cohomology direction** is not
+  another scalar mirror coordinate.  It says that the I-function has selected
+  a genuinely big-quantum path.  Along that path `q d/dq` inserts the grading
+  divisor *plus higher primary fields*, so feeding it to the small divisor
+  reconstruction corrupts the quantum product and the R/graph theory.  A
+  generalized mirror transformation is required to return to the small
+  slice; until it exists, the correct behavior is `UnsupportedInvariant`.
+- This gives a sharper support boundary than the word "non-Fano."  `F_2` and
+  the normalized mixed-sign holdout `P(O ⊕ O(3) ⊕ O(3)) -> P^2` have no
+  higher-primary remainder after unit/divisor normalization and remain
+  supported.  The normalized `F_4` presentation `[0,4]` and the tested non-nef
+  rank-three presentations `[0,1,2]` and `[0,4,5]` do retain one and now fail
+  closed.  Earlier isolated agreements of those targets with deformation-
+  equivalent products did not certify their small GW theories and are no
+  longer validation claims.  An exponential "full-vector mirror gauge" is
+  not a substitute for the missing generalized transformation.
+- Truncating the Laurent tail is independently part of the math.  Once the
+  positive factor has a term `z^p`, the recursive split can pull a
+  lower-degree coefficient `z^{-s-p}` back into `z^{-s}`.  The safe window is
+  determined by the actual nonnegative `z` support of the raw bidegree
+  fundamental frame and the maximum length of a lower-degree dependency
+  chain.  Correct tail retention is necessary even for supported targets, but
+  it cannot remove a genuine higher-primary mirror coordinate.
 - There is an earlier instance of the same noncommutativity inside each scalar
-  fixed-point I-function coefficient.  If
-  `D_l = d2 + a_l d1 < 0`, its numerator contributes as many as
-  `max(-D_l-1, 0)` positive powers of `z`.  Truncating inverse-affine
-  denominator expansions before multiplying those numerators discards terms
-  that can subsequently move back into the requested window.  One safe
-  working lower bound is the final lower bound minus the sum of these future
-  shifts.  The bundle implementation uses the equivalent and simpler exact
-  ordering: form every positive-`z` numerator polynomial first, then expand
-  the remaining inverse factors, which can only lower `z`-degree, directly to
-  the final bound.  This is a property of effective section classes written
-  with a negative fiber coordinate, not a license to classify them as
-  ineffective.
+  fixed-point I-function coefficient.  If `D_l = d2 + a_l d1 < 0`, its
+  numerator contributes as many as `max(-D_l-1, 0)` positive powers of `z`.
+  Truncating inverse-affine denominator expansions before multiplying those
+  numerators discards terms that can subsequently move back into the requested
+  window.  The bundle implementation forms every positive-`z` numerator
+  polynomial first, then expands the remaining inverse factors, which can
+  only lower `z`-degree, directly to the final bound.  This is a property of
+  effective section classes written with a negative fiber coordinate, not a
+  license to classify them as ineffective.
 - The equivariant negative-split backend has the same ordering hazard in its
   QRR multiplication.  For `O(-a)` in curve degree `d`, the Euler numerator
-  can raise `z` by `max(ad-1, 0)`.  That path therefore expands the projective
-  denominator through the requested floor minus the sum of those shifts, then
-  applies QRR and truncates to the caller's original floor.  Tests compare the
-  retained window with a separate, substantially deeper expansion before
-  trusting the default Birkhoff calibration.  The calibration itself then
-  previews the nonnegative `z` support, computes the recursive Birkhoff
-  dependency depths, and rebuilds with the additional flat-basis derivative
-  allowance when its initial final window is too shallow.  Per-coefficient
-  tail retention and calibration-level dependency depth are separate bounds;
-  fixing either one alone still leaves large twists incorrect.
+  can raise `z` by `max(ad-1, 0)`.  That path expands the projective
+  denominator through the requested floor minus those shifts, then applies
+  QRR and truncates to the caller's original floor.  Per-coefficient tail
+  retention and calibration-level Birkhoff dependency depth are separate
+  bounds; fixing either one alone still leaves large twists incorrect.
 
 Two meta-lessons outlived the specific bug.  First, **the diagnostic weight
 `(t, b·t)` and full-vector debugging are worth building** — printing the raw

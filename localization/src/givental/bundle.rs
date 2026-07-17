@@ -27,19 +27,27 @@
 //! That fundamental solution is Birkhoff factored over the full bidegree
 //! Novikov ring; the positive factor is the formal cone projection, including
 //! higher positive-`z` corrections.  The negative factor's first column is the
-//! projected cone point; its bidegree `z^{-1}` divisor part gives the two
-//! mirror-coordinate series, which are gauged away and inverted before any ray
-//! specialization.  Only then is the flat cone point restricted to rays
-//! `(Q1, Q2') = (t, b t)` and regenerated into the fundamental solution used
-//! by the graph engine and exact Vandermonde recovery.  The raw fundamental
-//! solution gives quantum multiplication by `D`; its metric-adjoint gives the
-//! descendant insertion operator, and flatness gives `R`.
+//! projected cone point.  Its positive-degree `z^{-1}` unit coordinate is
+//! gauged away, while its two divisor mirror-coordinate series are gauged away
+//! and inverted before any ray specialization.  A surviving higher-primary
+//! `z^{-1}` coordinate would describe a big-quantum path rather than the small
+//! divisor slice, so the backend fails closed until generalized mirror
+//! normalization is implemented.  Only a cone point with no such remainder is
+//! restricted to rays `(Q1, Q2') = (t, b t)` and regenerated into the
+//! fundamental solution used by the graph engine and exact Vandermonde
+//! recovery.  The raw fundamental solution gives quantum multiplication by
+//! `D`; its metric-adjoint gives the descendant insertion operator, and
+//! flatness gives `R`.
 //!
 //! **Validated scope.**  Regression tests cover Fano genus-zero bundle counts,
 //! `P(O + O) = P^1 x P^1` through higher `R` order, and the non-Fano
 //! `F_2 = P(O + O(2))` deformation dictionary against the independent product
-//! engine, including genus-one cases, plus rank-three deformations to
-//! `P^1 x P^2` in negative shifted-fiber directions.
+//! engine, including genus-one cases, and the normalized mixed-sign bundle
+//! `P(O + O(3) + O(3)) -> P^2`.  The normalized `F_4` presentation `[0,4]`
+//! and tested non-nef rank-three presentations `[0,1,2]` and `[0,4,5]`
+//! retain higher-primary `z^{-1}` coordinates and return `UnsupportedInvariant`
+//! pending generalized mirror normalization; their former isolated numerical
+//! coincidences are not small-theory validation.
 
 use super::*;
 use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
@@ -1366,7 +1374,15 @@ impl ProjectiveBundleRay {
         &self,
         cone_point: &HLaurentBidegreeSeries,
         q_degree: usize,
-    ) -> Result<(ScalarBidegreeSeries, ScalarBidegreeSeries), GwError> {
+    ) -> Result<
+        (
+            ScalarBidegreeSeries,
+            ScalarBidegreeSeries,
+            ScalarBidegreeSeries,
+        ),
+        GwError,
+    > {
+        let mut mirror_unit = ScalarBidegreeSeries::new();
         let mut mirror_first = ScalarBidegreeSeries::new();
         let mut mirror_second = ScalarBidegreeSeries::new();
         for (&grade, series) in cone_point {
@@ -1384,8 +1400,9 @@ impl ProjectiveBundleRay {
             if vector.iter().all(Rational::is_zero) {
                 continue;
             }
-            let (_, h_coordinate, shifted_fiber_coordinate) =
+            let (unit_coordinate, h_coordinate, shifted_fiber_coordinate) =
                 self.solve_unit_divisor_coordinates(&vector)?;
+            scalar_bidegree_add_term(&mut mirror_unit, grade, unit_coordinate, q_degree);
             scalar_bidegree_add_term(&mut mirror_first, grade, h_coordinate, q_degree);
             scalar_bidegree_add_term(
                 &mut mirror_second,
@@ -1394,18 +1411,35 @@ impl ProjectiveBundleRay {
                 q_degree,
             );
         }
-        Ok((mirror_first, mirror_second))
+        Ok((mirror_unit, mirror_first, mirror_second))
     }
 
     fn bidegree_mirror_gauge(
         &self,
+        mirror_unit: &ScalarBidegreeSeries,
         mirror_first: &ScalarBidegreeSeries,
         mirror_second: &ScalarBidegreeSeries,
         q_degree: usize,
     ) -> HLaurentBidegreeSeries {
+        // The J-slice fixes the flat coordinate along the unit as well as the
+        // two divisor coordinates.  Leaving a q-dependent unit coefficient
+        // in z^-1 evaluates the CohFT at a moving string-direction point; in
+        // particular q d/dq then acquires an extra unit derivative and no
+        // longer agrees with insertion of the grading divisor.  Non-Fano,
+        // mixed-sign bundles can have this unit mirror coordinate even after
+        // the upper-loop Birkhoff projection, so gauge it away explicitly.
+        let unit = self.insertion_class_vector(0, 0);
         let h = self.insertion_class_vector(1, 0);
         let shifted_fiber = self.shifted_fiber_divisor_vector();
         let mut exponent = HLaurentBidegreeSeries::new();
+        for (&grade, coefficient) in mirror_unit {
+            let series = exponent
+                .entry(grade)
+                .or_insert_with(|| HLaurentSeries::zero(self.size() - 1));
+            for (row, unit_coefficient) in unit.iter().enumerate() {
+                series.add_term(row, -1, -(coefficient.clone() * unit_coefficient.clone()));
+            }
+        }
         for (&grade, coefficient) in mirror_first {
             let series = exponent
                 .entry(grade)
@@ -1435,9 +1469,10 @@ impl ProjectiveBundleRay {
         cone_point: &HLaurentBidegreeSeries,
         q_degree: usize,
     ) -> Result<HLaurentBidegreeSeries, GwError> {
-        let (mirror_first, mirror_second) =
+        let (mirror_unit, mirror_first, mirror_second) =
             self.bidegree_mirror_maps_from_cone_point(cone_point, q_degree)?;
-        let gauge = self.bidegree_mirror_gauge(&mirror_first, &mirror_second, q_degree);
+        let gauge =
+            self.bidegree_mirror_gauge(&mirror_unit, &mirror_first, &mirror_second, q_degree);
         let gauged = h_bidegree_mul(
             &gauge,
             cone_point,
@@ -1447,12 +1482,40 @@ impl ProjectiveBundleRay {
         );
         let (inverse_first, inverse_second) =
             invert_bidegree_mirror_map(&mirror_first, &mirror_second, q_degree);
-        Ok(h_bidegree_compose(
-            &gauged,
-            &inverse_first,
-            &inverse_second,
-            q_degree,
-        ))
+        let flat_cone_point =
+            h_bidegree_compose(&gauged, &inverse_first, &inverse_second, q_degree);
+
+        // A two-parameter small J-function may have no positive-degree
+        // z^-1 coordinate after removing the unit and two divisor mirror
+        // coordinates.  A surviving higher-cohomology component means that
+        // the I-function has landed on a genuinely big-quantum path.  Along
+        // that path q d/dq is insertion of the grading divisor plus additional
+        // primary directions, so treating it as the small divisor direction
+        // corrupts R/graph reconstruction (the divisor equation already
+        // detects this in genus zero).  Recovering the small slice requires a
+        // generalized mirror transformation, not another scalar gauge; fail
+        // closed until that transformation is implemented.
+        for (&grade, series) in &flat_cone_point {
+            if grade == (0, 0) || grade.0 + grade.1 > q_degree {
+                continue;
+            }
+            for power in 0..self.size() {
+                let Some(coefficient) = series
+                    .terms_at_h_power(power)
+                    .and_then(|terms| terms.get(&-1))
+                else {
+                    continue;
+                };
+                if !coefficient.is_zero() {
+                    return Err(GwError::UnsupportedInvariant(format!(
+                        "projective-bundle Birkhoff cone retains a higher-primary z^-1 mirror coordinate at shifted bidegree ({}, {}), D-power {}; generalized mirror normalization is required",
+                        grade.0, grade.1, power
+                    )));
+                }
+            }
+        }
+
+        Ok(flat_cone_point)
     }
 
     fn flat_bidegree_ray_cone_point(
@@ -2478,6 +2541,180 @@ mod tests {
         }
     }
 
+    fn three_insertion_permutations(
+        insertions: &[BundleInsertion; 3],
+    ) -> Vec<Vec<BundleInsertion>> {
+        const PERMUTATIONS: [[usize; 3]; 6] = [
+            [0, 1, 2],
+            [0, 2, 1],
+            [1, 0, 2],
+            [1, 2, 0],
+            [2, 0, 1],
+            [2, 1, 0],
+        ];
+        PERMUTATIONS
+            .into_iter()
+            .map(|order| {
+                order
+                    .into_iter()
+                    .map(|index| insertions[index].clone())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fano_asymmetric_rank3_three_primary_shortcut_matches_graph_series() {
+        let target = ProjectiveBundleRay::new(
+            2,
+            vec![0, 0, 1],
+            vec![Rational::from(2), Rational::from(5), Rational::from(11)],
+            vec![Rational::from(17), Rational::from(31), Rational::from(53)],
+            Rational::from(2),
+        )
+        .unwrap();
+        let provider = BundleRayProvider::new(target);
+
+        // The degree-one triple has total codimension seven, matching the
+        // fiber class in that ray coefficient.  The degree-two triple has
+        // total codimension ten, matching the twice-fiber class.  Distinct
+        // insertions make all six marked-leg orders observable.
+        let cases = [
+            (
+                1,
+                [
+                    BundleInsertion::new(0, 2, 2),
+                    BundleInsertion::new(0, 1, 1),
+                    BundleInsertion::new(0, 1, 0),
+                ],
+            ),
+            (
+                2,
+                [
+                    BundleInsertion::new(0, 2, 2),
+                    BundleInsertion::new(0, 1, 2),
+                    BundleInsertion::new(0, 2, 1),
+                ],
+            ),
+        ];
+
+        for (degree, insertions) in cases {
+            let permutations = three_insertion_permutations(&insertions);
+            let generic =
+                compute_semisimple_graph_series(&provider, 0, degree, &permutations[0], None)
+                    .unwrap()
+                    .coeff(degree)
+                    .cloned()
+                    .unwrap_or_else(RatFun::zero);
+            assert!(!generic.is_zero(), "degree-{degree} probe must be nonzero");
+            for permutation in &permutations {
+                let direct = provider
+                    .direct_value(0, degree, &permutation, None)
+                    .unwrap()
+                    .expect("three primary insertions must use the shortcut");
+                assert_eq!(
+                    direct, generic,
+                    "shortcut and graph series differ in degree {degree} for {permutation:?}"
+                );
+            }
+
+            let insertions = permutations.into_iter().next().unwrap();
+            let three_point = generic;
+            let mut with_xi = insertions.clone();
+            with_xi.push(BundleInsertion::new(0, 0, 1));
+            let mut with_h = insertions;
+            with_h.push(BundleInsertion::new(0, 1, 0));
+            let xi_value = compute_semisimple_graph_series(&provider, 0, degree, &with_xi, None)
+                .unwrap()
+                .coeff(degree)
+                .cloned()
+                .unwrap_or_else(RatFun::zero);
+            let h_value = compute_semisimple_graph_series(&provider, 0, degree, &with_h, None)
+                .unwrap()
+                .coeff(degree)
+                .cloned()
+                .unwrap_or_else(RatFun::zero);
+
+            // D = xi + (A+1)H = xi + 2H grades the shifted Novikov
+            // variable, so adding D multiplies its q^degree coefficient by
+            // `degree`.
+            let divisor_value = &xi_value + &(&h_value * &RatFun::from_rational(Rational::from(2)));
+            let expected_divisor = &three_point * &RatFun::from_rational(Rational::from(degree));
+            assert_eq!(
+                divisor_value, expected_divisor,
+                "grading-divisor equation failed in degree {degree}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_twist_bundle_three_primary_divisor_equation() {
+        let provider = BundleRayProvider::new(
+            ProjectiveBundleRay::new(
+                1,
+                vec![0, 0],
+                base_weights(),
+                fiber_weights(),
+                Rational::from(2),
+            )
+            .unwrap(),
+        );
+        let degree = 2;
+        let point = BundleInsertion::new(0, 1, 1);
+        let insertions = vec![point.clone(), point.clone(), point];
+        let direct = provider
+            .direct_value(0, degree, &insertions, None)
+            .unwrap()
+            .unwrap();
+        let generic = compute_semisimple_graph_series(&provider, 0, degree, &insertions, None)
+            .unwrap()
+            .coeff(degree)
+            .cloned()
+            .unwrap_or_else(RatFun::zero);
+        assert_eq!(direct, generic);
+
+        let mut with_xi = insertions.clone();
+        with_xi.push(BundleInsertion::new(0, 0, 1));
+        let mut with_h = insertions;
+        with_h.push(BundleInsertion::new(0, 1, 0));
+        let xi_value = compute_semisimple_graph_series(&provider, 0, degree, &with_xi, None)
+            .unwrap()
+            .coeff(degree)
+            .cloned()
+            .unwrap_or_else(RatFun::zero);
+        let h_value = compute_semisimple_graph_series(&provider, 0, degree, &with_h, None)
+            .unwrap()
+            .coeff(degree)
+            .cloned()
+            .unwrap_or_else(RatFun::zero);
+        assert_eq!(
+            &xi_value + &h_value,
+            &generic * &RatFun::from_rational(Rational::from(degree))
+        );
+    }
+
+    #[test]
+    fn nonsemipositive_rank3_bundle_requires_generalized_mirror_normalization() {
+        let target = ProjectiveBundleRay::new(
+            2,
+            vec![0, 1, 4],
+            vec![Rational::from(2), Rational::from(5), Rational::from(11)],
+            vec![Rational::from(17), Rational::from(31), Rational::from(53)],
+            Rational::from(2),
+        )
+        .unwrap();
+        let error = target
+            .normalized_flat_bidegree_cone_point(1, 1)
+            .unwrap_err();
+        assert!(matches!(error, GwError::UnsupportedInvariant(_)));
+        assert!(error.to_string().contains(
+            "higher-primary z^-1 mirror coordinate at shifted bidegree (1, 0), D-power 2"
+        ));
+        assert!(error
+            .to_string()
+            .contains("generalized mirror normalization is required"));
+    }
+
     #[test]
     fn bundle_ray_rejects_extreme_base_dimension_fallibly() {
         let error = ProjectiveBundleRay::new(
@@ -2871,81 +3108,67 @@ mod tests {
     }
 
     #[test]
-    fn f4_middle_deformation_class_matches_p1xp1_ruling() {
-        // P(O(2) + O(-2)) normalizes to P(O(4) + O).  Under the deformation
-        // to P^1 x P^1, y = xi + 2H is the second product divisor, so the
-        // product ruling <pt,H,H> = 1 corresponds to class (1,-2) and
-        // insertions <H xi,H,H> on the bundle.
-        let point = BundleInsertion::new(0, 1, 1);
-        let h = BundleInsertion::new(0, 1, 0);
-        let invariants = reconstruct_bundle_invariants(
+    fn f4_deformation_presentation_requires_generalized_mirror_normalization() {
+        // P(O(2) + O(-2)) normalizes to P(O(4) + O).  Its Birkhoff cone has
+        // higher-primary mirror coordinates, so the old isolated agreement
+        // with a P1 x P1 ruling did not certify the small GW theory.
+        let target = ProjectiveBundleRay::new(
             1,
-            &[4, 0],
-            &base_weights(),
-            &fiber_weights(),
-            0,
-            3,
-            &[point, h.clone(), h],
+            vec![4, 0],
+            base_weights(),
+            fiber_weights(),
+            Rational::one(),
         )
         .unwrap();
-        let value = invariants
-            .into_iter()
-            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -2)
-            .map(|(_, _, value)| value)
-            .expect("F_4 middle deformation class present in shifted slice");
-        assert_eq!(value, Rational::one());
+        let error = target
+            .normalized_flat_bidegree_cone_point(1, 1)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("generalized mirror normalization is required"));
     }
 
     #[test]
-    fn rank3_negative_direction_matches_p1xp2_base_ruling() {
+    fn rank3_deformation_presentation_requires_generalized_mirror_normalization() {
         // P(O(1) + O + O(-1)) normalizes to P(O(2) + O(1) + O).  Under
-        // deformation to P^1 x P^2, y = xi + H is the product hyperplane on
-        // P^2, so the product ruling <pt,H,H> = 1 corresponds to class
-        // (1,-1) and insertions <H xi^2,H,H> on the bundle.
-        let point = BundleInsertion::new(0, 1, 2);
-        let h = BundleInsertion::new(0, 1, 0);
-        let invariants = reconstruct_bundle_invariants(
+        // deformation it has isolated numerical coincidences with P1 x P2,
+        // but a higher-primary mirror coordinate prevents interpreting this
+        // two-parameter I-function path as the small GW slice.
+        let target = ProjectiveBundleRay::new(
             1,
-            &[2, 1, 0],
-            &[Rational::from(1), Rational::from(2)],
-            &[Rational::from(0), Rational::from(10), Rational::from(30)],
-            0,
-            2,
-            &[point, h.clone(), h],
+            vec![2, 1, 0],
+            vec![Rational::from(1), Rational::from(2)],
+            vec![Rational::from(0), Rational::from(10), Rational::from(30)],
+            Rational::one(),
         )
         .unwrap();
-        let value = invariants
-            .into_iter()
-            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -1)
-            .map(|(_, _, value)| value)
-            .expect("rank-3 negative class present in shifted slice");
-        assert_eq!(value, Rational::one());
+        let error = target
+            .normalized_flat_bidegree_cone_point(1, 1)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("generalized mirror normalization is required"));
     }
 
     #[test]
-    #[ignore = "slow rank-3 deformation acceptance test"]
-    fn rank3_harder_negative_direction_matches_p1xp2_base_ruling() {
+    fn harder_rank3_deformation_requires_generalized_mirror_normalization() {
         // P(O(2) + O(1) + O(-3)) normalizes to P(O(5) + O(4) + O).  The
-        // product hyperplane is y = xi + 3H, hence the same product ruling is
-        // the bundle class (1,-3) with insertions <H xi^2,H,H>.
-        let point = BundleInsertion::new(0, 1, 2);
-        let h = BundleInsertion::new(0, 1, 0);
-        let invariants = reconstruct_bundle_invariants(
+        // same higher-primary obstruction is already visible at the first
+        // positive shifted bidegree, before any graph reconstruction.
+        let target = ProjectiveBundleRay::new(
             1,
-            &[5, 4, 0],
-            &[Rational::from(1), Rational::from(2)],
-            &[Rational::from(0), Rational::from(10), Rational::from(30)],
-            0,
-            3,
-            &[point, h.clone(), h],
+            vec![5, 4, 0],
+            vec![Rational::from(1), Rational::from(2)],
+            vec![Rational::from(0), Rational::from(10), Rational::from(30)],
+            Rational::one(),
         )
         .unwrap();
-        let value = invariants
-            .into_iter()
-            .find(|(d1, d2, _)| *d1 == 1 && *d2 == -3)
-            .map(|(_, _, value)| value)
-            .expect("rank-3 harder negative class present in shifted slice");
-        assert_eq!(value, Rational::one());
+        let error = target
+            .normalized_flat_bidegree_cone_point(1, 1)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("generalized mirror normalization is required"));
     }
 
     #[test]
