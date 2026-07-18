@@ -2,9 +2,9 @@ use clap::{Args, Parser, Subcommand};
 use gw_pn::constraints::virasoro::{
     evaluate_constraint_with_bounds as evaluate_virasoro_constraint,
     generate_constraint_with_term_limit, scan_constraints, CanonicalCorrelatorEvaluator,
-    CanonicalTheoryNotation, CorrelatorEvaluationBounds, Descendant,
-    NegativeSplitCompletionEvaluator, ProductProjectiveEvaluator, ProjectiveBundleEvaluator,
-    ProjectiveSpaceEvaluator, ResidualOutcome, ResidualStatus, TimeMonomial, VirasoroScanBounds,
+    CorrelatorEvaluationBounds, Descendant, NegativeSplitCompletionEvaluator,
+    ProductProjectiveEvaluator, ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator,
+    ResidualOutcome, ResidualStatus, TimeMonomial, VirasoroScanBounds,
 };
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
@@ -584,10 +584,9 @@ fn run_virasoro_formula(args: VirasoroFormulaArgs) -> Result<(), GwError> {
         time,
         args.term_limit,
     )?;
-    let notation = CanonicalTheoryNotation::new(target.theory());
     match args.format.trim().to_ascii_lowercase().as_str() {
-        "text" | "txt" => print!("{}", constraint.render_text_with(&notation)),
-        "tex" | "latex" => print!("{}", constraint.render_tex_with(&notation)),
+        "text" | "txt" => print!("{}", constraint.render_text_for_theory(target.theory())?),
+        "tex" | "latex" => print!("{}", constraint.render_tex_for_theory(target.theory())?),
         other => {
             return Err(GwError::ParseError(format!(
                 "unknown Virasoro formula format `{other}`; expected text or tex"
@@ -610,8 +609,7 @@ fn run_virasoro_check(args: VirasoroCheckArgs) -> Result<(), GwError> {
         args.term_limit,
     )?;
     if args.show_formula {
-        let notation = CanonicalTheoryNotation::new(target.theory());
-        println!("{}", constraint.render_text_with(&notation));
+        println!("{}", constraint.render_text_for_theory(target.theory())?);
     }
     let report = evaluate_virasoro_constraint(
         target.evaluator()?,

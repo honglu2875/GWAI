@@ -7,6 +7,9 @@
 
 mod birkhoff;
 pub(crate) use birkhoff::*;
+mod h_laurent;
+pub(crate) use h_laurent::*;
+pub use h_laurent::{HCoeffLaurentSeries, HLaurentSeries};
 mod cyclic;
 pub(crate) use cyclic::{CyclicCoordinates, CyclicQuantumAlgebra};
 mod interpolation;

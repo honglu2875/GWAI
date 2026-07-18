@@ -1,5 +1,5 @@
-use crate::algebra::{lambda, q, RatFun};
-use crate::error::GwError;
+use crate::core::algebra::{lambda, q, RatFun};
+use crate::core::error::GwError;
 
 use super::quotient::OneGeneratorQuotient;
 use super::univariate::UniPoly;

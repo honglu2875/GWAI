@@ -1,6 +1,7 @@
-use super::ConstraintNotation;
-use crate::algebra::Rational;
-use crate::theory::{BasisId, CurveClass, GwTheory};
+use super::{CanonicalVirasoroConstraint, ConstraintNotation};
+use crate::core::algebra::Rational;
+use crate::core::error::GwError;
+use crate::core::theory::{BasisId, CurveClass, GwTheory};
 
 /// Human-readable names sourced from the same canonical theory that generated
 /// the equation.  This object supplies notation only; it cannot alter any
@@ -25,11 +26,7 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
     }
 
     fn degree_tex(&self, degree: &CurveClass) -> String {
-        named_degree(
-            degree,
-            &self.theory.curve_class_space().coordinate_names,
-            true,
-        )
+        named_degree(degree, &self.theory.curve_coordinate_tex_names(), true)
     }
 
     fn basis_text(&self, basis: &BasisId) -> String {
@@ -41,13 +38,9 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
     }
 
     fn basis_tex(&self, basis: &BasisId) -> String {
-        let text = self.basis_text(basis);
-        let symbolic = text
-            .replace("H1", "H_1")
-            .replace("H2", "H_2")
-            .replace("xi", "\\xi")
-            .replace(' ', "\\,");
-        brace_numeric_superscripts(&symbolic)
+        self.theory
+            .basis_tex(*basis)
+            .unwrap_or_else(|| format!("e_{{{}}}", basis.0))
     }
 
     fn coefficient_text(&self, coefficient: &Rational) -> String {
@@ -57,29 +50,6 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
     fn coefficient_tex(&self, coefficient: &Rational) -> String {
         coefficient.to_string()
     }
-}
-
-fn brace_numeric_superscripts(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut characters = input.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character != '^' {
-            output.push(character);
-            continue;
-        }
-        let mut exponent = String::new();
-        while characters.peek().is_some_and(|next| next.is_ascii_digit()) {
-            exponent.push(characters.next().expect("peeked digit"));
-        }
-        if exponent.is_empty() {
-            output.push('^');
-        } else {
-            output.push_str("^{");
-            output.push_str(&exponent);
-            output.push('}');
-        }
-    }
-    output
 }
 
 fn named_degree(degree: &CurveClass, names: &[String], tex: bool) -> String {
@@ -95,25 +65,46 @@ fn named_degree(degree: &CurveClass, names: &[String], tex: bool) -> String {
                 .get(index)
                 .cloned()
                 .unwrap_or_else(|| format!("d{}", index + 1));
-            let name = if tex {
-                raw_name
-                    .replace("d1", "d_1")
-                    .replace("d2", "d_2")
-                    .replace("H.beta", "H\\!\\cdot\\!\\beta")
-                    .replace("xi.beta", "\\xi\\!\\cdot\\!\\beta")
-            } else {
-                raw_name
-            };
-            format!("{name}={coordinate}")
+            format!("{raw_name}={coordinate}")
         })
         .collect::<Vec<_>>();
     format!("({})", assignments.join(if tex { ",\\ " } else { ", " }))
 }
 
+impl CanonicalVirasoroConstraint {
+    fn checked_notation<'a>(
+        &self,
+        theory: &'a dyn GwTheory,
+    ) -> Result<CanonicalTheoryNotation<'a>, GwError> {
+        if self.theory_fingerprint != theory.theory_fingerprint() {
+            return Err(GwError::ConventionMismatch(
+                "cannot render a Virasoro constraint with notation from a different theory"
+                    .to_string(),
+            ));
+        }
+        Ok(CanonicalTheoryNotation::new(theory))
+    }
+
+    /// Render using labels supplied by the exact canonical theory that
+    /// generated this constraint.
+    pub fn render_text_for_theory(&self, theory: &dyn GwTheory) -> Result<String, GwError> {
+        Ok(self.render_text_with(&self.checked_notation(theory)?))
+    }
+
+    /// Render TeX using labels supplied by the exact canonical theory that
+    /// generated this constraint.
+    pub fn render_tex_for_theory(&self, theory: &dyn GwTheory) -> Result<String, GwError> {
+        Ok(self.render_tex_with(&self.checked_notation(theory)?))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theory::{ProductProjectiveTheory, ProjectiveBundleTheory, ProjectiveSpaceTheory};
+    use crate::constraints::virasoro::{generate_constraint, TimeMonomial};
+    use crate::spaces::product_projective::ProductProjectiveTheory;
+    use crate::spaces::projective_bundle::ProjectiveBundleTheory;
+    use crate::spaces::projective_space::ProjectiveSpaceTheory;
 
     #[test]
     fn notation_uses_canonical_theory_basis_and_curve_names() {
@@ -149,5 +140,18 @@ mod tests {
             notation.basis_tex(&bundle.basis_id(0, 10).unwrap()),
             "\\xi^{10}"
         );
+    }
+
+    #[test]
+    fn checked_rendering_rejects_another_theorys_notation() {
+        let p1 = ProjectiveSpaceTheory::new(1);
+        let p2 = ProjectiveSpaceTheory::new(2);
+        let constraint = generate_constraint(&p1, 0, 0, p1.curve(0), TimeMonomial::one()).unwrap();
+
+        assert!(constraint.render_text_for_theory(&p1).is_ok());
+        assert!(matches!(
+            constraint.render_tex_for_theory(&p2),
+            Err(GwError::ConventionMismatch(_))
+        ));
     }
 }

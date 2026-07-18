@@ -1,5 +1,5 @@
-use crate::algebra::{RatFun, Rational};
-use crate::error::GwError;
+use crate::core::algebra::{RatFun, Rational};
+use crate::core::error::GwError;
 use crate::{Insertion, InvariantRequest, InvariantResult};
 use std::collections::BTreeMap;
 

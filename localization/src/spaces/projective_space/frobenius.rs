@@ -7,9 +7,9 @@
 //! are the corresponding Lagrange interpolation projectors.
 
 use super::equivariant::{CohomologyClass, EquivariantProjectiveSpace};
-use crate::algebra::{lambda, RatFun};
-use crate::error::GwError;
-use crate::series::{QSeries, SeriesMatrix};
+use crate::core::algebra::{lambda, RatFun};
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductKind {
@@ -388,7 +388,7 @@ pub fn characteristic_derivative_series(n: usize, x: &QSeries) -> QSeries {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::q;
+    use crate::core::algebra::q;
 
     #[test]
     fn companion_matrix_has_shift_columns() {
@@ -574,7 +574,7 @@ mod tests {
                 let value = diff
                     .evaluate_lambda_weights(left.n, &rational_weights)
                     .expect("test specialization should avoid poles");
-                assert_eq!(value, crate::algebra::Rational::zero());
+                assert_eq!(value, crate::core::algebra::Rational::zero());
             }
         }
     }
@@ -602,7 +602,7 @@ mod tests {
                     let value = diff
                         .evaluate_lambda_weights(target_n, &rational_weights)
                         .expect("test specialization should avoid poles");
-                    assert_eq!(value, crate::algebra::Rational::zero());
+                    assert_eq!(value, crate::core::algebra::Rational::zero());
                 }
             }
         }

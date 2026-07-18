@@ -1,7 +1,7 @@
 use std::fmt;
 
-use crate::algebra::{RatFun, Rational};
-use crate::error::GwError;
+use crate::core::algebra::{RatFun, Rational};
+use crate::core::error::GwError;
 
 /// Sparse enough for graph formulas, simple enough to audit.
 ///
@@ -233,7 +233,7 @@ impl fmt::Display for UniPoly {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::q;
+    use crate::core::algebra::q;
 
     #[test]
     fn univariate_arithmetic_collects_terms() {

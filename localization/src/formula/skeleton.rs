@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::time::Instant;
 
-use crate::error::GwError;
+use crate::core::error::GwError;
+use crate::core::moduli::pointed_curve_is_stable;
 use crate::graphs::{
-    is_stable_moduli_range, stable_graph_dimension, stable_graph_generation_bounds,
-    try_stable_graphs, StableEdge, StableGraph,
+    stable_graph_dimension, stable_graph_generation_bounds, try_stable_graphs, StableEdge,
+    StableGraph,
 };
 
 use super::basis::basis_glossary;
@@ -83,7 +84,7 @@ impl FormulaRequest {
                 "formula skeleton needs at least one canonical color".to_string(),
             ));
         }
-        if !is_stable_moduli_range(self.genus, self.markings) {
+        if !pointed_curve_is_stable(self.genus, self.markings) {
             return Err(GwError::UnsupportedInvariant(
                 "formula skeleton is implemented for stable (g,m) ranges only".to_string(),
             ));

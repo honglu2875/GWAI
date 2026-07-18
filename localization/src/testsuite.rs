@@ -1,12 +1,10 @@
-use crate::algebra::{RatFun, Rational};
-use crate::givental::{
-    compute_by_givental_graphs, projective_space_descendant_s_matrix,
-    projective_space_j_calibration, CanonicalFrameConvention, SeriesRMatrix,
-};
-use crate::series::{QSeries, SeriesMatrix};
+use crate::core::algebra::{RatFun, Rational};
+use crate::core::series::{QSeries, SeriesMatrix};
+use crate::givental::{compute_by_givental_graphs, CanonicalFrameConvention, SeriesRMatrix};
 use crate::spaces::projective_space::{
-    canonical_root_series, characteristic_series, CohomologyClass, EquivariantProjectiveSpace,
-    FrobeniusData, SeriesCohomologyClass,
+    canonical_root_series, characteristic_series, projective_space_descendant_s_matrix,
+    projective_space_j_calibration, CohomologyClass, EquivariantProjectiveSpace, FrobeniusData,
+    SeriesCohomologyClass,
 };
 use crate::tautological::{TautologicalOracle, WittenKontsevich};
 use crate::validation_backends::growi::{
@@ -606,7 +604,7 @@ fn expect_eq<T: std::fmt::Debug + PartialEq>(actual: T, expected: T) -> Result<(
 
 fn validation_seed(
     req: &InvariantRequest,
-) -> Result<crate::InvariantResult, crate::error::GwError> {
+) -> Result<crate::InvariantResult, crate::core::error::GwError> {
     crate::validation::seed_compute(req, "validation-seed")
 }
 

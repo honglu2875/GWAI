@@ -1,6 +1,6 @@
 use super::solve_rational_system;
-use crate::algebra::Rational;
-use crate::error::GwError;
+use crate::core::algebra::Rational;
+use crate::core::error::GwError;
 
 /// Maximum number of one-parameter Novikov rays materialized by an exact
 /// homogeneous two-degree reconstruction.

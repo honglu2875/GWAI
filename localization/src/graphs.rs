@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::thread;
 
-use crate::error::GwError;
+use crate::core::error::GwError;
+use crate::core::moduli::pointed_curve_is_stable;
 
 /// Maximum `2g - 2 + n` accepted by the built-in stable-graph generator.
 /// Complexity eight retains the documented frontier probes while preventing
@@ -20,19 +21,9 @@ pub const MAX_STABLE_GRAPH_COMPLEXITY: usize = 8;
 /// Independent cap on labelled legs, whose assignments multiply graph counts.
 pub const MAX_STABLE_GRAPH_MARKINGS: usize = 8;
 
-/// Stability of a vertex (or complete connected curve) without evaluating
-/// the potentially overflowing expression `2g + n > 2`.
-pub(crate) fn is_stable_moduli_range(genus: usize, markings: usize) -> bool {
-    match genus {
-        0 => markings >= 3,
-        1 => markings >= 1,
-        _ => true,
-    }
-}
-
 /// Complex dimension `3g - 3 + n` of a stable moduli space.
 pub(crate) fn stable_graph_dimension(genus: usize, markings: usize) -> Result<usize, GwError> {
-    if !is_stable_moduli_range(genus, markings) {
+    if !pointed_curve_is_stable(genus, markings) {
         return Err(GwError::UnsupportedInvariant(
             "stable-graph dimension is defined here only for stable (g,n) ranges".to_string(),
         ));
@@ -54,7 +45,7 @@ pub fn stable_graph_generation_bounds(
     genus: usize,
     markings: usize,
 ) -> Result<StableGraphBounds, GwError> {
-    if !is_stable_moduli_range(genus, markings) {
+    if !pointed_curve_is_stable(genus, markings) {
         return Err(GwError::UnsupportedInvariant(
             "stable-graph generation requires a stable (g,n) range".to_string(),
         ));
@@ -193,7 +184,7 @@ impl StableGraph {
         self.vertices
             .iter()
             .enumerate()
-            .all(|(idx, vertex)| is_stable_moduli_range(vertex.genus, self.valence(idx)))
+            .all(|(idx, vertex)| pointed_curve_is_stable(vertex.genus, self.valence(idx)))
     }
 
     pub fn canonical_label(&self) -> String {

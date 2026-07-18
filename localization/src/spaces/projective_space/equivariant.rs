@@ -5,8 +5,8 @@
 //! small quantum relation `prod_i(H-lambda_i)=q`.  Fixed-point restrictions and
 //! Atiyah-Bott pairings are used throughout the Frobenius and calibration code.
 
-use crate::algebra::{lambda, q, RatFun, Rational};
-use crate::error::GwError;
+use crate::core::algebra::{lambda, q, RatFun, Rational};
+use crate::core::error::GwError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CohomologyClass {

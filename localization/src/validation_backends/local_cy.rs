@@ -6,7 +6,7 @@
 //! table because GV invariants must be transformed before comparison with GW
 //! computations.
 
-use crate::algebra::Rational;
+use crate::core::algebra::Rational;
 
 /// Explicit work envelope for the coefficient-series GV-to-GW validation
 /// transform.  The bundled local-P2 oracle only needs genera through 7.

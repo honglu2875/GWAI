@@ -2,11 +2,27 @@
 //! Birkhoff/relation calibration skeletons and candidates, and the twisted
 //! Frobenius / quantum-product / R-matrix machinery they are solved from.
 
-use super::*;
-use crate::algebra::{Coeff, RatFun, Rational};
-use crate::error::GwError;
-use crate::givental::{CalibrationId, SeriesSMatrix};
-use crate::series::{QSeries, SeriesMatrix};
+use super::hypergeometric::{
+    NegativeSplitEquivariantHypergeometricModel, NegativeSplitLineHypergeometricModel,
+};
+use super::numeric::constant_matrix_at_q_degree;
+use super::provider::{TwistedCalibrationMode, TwistedCalibrationValidation};
+use super::twist::NegativeSplitBundleTwist;
+use crate::core::algebra::{Coeff, RatFun, Rational};
+use crate::core::error::GwError;
+use crate::core::series::{
+    compose_plain_series, integrate_q_derivative_zero_constant_matrix, QSeries, SeriesMatrix,
+};
+use crate::givental::{
+    bernoulli_asymptotic_coefficient, exp_scalar_z_series, solve_r_coefficients_from_flatness,
+    CalibrationId, CanonicalFrameConvention, SemisimpleCalibration, SeriesRMatrix, SeriesSMatrix,
+};
+use crate::reconstruction::{
+    canonical_evaluation_matrix_local, derivative_qseries_polynomial_coefficients,
+    determinant_qseries_polynomial_matrix, evaluate_qseries_polynomial, invert_series_matrix_coeff,
+    multiply_qseries_polynomial_by_affine, multiply_qseries_polynomial_by_linear,
+    relative_sqrt_delta_series_coeff, relative_sqrt_delta_series_local, series_matrix_scale,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TwistedQuantumRelation {
@@ -39,7 +55,7 @@ impl TwistedQuantumRelation {
         );
         let mut base = vec![QSeries::one(q_degree)];
         for weight in &self.weights {
-            base = multiply_polynomial_by_linear_series(
+            base = multiply_qseries_polynomial_by_linear(
                 &base,
                 &QSeries::constant(RatFun::from_rational(-weight.clone()), q_degree),
                 q_degree,
@@ -50,7 +66,7 @@ impl TwistedQuantumRelation {
         for degree in self.twist.degrees() {
             let factor = RatFun::from_rational(-Rational::from(*degree));
             for _ in 0..*degree {
-                fiber = multiply_polynomial_by_linear_series(
+                fiber = multiply_qseries_polynomial_by_linear(
                     &fiber,
                     &QSeries::zero(q_degree),
                     q_degree,
@@ -559,7 +575,7 @@ pub(crate) fn negative_split_twisted_birkhoff_calibration_candidate_with_mode_an
         fiber_weights,
         mode,
     )?;
-    let coefficients = solve_twisted_r_coefficients(
+    let coefficients = solve_r_coefficients_from_flatness(
         &canonical.roots,
         &calibration.connection,
         &classical_diagonal,
@@ -630,7 +646,7 @@ pub(crate) fn negative_split_twisted_birkhoff_calibration_candidate_for_coeff_we
         base_weights,
         fiber_weights,
     )?;
-    let coefficients = solve_twisted_r_coefficients_coeff(
+    let coefficients = solve_r_coefficients_from_flatness(
         &canonical.roots,
         &calibration.connection,
         &classical_diagonal,
@@ -794,7 +810,7 @@ pub fn negative_split_twisted_relation_calibration_raw_candidate(
         base_weights,
         fiber_weights,
     )?;
-    let coefficients = solve_twisted_r_coefficients(
+    let coefficients = solve_r_coefficients_from_flatness(
         &canonical.roots,
         &connection,
         &classical_diagonal,
@@ -876,8 +892,11 @@ pub fn specialized_twisted_quantum_canonical_data(
             if other == branch {
                 continue;
             }
-            numerator =
-                multiply_polynomial_by_linear_series(&numerator, &roots[other].neg(), max_q_degree);
+            numerator = multiply_qseries_polynomial_by_linear(
+                &numerator,
+                &roots[other].neg(),
+                max_q_degree,
+            );
             denominator = denominator.mul(&roots[branch].sub(&roots[other]));
         }
         let denominator_inv = denominator.inverse()?;
@@ -1018,7 +1037,7 @@ pub(crate) fn twisted_base_polynomial_coefficients(
     }
     let mut out = vec![QSeries::one(q_degree)];
     for weight in base_weights {
-        out = multiply_polynomial_by_linear_series(
+        out = multiply_qseries_polynomial_by_linear(
             &out,
             &QSeries::constant(RatFun::from_rational(-weight.clone()), q_degree),
             q_degree,
@@ -1041,7 +1060,7 @@ pub(crate) fn twisted_base_polynomial_coefficients_coeff<C: Coeff>(
     }
     let mut out = vec![QSeries::<C>::one(q_degree)];
     for weight in base_weights {
-        out = multiply_polynomial_by_linear_series(
+        out = multiply_qseries_polynomial_by_linear(
             &out,
             &QSeries::constant(weight.neg(), q_degree),
             q_degree,
@@ -1065,7 +1084,7 @@ pub(crate) fn twisted_fiber_polynomial_coefficients(
     let mut out = vec![QSeries::one(q_degree)];
     for (degree, weight) in twist.degrees().iter().zip(fiber_weights) {
         for _ in 0..*degree {
-            out = multiply_polynomial_by_affine_h_series(
+            out = multiply_qseries_polynomial_by_affine(
                 &out,
                 &QSeries::constant(RatFun::from_rational(weight.clone()), q_degree),
                 &QSeries::constant(RatFun::from_rational(-Rational::from(*degree)), q_degree),
@@ -1667,8 +1686,7 @@ pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch(
     let mut exponent = vec![RatFun::zero(); z_order + 1];
     for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
-        let coefficient =
-            bernoulli_number_local(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1));
+        let coefficient = bernoulli_asymptotic_coefficient::<Rational>(r);
         let mut weight_sum = Rational::zero();
         for other in 0..=n {
             if other == branch {
@@ -1695,7 +1713,7 @@ pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch(
         }
         exponent[order] = RatFun::from_rational(coefficient * weight_sum);
     }
-    Ok(exp_scalar_z_series_local(&exponent))
+    Ok(exp_scalar_z_series(&exponent))
 }
 
 pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: Coeff>(
@@ -1709,9 +1727,7 @@ pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: 
     let mut exponent = vec![C::zero(); z_order + 1];
     for r in 1..=z_order.div_ceil(2) {
         let order = 2 * r - 1;
-        let coefficient = C::from_rational(
-            bernoulli_number_local(2 * r) / (Rational::from(2 * r) * Rational::from(2 * r - 1)),
-        );
+        let coefficient = bernoulli_asymptotic_coefficient::<C>(r);
         let mut weight_sum = C::zero();
         for other in 0..=n {
             if other == branch {
@@ -1733,106 +1749,5 @@ pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: 
         }
         exponent[order] = coefficient.mul(&weight_sum);
     }
-    Ok(exp_scalar_z_series_coeff(&exponent))
-}
-
-pub(crate) fn solve_twisted_r_coefficients(
-    roots: &[QSeries],
-    connection: &SeriesMatrix,
-    classical_diagonal: &[Vec<RatFun>],
-    q_degree: usize,
-    z_order: usize,
-) -> Result<Vec<SeriesMatrix>, GwError> {
-    solve_twisted_r_coefficients_coeff(roots, connection, classical_diagonal, q_degree, z_order)
-}
-
-pub(crate) fn solve_twisted_r_coefficients_coeff<C: Coeff>(
-    roots: &[QSeries<C>],
-    connection: &SeriesMatrix<C>,
-    classical_diagonal: &[Vec<C>],
-    q_degree: usize,
-    z_order: usize,
-) -> Result<Vec<SeriesMatrix<C>>, GwError> {
-    // Flatness recursion in canonical coordinates.  Off-diagonal entries are
-    // determined by dividing by root differences u_j-u_i; diagonal entries are
-    // integrated from the diagonal flatness equation with the classical
-    // Bernoulli/QRR value as the q^0 constant.
-    let size = roots.len();
-    let mut coefficients = Vec::with_capacity(z_order + 1);
-    coefficients.push(SeriesMatrix::<C>::identity(size, q_degree));
-
-    for order in 1..=z_order {
-        let previous = &coefficients[order - 1];
-        let recursion_source = previous.q_derivative().add(&connection.mul(previous));
-        let mut entries = vec![vec![QSeries::<C>::zero(q_degree); size]; size];
-
-        for row in 0..size {
-            for col in 0..size {
-                if row == col {
-                    continue;
-                }
-                let root_difference = roots[col].sub(&roots[row]);
-                entries[row][col] = recursion_source
-                    .entry(row, col)
-                    .neg()
-                    .div(&root_difference)?;
-            }
-        }
-
-        for branch in 0..size {
-            entries[branch][branch] = solve_twisted_r_diagonal_from_flatness_coeff(
-                connection,
-                &entries,
-                branch,
-                classical_diagonal[branch][order].clone(),
-                q_degree,
-            );
-        }
-
-        coefficients.push(SeriesMatrix::from_entries(entries));
-    }
-
-    Ok(coefficients)
-}
-
-pub(crate) fn solve_twisted_r_diagonal_from_flatness_coeff<C: Coeff>(
-    connection: &SeriesMatrix<C>,
-    entries: &[Vec<QSeries<C>>],
-    branch: usize,
-    constant: C,
-    q_degree: usize,
-) -> QSeries<C> {
-    // Solves (q d/dq + A_ii) R_k,ii = known one q-coefficient at a time.
-    // This is the piece that prevents the diagonal gauge from being silently
-    // frozen at its q^0 value.
-    let mut known = QSeries::<C>::zero(q_degree);
-    for (source, row) in entries.iter().enumerate() {
-        if source == branch {
-            continue;
-        }
-        known = known.add(&connection.entry(branch, source).mul(&row[branch]));
-    }
-    let target = known.neg();
-    let diagonal_connection = connection.entry(branch, branch);
-    let a0 = diagonal_connection
-        .coeff(0)
-        .cloned()
-        .unwrap_or_else(C::zero);
-
-    let mut coeffs = vec![C::zero(); q_degree + 1];
-    coeffs[0] = constant;
-    for degree in 1..=q_degree {
-        let mut numerator = target.coeff(degree).cloned().unwrap_or_else(C::zero);
-        for connection_degree in 1..=degree {
-            let term = diagonal_connection
-                .coeff(connection_degree)
-                .cloned()
-                .unwrap_or_else(C::zero)
-                .mul(&coeffs[degree - connection_degree]);
-            numerator = numerator.sub(&term);
-        }
-        let denominator = C::from_usize(degree).add(&a0);
-        coeffs[degree] = numerator.div(&denominator);
-    }
-    QSeries::from_coeffs(coeffs)
+    Ok(exp_scalar_z_series(&exponent))
 }

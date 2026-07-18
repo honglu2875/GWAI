@@ -1,5 +1,5 @@
-use crate::algebra::RatFun;
-use crate::error::GwError;
+use crate::core::algebra::RatFun;
+use crate::core::error::GwError;
 
 use super::univariate::UniPoly;
 
@@ -163,7 +163,7 @@ fn extended_gcd(left: &UniPoly, right: &UniPoly) -> Result<(UniPoly, UniPoly, Un
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::{q, RatFun};
+    use crate::core::algebra::{q, RatFun};
 
     fn square_root_quotient() -> OneGeneratorQuotient {
         let relation = UniPoly::variable()

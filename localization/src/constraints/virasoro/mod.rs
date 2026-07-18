@@ -7,6 +7,7 @@
 //! any generated equation is used as a test oracle.
 
 mod ast;
+mod compat;
 mod evaluator;
 mod generator;
 mod notation;
@@ -20,10 +21,11 @@ pub use ast::{
     StateSpaceConvention, TermOrigin, TheoryLabel, TimeMonomial, TimeNormalization,
     UnstableConvention, VirasoroConstraint, VirasoroConventions, VirasoroOperator,
 };
+pub use compat::*;
+pub(crate) use evaluator::evaluate_with_divisor_recursion;
 pub use evaluator::{
     evaluate_constraint, evaluate_constraint_with_bounds, CanonicalCorrelatorEvaluator,
-    CorrelatorEvaluationBounds, NegativeSplitCompletionEvaluator, ProductProjectiveEvaluator,
-    ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator,
+    CorrelatorEvaluationBounds,
 };
 pub use generator::{
     generate_constraint, generate_constraint_with_term_limit, getzler_bracket,

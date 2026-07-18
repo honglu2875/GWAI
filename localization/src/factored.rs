@@ -7,8 +7,8 @@
 //! keeps denominators as factor lists and only expands them when explicitly
 //! converting back to `RatFun`.
 
-use crate::algebra::{Coeff, RatFun, Rational, SparsePoly};
-use crate::error::GwError;
+use crate::core::algebra::{Coeff, RatFun, Rational, SparsePoly};
+use crate::core::error::GwError;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
@@ -587,8 +587,8 @@ mod tests {
     fn qseries_can_use_factored_coefficients() {
         let factor = mu_shift(-3);
         let coeff = FactoredRatFun::from_sparse_fraction(SparsePoly::one(), factor);
-        let series = crate::series::QSeries::constant(coeff.clone(), 2)
-            .mul(&crate::series::QSeries::constant(coeff, 2));
+        let series = crate::core::series::QSeries::constant(coeff.clone(), 2)
+            .mul(&crate::core::series::QSeries::constant(coeff, 2));
         assert_eq!(series.coeff(0).unwrap().max_denominator_factor_count(), 2);
     }
 
@@ -597,8 +597,8 @@ mod tests {
         let q_degree = 1;
         let z_order = 1;
         let size = 1;
-        let matrix = crate::series::SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
-        let scalar = crate::series::QSeries::<FactoredRatFun>::one(q_degree);
+        let matrix = crate::core::series::SeriesMatrix::<FactoredRatFun>::identity(size, q_degree);
+        let scalar = crate::core::series::QSeries::<FactoredRatFun>::one(q_degree);
         let calibration = crate::givental::SemisimpleCalibration {
             r_matrix: crate::givental::SeriesRMatrix::identity(
                 size,

@@ -5,7 +5,7 @@
 //! Witten-Kontsevich recursion and leaves an explicit table boundary for Hodge
 //! integrals needed by direct localization-style checks.
 
-use crate::algebra::Rational;
+use crate::core::algebra::Rational;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 

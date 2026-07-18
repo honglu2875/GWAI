@@ -4,7 +4,7 @@
 //! oracles for the projective-space S/R implementation and for independent
 //! cross-check paths.
 
-use crate::algebra::{RatFun, Rational};
+use crate::core::algebra::{RatFun, Rational};
 use crate::spaces::projective_space::CohomologyClass;
 use crate::{tau, InvariantRequest};
 

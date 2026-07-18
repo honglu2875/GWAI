@@ -72,7 +72,7 @@ mutation is the difference.
 
 ### Tier 1 — cross-cutting, high leverage (days each)
 
-1. **Bignum backend swap** (`algebra.rs` only — `Rational` is already a
+1. **Bignum backend swap** (`src/core/algebra.rs` only — `Rational` is already a
    newtype and no `BigInt`/`BigRational` leaks outside the file).  Landed:
    `rug::Rational` is available behind the `gmp-rational` cargo feature, while
    `num` remains the default/fallback for pure-Rust builds.  No-cache release
@@ -93,10 +93,11 @@ mutation is the difference.
      flatten to **(graph, coloring-orbit)** units, largest-estimated-cost
      first, to fix the single-value path's `worker_count = f(graph count)`
      degeneracy.
-   - Landed: `product.rs::reconstruct_bidegree_invariants`'s ray loop is
+   - Landed: `spaces/product_projective/provider.rs::reconstruct_bidegree_invariants`'s ray loop is
      parallelized —
      `total_degree + 1` fully independent engine runs, mirroring the
-     `thread::scope` pattern `bundle.rs` already uses (frontier doc item 2).
+     `thread::scope` pattern the projective-bundle provider already uses
+     (frontier doc item 2).
    - Landed for projective bundles: bidegree Birkhoff Laurent matrix products
      run in deterministic parallel chunks.  Remaining: parallelize the
      factored calibration's series-matrix products and one-variable Birkhoff

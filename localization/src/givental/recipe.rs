@@ -17,10 +17,22 @@
 //! Target-specific builders (projective space today; other targets through
 //! the same shape) reduce to assembling a [`CanonicalFrame`] and choosing
 //! integration constants.  The mirror-map/Birkhoff route used by twisted
-//! theories is an alternative recipe for the same contract and lives in the
-//! `twisted` module pending the same extraction.
+//! theories is an alternative recipe for the same contract.  Its
+//! calibration-specific cone-point assembly lives in this module, over the
+//! target-neutral Laurent and Birkhoff algebra in `reconstruction`.
 
-use super::*;
+use super::{
+    canonical_evaluation_matrix, relative_sqrt_delta_series, solve_r_coefficients_from_flatness,
+    CalibrationId, CanonicalFrameConvention, SemisimpleCalibration, SeriesRMatrix, SeriesSMatrix,
+};
+use crate::core::algebra::{Coeff, RatFun, Rational};
+use crate::core::error::GwError;
+use crate::core::series::{integrate_q_derivative_zero_constant_matrix, QSeries, SeriesMatrix};
+pub(crate) use crate::reconstruction::multiply_qseries_polynomial_by_linear;
+use crate::reconstruction::HCoeffLaurentSeries;
+
+mod cone_point;
+pub(crate) use cone_point::*;
 
 /// Canonical (idempotent-frame) data of a semisimple quantum ring at a fixed
 /// Novikov truncation.
@@ -84,10 +96,9 @@ pub fn calibration_from_canonical_frame(
             })
             .collect(),
     );
-    let coefficients = solve_projective_r_coefficients(
+    let coefficients = solve_r_coefficients_from_flatness(
         &frame.roots,
         &connection,
-        &metric,
         classical_diagonal,
         q_degree,
         z_order,
@@ -251,33 +262,25 @@ pub fn divisor_lagrange_frame(
 /// `classical_h_relation` expresses `H^{n+1}` in lower powers in the
 /// classical ring.  The `I`-coefficients are indexed by Novikov degree.
 ///
-/// The cohomology-valued Laurent machinery this composes currently lives in
-/// the `twisted` module for historical reasons; relocating it here is
-/// mechanical follow-up, and this entry point is the target-agnostic seam.
 pub fn descendant_s_from_i_function<C: Coeff>(
     n: usize,
-    i_coefficients: &[crate::spaces::negative_split_projective::HCoeffLaurentSeries<C>],
+    i_coefficients: &[HCoeffLaurentSeries<C>],
     classical_h_relation: &[C],
     flat_metric: &SeriesMatrix<C>,
     q_degree: usize,
     z_order: usize,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix<C>, GwError> {
-    let mirror =
-        crate::spaces::negative_split_projective::mirror_map_coefficients_from_i_function_coeff(
-            i_coefficients,
-            q_degree,
-        );
-    let inverse_mirror = crate::series::invert_mirror_map(&mirror, q_degree);
-    let j_coefficients =
-        crate::spaces::negative_split_projective::mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff(
-            n,
-            i_coefficients,
-            &mirror,
-            &inverse_mirror,
-            q_degree,
-            classical_h_relation,
-        );
+    let mirror = mirror_map_coefficients_from_i_function_coeff(i_coefficients, q_degree);
+    let inverse_mirror = crate::core::series::invert_mirror_map(&mirror, q_degree);
+    let j_coefficients = mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff(
+        n,
+        i_coefficients,
+        &mirror,
+        &inverse_mirror,
+        q_degree,
+        classical_h_relation,
+    );
     descendant_s_from_j_function(
         n,
         &j_coefficients,
@@ -298,7 +301,7 @@ pub fn descendant_s_from_i_function<C: Coeff>(
 /// Novikov ray.
 pub fn descendant_s_from_j_function<C: Coeff>(
     n: usize,
-    j_coefficients: &[crate::spaces::negative_split_projective::HCoeffLaurentSeries<C>],
+    j_coefficients: &[HCoeffLaurentSeries<C>],
     classical_h_relation: &[C],
     flat_metric: &SeriesMatrix<C>,
     q_degree: usize,
@@ -327,21 +330,20 @@ pub fn descendant_s_from_j_function<C: Coeff>(
 /// the descendant S-matrix.
 pub fn descendant_s_from_cone_point_function<C: Coeff>(
     n: usize,
-    cone_point_coefficients: &[crate::spaces::negative_split_projective::HCoeffLaurentSeries<C>],
+    cone_point_coefficients: &[HCoeffLaurentSeries<C>],
     classical_h_relation: &[C],
     flat_metric: &SeriesMatrix<C>,
     q_degree: usize,
     z_order: usize,
     calibration: CalibrationId,
 ) -> Result<SeriesSMatrix<C>, GwError> {
-    let fundamental =
-        crate::spaces::negative_split_projective::fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
-            n,
-            q_degree,
-            cone_point_coefficients,
-            classical_h_relation,
-        );
-    let birkhoff = crate::spaces::negative_split_projective::birkhoff_descendant_s_matrix_from_fundamental_coeff(
+    let fundamental = fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff(
+        n,
+        q_degree,
+        cone_point_coefficients,
+        classical_h_relation,
+    );
+    let birkhoff = birkhoff_descendant_s_matrix_from_fundamental_coeff(
         n + 1,
         q_degree,
         z_order,
@@ -353,10 +355,7 @@ pub fn descendant_s_from_cone_point_function<C: Coeff>(
     // The symplectic condition makes the two agree through z^1 and diverge
     // from z^2 on, so getting this convention wrong is invisible in
     // low-order checks.
-    crate::spaces::negative_split_projective::metric_adjoint_descendant_s_matrix_coeff(
-        birkhoff,
-        flat_metric,
-    )
+    metric_adjoint_descendant_s_matrix_coeff(birkhoff, flat_metric)
 }
 
 /// Classical Lagrange transition for distinct rational eigenvalues: column
@@ -535,6 +534,7 @@ mod tests {
     use crate::spaces::negative_split_projective::{
         NegativeSplitBundleTwist, NegativeSplitLineHypergeometricModel,
     };
+    use crate::spaces::projective_space::provider::projective_space_descendant_s_matrix_at_lambda_weights;
 
     #[test]
     fn i_function_and_qde_recipes_agree_on_projective_space() {
@@ -559,11 +559,8 @@ mod tests {
             &[],
         )
         .unwrap();
-        let relation = crate::spaces::negative_split_projective::base_h_power_relation_coeff(
-            1,
-            &ratfun_weights,
-        )
-        .unwrap();
+        let relation =
+            crate::reconstruction::base_h_power_relation_coeff(1, &ratfun_weights).unwrap();
         // Atiyah-Bott flat metric of P^1 in the H-power basis:
         // G_{rs} = sum_i w_i^{r+s} / prod_{j != i} (w_i - w_j).
         let metric_entry = |row: usize, col: usize| {

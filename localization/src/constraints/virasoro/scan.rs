@@ -3,9 +3,9 @@ use super::{
     CanonicalCorrelatorEvaluator, CanonicalVirasoroConstraint, CorrelatorEvaluationBounds,
     Descendant, ResidualReport, ResidualStatus, TimeMonomial,
 };
-use crate::algebra::RatFun;
-use crate::error::GwError;
-use crate::theory::{BasisId, CurveClass};
+use crate::core::algebra::RatFun;
+use crate::core::error::GwError;
+use crate::core::theory::{BasisId, CurveClass};
 use std::collections::BTreeSet;
 
 /// Maximum number of external markings enumerated in a bounded scan.

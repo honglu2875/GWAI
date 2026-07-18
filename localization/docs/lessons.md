@@ -128,10 +128,11 @@ occur, so the proper-target deficit argument cannot be applied blindly.
 
 The three that carried this project:
 
-- **Rank-zero twist = untwisted target.**  A twisted-theory pipeline with an
-  empty twist computes the plain theory, so the I-function/Birkhoff recipe
-  and the quantum-ring/QDE recipe become two independent roads to the same
-  S-matrix.  Held equal entrywise, this validates both.
+- **Rank-zero twist = untwisted target.**  The internal hypergeometric recipe
+  accepts an empty twist as the plain theory, so its I-function/Birkhoff route
+  and the quantum-ring/QDE route become two independent roads to the same
+  S-matrix.  Held equal entrywise, this validates both.  Public negative-split
+  providers and invariant requests require at least one bundle summand.
 - **Behrend's product formula.**  `R_{X×Y} = R_X ⊗ R_Y` in matching
   canonical frames (idempotents tensor, Δ multiply, relative normalizations
   are multiplicative).  An entrywise-exact test of a product implementation
@@ -263,16 +264,23 @@ optional dimension oracle used only for pruning.  Once stated this way,
 Targets with both data (ℙⁿ; anything with a rank-zero-twist description)
 give the cross-recipe oracle of Lesson 7 for free.
 
-The source tree should preserve the same distinction.  A peer module under
-`spaces/` is the discovery point for each mathematical target, `theory` is the
-single source of its universal geometry, and `reconstruction`/`givental` hold
-algorithms shared across targets.  A `spaces/` facade may reexport an adapter;
-it must not restate the pairing, ring, or curve cone.  Conversely, a Laurent
-representation should not move into a generic module merely because two
-pipelines both use the word "Birkhoff": extract only the coefficient-generic
-matrix, cyclic-basis, interpolation, or truncation operation actually shared.
-The old root `geometry`, `frobenius`, and `twisted` paths are compatibility
-reexports, never a second hierarchy to extend.
+The source tree should preserve the same distinction. `core/theory.rs` owns
+the universal contract and shared types; each peer module under `spaces/` is
+the discovery point and physical owner of its concrete theory and
+target-specific providers and concrete constraint evaluators.
+`reconstruction`/`givental` hold algorithms shared across targets. A
+`spaces/` module must not restate the pairing, ring, or curve cone. Extract a
+representation only after its boundary is genuinely shared: the cyclic
+`H`-Laurent type and pure operations serve both negative-split and bundle
+reconstruction, while Givental cone-point normalization and descendant-`S`
+assembly live in the recipe layer.  Hypergeometric twist factors and bidegree
+containers remain with their targets.  The old root `algebra`, `error`,
+`series`, `theory`, `geometry`, `frobenius`, `resolvent`, and `twisted` paths
+are compatibility reexports.
+So are `givental::product` and `givental::bundle`; by contrast, the generic
+provider contract and `givental::target` adapter remain real implementation
+boundaries. Concrete projective-space names at the `givental` facade are
+compatibility exports only.
 
 ### 14. Miscellaneous scars, briefly
 

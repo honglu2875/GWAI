@@ -4,7 +4,7 @@
 //! should call these helpers instead of spelling `acc = acc + a * b` inline.
 //! That keeps future coefficient-specific in-place kernels localized.
 
-use crate::algebra::Coeff;
+use super::algebra::Coeff;
 
 pub(crate) fn add_assign<C: Coeff>(target: &mut C, rhs: &C) {
     target.add_assign(rhs);

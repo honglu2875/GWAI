@@ -7,7 +7,7 @@
 //! knowing whether the Novikov grading is one-dimensional, a bidegree, or a
 //! target-specific effective-monoid element.
 
-use crate::error::GwError;
+use crate::core::error::GwError;
 use std::collections::BTreeMap;
 
 /// Laurent windows sufficient for a graded Birkhoff recursion.

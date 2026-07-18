@@ -1,9 +1,9 @@
 //! Generic QSeries-polynomial and series-matrix linear algebra
 //! (determinants, polynomial arithmetic, matrix inversion) over any Coeff.
 
-use crate::algebra::Coeff;
-use crate::error::GwError;
-use crate::series::{QSeries, SeriesMatrix};
+use crate::core::algebra::Coeff;
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
 
 pub(crate) fn determinant_qseries_polynomial_matrix<C: Coeff>(
     matrix: &[Vec<Vec<QSeries<C>>>],
@@ -104,6 +104,40 @@ pub(crate) fn qseries_polynomial_mul<C: Coeff>(
         }
     }
     out
+}
+
+/// Multiplies a polynomial in `x`, with truncated Novikov-series
+/// coefficients, by the affine-linear factor `constant + x * x_coefficient`.
+///
+/// Keeping this operation coefficient-generic is useful for both symbolic
+/// equivariant calibrations and early-specialized rational calibrations.
+pub(crate) fn multiply_qseries_polynomial_by_affine<C: Coeff>(
+    polynomial: &[QSeries<C>],
+    constant: &QSeries<C>,
+    x_coefficient: &QSeries<C>,
+    max_q_degree: usize,
+) -> Vec<QSeries<C>> {
+    let mut output = vec![QSeries::<C>::zero(max_q_degree); polynomial.len() + 1];
+    for (degree, coefficient) in polynomial.iter().enumerate() {
+        output[degree] = output[degree].add(&coefficient.mul(constant));
+        output[degree + 1] = output[degree + 1].add(&coefficient.mul(x_coefficient));
+    }
+    output
+}
+
+/// Multiplies a polynomial in `x`, with truncated Novikov-series
+/// coefficients, by `x + constant`.
+pub(crate) fn multiply_qseries_polynomial_by_linear<C: Coeff>(
+    polynomial: &[QSeries<C>],
+    constant: &QSeries<C>,
+    max_q_degree: usize,
+) -> Vec<QSeries<C>> {
+    multiply_qseries_polynomial_by_affine(
+        polynomial,
+        constant,
+        &QSeries::<C>::one(max_q_degree),
+        max_q_degree,
+    )
 }
 
 pub(crate) fn series_matrix_scale<C: Coeff>(

@@ -22,54 +22,59 @@
 //! interpolation, Birkhoff window planning, and cyclic-basis algebra are
 //! shared through the crate-private `reconstruction` module.
 
-use crate::algebra::{Coeff, RatFun, Rational};
-use crate::error::GwError;
-use crate::graphs::{try_stable_graphs, StableGraph};
-use crate::resolvent::{
-    enumerate_resolvent_indices, ResolventIndex, ResolventPolynomial, ResolventRequest,
-    ResolventResult,
-};
-use crate::series::{
-    integrate_q_derivative_zero_constant_matrix, QSeries, RationalQSeries, SeriesMatrix,
-};
-use crate::spaces::projective_space::{elementary_symmetric_weights, FrobeniusData};
-use crate::tautological::{TautologicalOracle, WittenKontsevich};
-use crate::validation;
-use crate::{
-    ComputeMode, Insertion, InvariantRequest, InvariantResult, SeriesCoefficient, SeriesRequest,
-    SeriesResult, Truncation,
-};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::{Duration, Instant};
+/// Optional caller-imposed cap on the `z`-order of the `S`/`R` calibration.
+///
+/// The graph engine derives the order it needs from each request and returns
+/// [`GwError::TruncationTooLow`](crate::core::error::GwError::TruncationTooLow)
+/// when this cap is below that. Only the `z`-order is configurable; earlier
+/// revisions carried additional fields
+/// (`q_degree`, `descendant_degree`, `genus`) that were never consulted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Truncation {
+    pub z_order: usize,
+}
 
 mod classical_limit;
-use classical_limit::*;
+pub(crate) use classical_limit::*;
 mod matrices;
 mod r_solve;
 pub use matrices::*;
 mod provider;
 pub use provider::*;
+// Historical `givental::*` paths for target-owned projective-space providers.
+pub use crate::spaces::projective_space::provider::{
+    projective_space_descendant_s_matrix, projective_space_j_calibration,
+    FactoredProjectiveSpaceProvider, ProjectiveSpaceJCalibration, ProjectiveSpaceProvider,
+};
 pub mod recipe;
 pub use recipe::{calibration_from_canonical_frame, descendant_s_from_divisor_qde, CanonicalFrame};
 pub mod target;
-pub use target::{GwTarget, ProjectiveTarget, TargetProvider};
+pub use crate::spaces::projective_space::ProjectiveTarget;
+pub use target::{GwTarget, SemisimpleTarget, TargetProvider};
+// Historical module paths; implementations are target-owned under `spaces`.
 pub mod bundle;
-pub use bundle::{
-    bundle_dimension_matches, bundle_dimension_matches_in_theory, reconstruct_bundle_invariants,
-    reconstruct_bundle_invariants_in_theory, BundleInsertion, BundleRayProvider,
-    ProjectiveBundleRay,
-};
 pub mod product;
-pub use product::{
+pub use crate::spaces::product_projective::{
     bidegree_dimension_matches, bidegree_dimension_matches_in_theory,
-    reconstruct_bidegree_invariants, reconstruct_bidegree_invariants_in_theory, ProductInsertion,
-    ProductProjectiveRay, ProductRayProvider,
+    reconstruct_bidegree_invariants, reconstruct_bidegree_invariants_in_theory,
+    try_bidegree_dimension_matches, ProductInsertion, ProductProjectiveRay, ProductRayProvider,
+};
+pub use crate::spaces::projective_bundle::{
+    bundle_dimension_matches, bundle_dimension_matches_in_theory, reconstruct_bundle_invariants,
+    reconstruct_bundle_invariants_in_theory, try_bundle_dimension_matches, BundleInsertion,
+    BundleRayProvider, ProjectiveBundleRay,
+};
+pub use crate::spaces::projective_space::api::{
+    compute_by_givental_graphs, compute_givental as compute, compute_projective_resolvent_packed,
+    compute_series_master, projective_graph_bounded_potential_coefficients,
+};
+pub use crate::spaces::projective_space::{
+    compute_packed_resolvent_with_coeff_provider, compute_packed_resolvent_with_provider,
+    compute_series_master_with_provider,
 };
 mod graph;
 pub use graph::*;
-use r_solve::*;
+pub(crate) use r_solve::*;
 
 // Compatibility export: the implementation and guard now live with the
 // target-neutral exact-ray interpolation algorithm.

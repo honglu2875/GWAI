@@ -2,15 +2,48 @@
 //! TwistedInvariantRequest, the public compute entry points, and the graph
 //! evaluator wiring.
 
-use super::*;
-use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
-use crate::theory::{CurveClass, CurveEffectivity, GwTheory, NegativeSplitTotalSpaceTheory};
+use super::calibration::{
+    negative_split_twisted_birkhoff_calibration_candidate_for_coeff_weights_with_validation,
+    negative_split_twisted_birkhoff_calibration_candidate_for_ratfun_weights_with_validation,
+    negative_split_twisted_birkhoff_calibration_candidate_with_mode_and_validation,
+    twisted_classical_h_multiplication_matrix_coeff, twisted_inverse_euler_flat_metric_matrix,
+    twisted_inverse_euler_flat_metric_matrix_coeff,
+    twisted_inverse_euler_flat_metric_matrix_ratfun,
+    twisted_inverse_euler_flat_metric_pair_from_rational_base,
+    twisted_quantum_multiplication_from_s_coeff, validate_twisted_weights,
+};
+use super::hypergeometric::{
+    NegativeSplitEquivariantHypergeometricModel, NegativeSplitLineHypergeometricModel,
+};
+use super::theory::NegativeSplitTotalSpaceTheory;
+use super::twist::NegativeSplitBundleTwist;
+use crate::core::algebra::{Coeff, RatFun, Rational};
+use crate::core::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
+use crate::core::error::GwError;
+use crate::core::moduli::{pointed_curve_is_stable, MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI};
+use crate::core::series::{QSeries, SeriesMatrix};
+use crate::factored::FactoredRatFun;
+use crate::givental::recipe::{
+    metric_adjoint_descendant_s_matrix_coeff, metric_adjoint_descendant_s_matrix_with_inverse_coeff,
+};
+use crate::givental::{
+    compute_semisimple_graph_value_with_coeff, GiventalGraphKernel, SemisimpleCohftProvider,
+    SeriesSMatrix, Truncation,
+};
+use crate::reconstruction::{CyclicCoordinates, CyclicQuantumAlgebra};
+use crate::spaces::projective_space::{
+    Insertion, InvariantResult, ProjectiveSpaceProvider, ResolventRequest, ResolventResult,
+};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TwistedProjectiveSpaceProvider {
     base: ProjectiveSpaceProvider,
+    // Immutable calibration recipe derived from `canonical_theory` during
+    // construction. It is retained to preserve the public `twist()` view and
+    // avoid rebuilding hypergeometric inputs; it is not a geometry authority.
     twist: NegativeSplitBundleTwist,
-    canonical_theory: Option<NegativeSplitTotalSpaceTheory>,
+    canonical_theory: NegativeSplitTotalSpaceTheory,
     line_mode: TwistedLineMode,
     calibration_mode: TwistedCalibrationMode,
     fiber_weight_scale: Rational,
@@ -76,6 +109,17 @@ pub(crate) struct TwistedGraphKernelCacheKey {
     validation: TwistedCalibrationValidation,
 }
 
+fn require_nonempty_negative_split_twist(degrees: &[usize]) -> Result<(), GwError> {
+    if degrees.is_empty() {
+        Err(GwError::ConventionMismatch(
+            "a twisted negative-split provider requires at least one line-bundle summand"
+                .to_string(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TwistedInvariantRequest {
     pub n: usize,
@@ -109,6 +153,7 @@ impl TwistedInvariantRequest {
     }
 
     pub fn validate(&self) -> Result<(), GwError> {
+        require_nonempty_negative_split_twist(self.twist.degrees())?;
         for (index, insertion) in self.insertions.iter().enumerate() {
             if insertion.class.n() != self.n {
                 return Err(GwError::ConventionMismatch(format!(
@@ -304,7 +349,7 @@ pub fn compute_negative_split_twisted_resolvent_packed(
     } else {
         TwistedProjectiveSpaceProvider::new(target_n, degrees, false)?
     };
-    crate::givental::compute_packed_resolvent_with_provider(
+    crate::spaces::projective_space::compute_packed_resolvent_with_provider(
         req,
         provider,
         if equivariant {
@@ -350,7 +395,7 @@ pub fn compute_negative_split_twisted_resolvent_packed_factored(
     }
 
     let provider = FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(target_n, degrees)?;
-    crate::givental::compute_packed_resolvent_with_coeff_provider(
+    crate::spaces::projective_space::compute_packed_resolvent_with_coeff_provider(
         req,
         provider,
         "twisted-negative-split-fiber-equivariant-factored-packed-resolvent",
@@ -384,6 +429,7 @@ fn twisted_dimension_data(
 
 impl TwistedProjectiveSpaceProvider {
     pub fn new(n: usize, degrees: Vec<usize>, equivariant: bool) -> Result<Self, GwError> {
+        require_nonempty_negative_split_twist(&degrees)?;
         // Twisted Euler factors need a more separated generic lambda line
         // than the ordinary provider's consecutive weights.  Preserve the
         // historical powers-of-two specialization through the checked public
@@ -394,15 +440,8 @@ impl TwistedProjectiveSpaceProvider {
             equivariant,
             twisted_default_base_weights(n)?,
         )?;
-        let canonical_theory = if degrees.is_empty() {
-            None
-        } else {
-            Some(NegativeSplitTotalSpaceTheory::new(n, degrees)?)
-        };
-        let twist = canonical_theory
-            .as_ref()
-            .map(NegativeSplitBundleTwist::from_theory)
-            .unwrap_or_default();
+        let canonical_theory = NegativeSplitTotalSpaceTheory::new(n, degrees)?;
+        let twist = NegativeSplitBundleTwist::from_theory(&canonical_theory);
         Ok(Self {
             base,
             twist,
@@ -419,12 +458,7 @@ impl TwistedProjectiveSpaceProvider {
     /// intentionally does not fabricate the twisted pairing or compact
     /// characteristic numbers.
     pub fn canonical_theory(&self) -> Result<&NegativeSplitTotalSpaceTheory, GwError> {
-        self.canonical_theory.as_ref().ok_or_else(|| {
-            GwError::ConventionMismatch(
-                "an empty twist is an ordinary projective-space theory, not a negative total space"
-                    .to_string(),
-            )
-        })
+        Ok(&self.canonical_theory)
     }
 
     /// Whether this provider has exactly the calibration used by the compact
@@ -496,12 +530,7 @@ impl TwistedProjectiveSpaceProvider {
         degree: usize,
         insertions: Vec<Insertion>,
     ) -> Result<RatFun, GwError> {
-        let pointed_curve_is_stable = match genus {
-            0 => insertions.len() >= 3,
-            1 => !insertions.is_empty(),
-            _ => true,
-        };
-        if pointed_curve_is_stable {
+        if pointed_curve_is_stable(genus, insertions.len()) {
             let raw = crate::givental::compute_semisimple_graph_value(
                 self,
                 genus,
@@ -526,7 +555,7 @@ impl TwistedProjectiveSpaceProvider {
                     )
                 })
         })?;
-        let maximum = crate::MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI;
+        let maximum = MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI;
         if total_descendant_power > maximum {
             return Err(GwError::UnsupportedInvariant(format!(
                 "twisted unstable descendant degree {total_descendant_power} exceeds the divisor-recursion implementation bound {maximum}"
@@ -675,13 +704,10 @@ impl TwistedProjectiveSpaceProvider {
         }
         let mut out = Self::new(n, degrees.clone(), false)?;
         // Preserve the association between a line summand and its custom
-        // equivariant weight using the target theory's canonical order.  The
-        // rank-zero compatibility provider has no negative-total-space theory
-        // and needs no permutation because both vectors are empty.
-        let fiber_weights = match &out.canonical_theory {
-            Some(theory) => theory.canonicalize_summand_payloads(degrees, fiber_weights)?,
-            None => fiber_weights,
-        };
+        // equivariant weight using the target theory's canonical order.
+        let fiber_weights = out
+            .canonical_theory
+            .canonicalize_summand_payloads(degrees, fiber_weights)?;
         validate_twisted_weights(n, &out.twist, &base_weights, &fiber_weights)?;
         out.base.weights = base_weights;
         out.fiber_weight_scale = Rational::one();
@@ -721,7 +747,7 @@ impl TwistedProjectiveSpaceProvider {
     fn ratfun_base_weights(&self) -> Vec<RatFun> {
         match self.line_mode {
             TwistedLineMode::SymbolicLimit | TwistedLineMode::FiberEquivariant => {
-                let lambda = crate::algebra::lambda(0);
+                let lambda = crate::core::algebra::lambda(0);
                 self.base_weights()
                     .iter()
                     .map(|weight| lambda.clone() * RatFun::from_rational(weight.clone()))
@@ -739,7 +765,7 @@ impl TwistedProjectiveSpaceProvider {
     fn ratfun_fiber_weights(&self) -> Vec<RatFun> {
         match self.line_mode {
             TwistedLineMode::SymbolicLimit => {
-                let lambda = crate::algebra::lambda(0);
+                let lambda = crate::core::algebra::lambda(0);
                 self.rational_fiber_weights()
                     .into_iter()
                     .map(|weight| lambda.clone() * RatFun::from_rational(weight))
@@ -1306,34 +1332,15 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
     }
 
     fn virtual_dimension(&self, genus: usize, degree: usize, markings: usize) -> Option<isize> {
-        let degree = i64::try_from(degree).ok()?;
-        match self.canonical_theory() {
-            Ok(theory) => theory
-                .virtual_dimension(genus, &CurveClass::new(vec![degree]), markings)
-                .ok(),
-            // Preserve the historical rank-zero "empty twist" behavior even
-            // though it lies outside the negative-total-space theory contract.
-            Err(_) if self.twist.rank() == 0 => {
-                self.base
-                    .virtual_dimension(genus, usize::try_from(degree).ok()?, markings)
-            }
-            Err(_) => None,
-        }
+        self.canonical_theory()
+            .ok()?
+            .virtual_dimension_at_degree(genus, degree, markings)
+            .ok()
     }
 
     fn degree_is_effective(&self, degree: usize) -> bool {
-        let Ok(degree_i64) = i64::try_from(degree) else {
-            return false;
-        };
-        match self.canonical_theory() {
-            Ok(theory) => theory
-                .effectivity(&CurveClass::new(vec![degree_i64]))
-                .is_ok_and(|effectivity| effectivity == CurveEffectivity::Effective),
-            // An empty twist is outside `NegativeSplitTotalSpaceTheory`'s
-            // contract but historically behaves as the untwisted base here.
-            Err(_) if self.twist.rank() == 0 => self.base.degree_is_effective(degree),
-            Err(_) => false,
-        }
+        self.canonical_theory()
+            .is_ok_and(|theory| theory.degree_is_effective(degree).unwrap_or(false))
     }
 
     fn vanishes_by_dimension(&self, virtual_dimension: isize, total_degree: usize) -> bool {
@@ -1355,25 +1362,14 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         if self.line_mode == TwistedLineMode::FiberEquivariant {
             return None;
         }
-        if self.twist.rank() == 0 {
-            return self.base.expected_degree_from_dimension(genus, insertions);
-        }
-        let theory = self.canonical_theory().ok()?;
-        let insertion_degree = i128::try_from(self.insertion_degree(insertions)?).ok()?;
-        let constant_dimension = theory
-            .virtual_dimension(genus, &CurveClass::new(vec![0]), insertions.len())
-            .ok()? as i128;
-        let slope = i128::from(theory.c1_pairing(&CurveClass::new(vec![1])).ok()?);
-        if slope == 0 {
-            return None;
-        }
-        let numerator = insertion_degree - constant_dimension;
-        if numerator % slope != 0 {
-            return None;
-        }
-        usize::try_from(numerator / slope)
-            .ok()
-            .filter(|degree| self.degree_is_effective(*degree))
+        self.canonical_theory()
+            .ok()?
+            .expected_degree_from_dimension(
+                genus,
+                insertions.len(),
+                self.insertion_degree(insertions)?,
+            )
+            .ok()?
     }
 
     fn candidate_degrees_from_dimension(
@@ -1382,59 +1378,15 @@ impl SemisimpleCohftProvider for TwistedProjectiveSpaceProvider {
         degree_max: usize,
         insertions: &[Self::Insertion],
     ) -> Vec<usize> {
-        if self.line_mode == TwistedLineMode::FiberEquivariant {
-            return (0..=degree_max)
-                .filter(|degree| self.degree_is_effective(*degree))
-                .collect();
-        }
-        if self.twist.rank() == 0 {
-            return self
-                .base
-                .candidate_degrees_from_dimension(genus, degree_max, insertions);
-        }
         let Some(theory) = self.canonical_theory().ok() else {
             return Vec::new();
         };
-        let Some(insertion_degree) = self
-            .insertion_degree(insertions)
-            .and_then(|degree| i128::try_from(degree).ok())
-        else {
-            return (0..=degree_max)
-                .filter(|degree| self.degree_is_effective(*degree))
-                .collect();
-        };
-        let Some(constant_dimension) = theory
-            .virtual_dimension(genus, &CurveClass::new(vec![0]), insertions.len())
-            .ok()
-            .map(|dimension| dimension as i128)
-        else {
-            return Vec::new();
-        };
-        let Some(slope) = theory
-            .c1_pairing(&CurveClass::new(vec![1]))
-            .ok()
-            .map(i128::from)
-        else {
-            return Vec::new();
-        };
-        let numerator = insertion_degree - constant_dimension;
-        if slope == 0 {
-            return if numerator == 0 {
-                (0..=degree_max)
-                    .filter(|degree| self.degree_is_effective(*degree))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-        }
-        if numerator % slope != 0 {
-            return Vec::new();
-        }
-        usize::try_from(numerator / slope)
-            .ok()
-            .filter(|degree| *degree <= degree_max && self.degree_is_effective(*degree))
-            .into_iter()
-            .collect()
+        let insertion_degree = (self.line_mode != TwistedLineMode::FiberEquivariant)
+            .then(|| self.insertion_degree(insertions))
+            .flatten();
+        theory
+            .candidate_degrees_from_dimension(genus, degree_max, insertions.len(), insertion_degree)
+            .unwrap_or_default()
     }
 
     fn descendant_s_matrix(
@@ -1617,47 +1569,54 @@ pub(crate) fn metric_adjoint_descendant_s_matrix(
     metric_adjoint_descendant_s_matrix_coeff(s_matrix, flat_metric)
 }
 
-pub(crate) fn metric_adjoint_descendant_s_matrix_coeff<C: Coeff>(
-    s_matrix: SeriesSMatrix<C>,
-    flat_metric: &SeriesMatrix<C>,
-) -> Result<SeriesSMatrix<C>, GwError> {
-    // Converts S to its metric adjoint: S^* = eta^{-1} S^T eta.  This is the
-    // correct action on covector insertions in the graph formula, and is
-    // especially important after inverse-Euler twisting changes the pairing.
-    let metric_inverse = invert_series_matrix_coeff(flat_metric)?;
-    metric_adjoint_descendant_s_matrix_with_inverse_coeff(s_matrix, flat_metric, &metric_inverse)
-}
-
-pub(crate) fn metric_adjoint_descendant_s_matrix_with_inverse_coeff<C: Coeff>(
-    s_matrix: SeriesSMatrix<C>,
-    flat_metric: &SeriesMatrix<C>,
-    metric_inverse: &SeriesMatrix<C>,
-) -> Result<SeriesSMatrix<C>, GwError> {
-    // Converts S to its metric adjoint: S^* = eta^{-1} S^T eta.  This overload
-    // accepts eta^{-1} directly, which is important for factored twisted
-    // theories where eta has a closed Vandermonde inverse and Gaussian
-    // elimination would expand symbolic rational sums.
-    let coefficients = s_matrix
-        .coefficients()
-        .iter()
-        .map(|matrix| metric_inverse.mul(&matrix.transpose()).mul(flat_metric))
-        .collect::<Vec<_>>();
-    SeriesSMatrix::from_coefficients(
-        s_matrix.size(),
-        s_matrix.q_degree(),
-        s_matrix.z_order(),
-        coefficients,
-        CalibrationId(format!("{}-metric-adjoint", s_matrix.calibration().0)),
-    )
-}
-
 #[cfg(test)]
 mod provider_tests {
     use super::*;
 
     #[test]
-    #[allow(deprecated)]
-    fn factored_twisted_provider_and_compatibility_view_preserve_equivariant_grading() {
+    fn twisted_providers_reject_the_rank_zero_compatibility_recipe() {
+        assert!(NegativeSplitBundleTwist::new(Vec::new()).is_ok());
+        assert!(matches!(
+            TwistedProjectiveSpaceProvider::new(1, Vec::new(), false),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        assert!(matches!(
+            TwistedProjectiveSpaceProvider::fiber_equivariant(1, Vec::new()),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        assert!(matches!(
+            TwistedProjectiveSpaceProvider::symbolic_lambda_line(1, Vec::new(), true),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        assert!(matches!(
+            FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(1, Vec::new()),
+            Err(GwError::ConventionMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn twisted_requests_reject_an_empty_twist_even_when_built_as_a_struct() {
+        assert!(matches!(
+            TwistedInvariantRequest::new(1, Vec::new(), 0, 1, Vec::new()),
+            Err(GwError::ConventionMismatch(_))
+        ));
+        let request = TwistedInvariantRequest {
+            n: 1,
+            twist: NegativeSplitBundleTwist::new(Vec::new()).unwrap(),
+            genus: 0,
+            degree: 1,
+            insertions: Vec::new(),
+            equivariant: false,
+            truncation: None,
+        };
+        assert!(matches!(
+            request.validate(),
+            Err(GwError::ConventionMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn factored_twisted_provider_preserves_equivariant_grading() {
         let factored =
             FactoredTwistedProjectiveSpaceProvider::fiber_equivariant(2, vec![1]).unwrap();
 
@@ -1667,16 +1626,11 @@ mod provider_tests {
         let canonical = <FactoredTwistedProjectiveSpaceProvider as SemisimpleCohftProvider<
             FactoredRatFun,
         >>::vanishes_by_dimension(&factored, 3, 7);
-        let compatibility = <FactoredTwistedProjectiveSpaceProvider as crate::givental::CoefficientSemisimpleCohftProvider<
-            FactoredRatFun,
-        >>::coeff_vanishes_by_dimension(&factored, 3, 7);
-
         assert!(
             !expected,
             "fiber-equivariant parameters carry excess degree"
         );
         assert_eq!(canonical, expected);
-        assert_eq!(compatibility, expected);
     }
 
     #[test]

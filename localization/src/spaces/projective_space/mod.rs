@@ -4,20 +4,28 @@
 //! and target types below are computation adapters over that record; they do
 //! not restate its dimension, state space, or curve geometry.
 
+pub mod theory;
+pub use theory::*;
+pub mod api;
+pub use api::*;
+mod batch;
+pub mod seeds;
+pub use batch::{
+    compute_packed_resolvent_with_coeff_provider, compute_packed_resolvent_with_provider,
+    compute_series_master_with_provider,
+};
+pub mod resolvent;
+pub use resolvent::*;
+pub mod provider;
+pub use provider::*;
+pub mod target;
+pub use target::*;
+pub mod virasoro;
+pub use virasoro::*;
+
 pub mod equivariant;
 pub use equivariant::*;
 pub mod frobenius;
 pub use frobenius::*;
 
-pub use crate::constraints::virasoro::ProjectiveSpaceEvaluator;
-pub use crate::givental::{
-    projective_space_descendant_s_matrix, projective_space_j_calibration,
-    FactoredProjectiveSpaceProvider, ProjectiveSpaceJCalibration, ProjectiveSpaceProvider,
-    ProjectiveTarget, TargetProvider,
-};
-pub use crate::resolvent::{ResolventRequest, ResolventResult};
-pub use crate::theory::ProjectiveSpaceTheory;
-pub use crate::{
-    compute, compute_series, tau, ComputeMode, Insertion, InvariantRequest, InvariantResult,
-    SeriesRequest, SeriesResult, Truncation,
-};
+pub use crate::givental::TargetProvider;

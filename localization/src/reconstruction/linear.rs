@@ -1,5 +1,5 @@
-use crate::algebra::Rational;
-use crate::error::GwError;
+use crate::core::algebra::Rational;
+use crate::core::error::GwError;
 
 /// Solve a square linear system over the exact rationals in place.
 ///

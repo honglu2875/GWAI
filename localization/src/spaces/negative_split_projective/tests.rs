@@ -1,5 +1,19 @@
+use super::i_function::negative_split_equivariant_i_function_coefficient_coeff;
 use super::*;
-use crate::algebra::Rational;
+use crate::core::algebra::{RatFun, Rational};
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
+use crate::factored::FactoredRatFun;
+use crate::givental::recipe::{
+    birkhoff_descendant_s_matrix_from_fundamental,
+    birkhoff_descendant_s_matrix_from_fundamental_coeff,
+    metric_adjoint_descendant_s_matrix_with_inverse_coeff,
+};
+use crate::givental::{CalibrationId, SemisimpleCohftProvider, SeriesSMatrix};
+use crate::reconstruction::{
+    birkhoff_factor_by_q_degree, identity_coeff_matrix, matrix_q_coefficient,
+    negative_factor_to_s_coefficients, zero_coeff_matrix,
+};
 use crate::spaces::projective_space::CohomologyClass;
 use crate::tau;
 use std::collections::BTreeMap;
@@ -22,8 +36,10 @@ fn negative_split_degrees_must_be_positive() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn twist_geometry_helpers_delegate_to_the_canonical_theory() {
-    use crate::theory::{CurveClass, GwTheory, NegativeSplitTotalSpaceTheory};
+    use crate::core::theory::{CurveClass, GwTheory};
+    use crate::spaces::negative_split_projective::NegativeSplitTotalSpaceTheory;
 
     let twist = NegativeSplitBundleTwist::new(vec![1, 2]).unwrap();
     let theory = NegativeSplitTotalSpaceTheory::new(2, vec![1, 2]).unwrap();
@@ -45,6 +61,32 @@ fn twist_geometry_helpers_delegate_to_the_canonical_theory() {
             );
         }
     }
+    assert_eq!(
+        twist.try_candidate_degrees(2, 0, 5, 1, Some(3)).unwrap(),
+        theory
+            .candidate_degrees_from_dimension(0, 5, 1, Some(3))
+            .unwrap()
+    );
+}
+
+#[test]
+#[allow(deprecated)]
+fn empty_twist_geometry_helpers_delegate_to_projective_space() {
+    use crate::core::theory::GwTheory;
+    use crate::spaces::projective_space::ProjectiveSpaceTheory;
+
+    let twist = NegativeSplitBundleTwist::new(Vec::new()).unwrap();
+    let theory = ProjectiveSpaceTheory::try_new(2).unwrap();
+    assert_eq!(
+        twist.try_total_space_dimension(2).unwrap(),
+        theory.target_dimension()
+    );
+    assert_eq!(
+        twist.try_virtual_dimension(2, 0, 1, 1).unwrap(),
+        theory
+            .virtual_dimension(0, &theory.try_curve(1).unwrap(), 1)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -78,6 +120,7 @@ fn twisted_request_rejects_class_from_another_target() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn local_cy_threefold_dimension_is_degree_independent_without_insertions() {
     let local_p2 = NegativeSplitBundleTwist::new(vec![3]).unwrap();
     let conifold = NegativeSplitBundleTwist::new(vec![1, 1]).unwrap();
@@ -2269,7 +2312,7 @@ fn bounded_q_birkhoff_matches_full_factorization_window() {
 
 #[test]
 fn packed_resolvent_matches_invariant_wise_local_p2() {
-    let req = crate::resolvent::ResolventRequest {
+    let req = crate::spaces::projective_space::resolvent::ResolventRequest {
         target_n: 2,
         genus: 2,
         degree: 1,
@@ -2278,11 +2321,14 @@ fn packed_resolvent_matches_invariant_wise_local_p2() {
     };
     let packed = compute_negative_split_twisted_resolvent_packed(2, vec![3], &req, false).unwrap();
     let invariant_wise =
-        crate::resolvent::compute_resolvent_generating_function(&req, |insertions| {
-            let invariant_req =
-                TwistedInvariantRequest::new(2, vec![3], 2, 1, insertions.to_vec())?;
-            compute_negative_split_twisted(&invariant_req)
-        })
+        crate::spaces::projective_space::resolvent::compute_resolvent_generating_function(
+            &req,
+            |insertions| {
+                let invariant_req =
+                    TwistedInvariantRequest::new(2, vec![3], 2, 1, insertions.to_vec())?;
+                compute_negative_split_twisted(&invariant_req)
+            },
+        )
         .unwrap();
 
     assert_eq!(packed.value, invariant_wise.value);
@@ -2309,6 +2355,7 @@ fn twisted_packed_resolvent_rejects_target_mismatch() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn non_cy_twist_can_still_select_one_degree() {
     let twist = NegativeSplitBundleTwist::new(vec![1]).unwrap();
     let insertion_degree = Some(3);

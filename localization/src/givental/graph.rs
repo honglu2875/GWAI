@@ -1,42 +1,26 @@
-//! The Givental stable-graph evaluation engine: graph kernels, the master
-//! evaluator and its parallel contraction workers, external-leg kernels, and
-//! the public compute / series / packed-resolvent entry points.
+//! The Givental stable-graph evaluation engine: graph kernels, parallel
+//! contraction workers, external-leg tensors, and provider-generic scalar and
+//! series entry points.
 
-// The coefficient-generic entry points retain the prefixed compatibility
-// trait until their public signatures migrate to the canonical generic
-// provider in a later stage.
-#![allow(deprecated)]
-
-use super::*;
-use crate::bounded_cache::{BoundedCache, TARGET_RECONSTRUCTION_CACHE_CAPACITY};
+use super::{
+    SemisimpleCalibration, SemisimpleCohftProvider, SeriesRMatrix, SeriesSMatrix, Truncation,
+};
+use crate::core::algebra::{Coeff, RatFun, Rational};
+use crate::core::bounded_cache::BoundedCache;
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, RationalQSeries, SeriesMatrix};
 use crate::factored::FactoredRatFun;
+use crate::graphs::{try_stable_graphs, StableGraph};
+#[cfg(test)]
+use crate::spaces::projective_space::provider::{
+    projective_space_graph_kernel, projective_space_j_calibration_at_lambda_weights,
+};
+use crate::tautological::{TautologicalOracle, WittenKontsevich};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-
-pub fn compute(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
-    match compute_by_givental_graphs(req) {
-        Ok(result) => Ok(result),
-        Err(GwError::UnsupportedInvariant(message)) => {
-            if message.contains("full quantized S-action") {
-                Err(GwError::UnsupportedInvariant(message))
-            } else {
-                validation::seed_compute(req, "givental-seed")
-            }
-        }
-        Err(limit @ GwError::ResourceLimit { .. }) => {
-            // A graph-enumeration envelope must not hide an exact closed-form
-            // seed (notably point theory). If no seed covers the request,
-            // preserve the structured limit instead of replacing it with the
-            // seed backend's broad UnsupportedInvariant error.
-            match validation::seed_compute(req, "givental-seed") {
-                Ok(result) => Ok(result),
-                Err(GwError::UnsupportedInvariant(_)) => Err(limit),
-                Err(error) => Err(error),
-            }
-        }
-        Err(err) => Err(err),
-    }
-}
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 pub fn product_of_point_theories(
     colors: usize,
@@ -179,16 +163,6 @@ impl GraphEvalProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct GraphKernelCacheKey {
-    n: usize,
-    q_degree: usize,
-    r_order: usize,
-    graph_dimension: usize,
-    equivariant: bool,
-    weights: Vec<Rational>,
-}
-
 #[derive(Debug)]
 pub struct GiventalGraphKernel<C = RatFun> {
     calibration: SemisimpleCalibration<C>,
@@ -256,143 +230,6 @@ impl<C: Coeff> GiventalGraphKernel<C> {
     }
 }
 
-/// Materializes all graph-local data derived from a calibration.
-///
-/// The mathematical content is the conversion from a global `R`-matrix to the
-/// Feynman rules used on a stable graph: `R^{-1}` on legs, the symplectic edge
-/// propagator, and the translation vector.
-pub(crate) fn projective_space_graph_kernel(
-    n: usize,
-    q_degree: usize,
-    r_order: usize,
-    graph_dimension: usize,
-    equivariant: bool,
-    weights: &[Rational],
-) -> Result<Arc<GiventalGraphKernel>, GwError> {
-    static CACHE: OnceLock<Mutex<BoundedCache<GraphKernelCacheKey, Arc<GiventalGraphKernel>>>> =
-        OnceLock::new();
-    let key = GraphKernelCacheKey {
-        n,
-        q_degree,
-        r_order,
-        graph_dimension,
-        equivariant,
-        weights: if equivariant {
-            Vec::new()
-        } else {
-            weights.to_vec()
-        },
-    };
-    let cache =
-        CACHE.get_or_init(|| Mutex::new(BoundedCache::new(TARGET_RECONSTRUCTION_CACHE_CAPACITY)));
-    if let Some(kernel) = cache.lock().unwrap().get(&key).cloned() {
-        return Ok(kernel);
-    }
-
-    let calibration = if equivariant {
-        projective_space_j_calibration(n, q_degree, r_order)?
-    } else {
-        projective_space_j_calibration_at_lambda_weights(n, q_degree, r_order, weights)?
-    };
-    let kernel = Arc::new(GiventalGraphKernel::from_calibration(
-        calibration,
-        graph_dimension,
-    )?);
-    cache.lock().unwrap().insert(key, kernel.clone());
-    Ok(kernel)
-}
-
-/// Public ordinary `P^n` Gromov-Witten computation by the Givental graph sum.
-///
-/// This is the production path for projective-space invariants.  It wraps the
-/// generic semisimple evaluator with projective-space dimension checks and
-/// result labels.
-pub fn compute_by_givental_graphs(req: &InvariantRequest) -> Result<InvariantResult, GwError> {
-    let provider = ProjectiveSpaceProvider::new(req.n, req.equivariant);
-    provider.validate_insertions(&req.insertions)?;
-
-    if !provider.degree_is_effective(req.degree) {
-        return Ok(InvariantResult {
-            value: RatFun::zero(),
-            engine: "givental-effective-degree",
-            notes: vec![format!(
-                "P^{} has no effective curve class of degree {}",
-                req.n, req.degree
-            )],
-        });
-    }
-
-    if let Some((virtual_dimension, total_degree)) =
-        dimension_mismatch(&provider, req.genus, req.degree, &req.insertions)
-    {
-        return Ok(InvariantResult {
-            value: RatFun::zero(),
-            engine: "givental-r-graph",
-            notes: vec![format!(
-                "dimension mismatch gives zero: virtual dimension {virtual_dimension}, insertion degree {total_degree}"
-            )],
-        });
-    }
-
-    if !is_stable_cohft_range(req.genus, req.insertions.len()) {
-        return Err(GwError::UnsupportedInvariant(
-            "Givental graph expansion is implemented for stable (g,n) CohFT ranges only"
-                .to_string(),
-        ));
-    }
-
-    if req.equivariant {
-        // Symbolic lambda parameters: build the kernel and contract over
-        // factored coefficients from the start, expanding only the final
-        // value.  Building R^{-1} and the edge propagators in expanded RatFun
-        // costs orders of magnitude more than the calibration itself.
-        let value = compute_semisimple_graph_value_with_coeff::<FactoredRatFun, _>(
-            &FactoredProjectiveSpaceProvider(provider),
-            req.genus,
-            req.degree,
-            &req.insertions,
-            req.truncation.as_ref(),
-        )?;
-        return Ok(InvariantResult {
-            value: value.to_ratfun(),
-            engine: "givental-r-graph",
-            notes: vec![
-                "computed by truncated J-calibrated R-matrix stable-graph expansion; result remains equivariant"
-                    .to_string(),
-            ],
-        });
-    }
-
-    let value = compute_semisimple_graph_value(
-        &provider,
-        req.genus,
-        req.degree,
-        &req.insertions,
-        req.truncation.as_ref(),
-    )?;
-
-    if provider.specialized_nonequivariant() {
-        return Ok(InvariantResult {
-            value,
-            engine: "givental-r-graph-lambda-line",
-            notes: vec![
-                "computed by J-calibrated S/R stable-graph expansion after early generic lambda-line specialization"
-                    .to_string(),
-            ],
-        });
-    }
-
-    let limit = value.nonequivariant_limit_line(req.n, &provider.weights)?;
-    Ok(InvariantResult {
-        value: RatFun::from_rational(limit),
-        engine: "givental-r-graph-limit",
-        notes: vec![
-            "computed by truncated J-calibrated R-matrix stable-graph expansion and lambda-line nonequivariant limit"
-                .to_string(),
-        ],
-    })
-}
-
 pub(crate) fn dimension_mismatch<P>(
     provider: &P,
     genus: usize,
@@ -409,7 +246,7 @@ where
         .then_some((virtual_dimension, total_degree))
 }
 
-fn exact_dimension_mismatch<P>(
+pub(crate) fn exact_dimension_mismatch<P>(
     provider: &P,
     genus: usize,
     degree: usize,
@@ -467,17 +304,17 @@ pub fn compute_semisimple_graph_value_with_coeff<C, P>(
 ) -> Result<C, GwError>
 where
     C: Coeff + Send + Sync,
-    P: CoefficientSemisimpleCohftProvider<C>,
+    P: SemisimpleCohftProvider<C>,
 {
-    if !provider.coeff_degree_is_effective(degree) {
+    if !provider.degree_is_effective(degree) {
         return Ok(C::zero());
     }
-    if let Some(value) = provider.coeff_direct_value(genus, degree, insertions, truncation)? {
+    if let Some(value) = provider.direct_value(genus, degree, insertions, truncation)? {
         return Ok(value);
     }
     if !is_stable_cohft_range(genus, insertions.len()) {
         if let Some(value) =
-            provider.coeff_scalar_fallback_value(genus, degree, insertions, truncation)?
+            provider.scalar_fallback_value(genus, degree, insertions, truncation)?
         {
             return Ok(value);
         }
@@ -538,8 +375,8 @@ where
         .collect())
 }
 
-/// Computes one stable graph's contribution to the bounded descendant
-/// potential of ordinary `P^n`.
+/// Computes one stable graph's contribution to a bounded descendant
+/// potential using a caller-supplied provider and finite insertion profiles.
 ///
 /// This is the formula renderer's graph-local rational path.  It uses the same
 /// external-leg kernel as `series`: each marking is left as an open
@@ -547,15 +384,19 @@ where
 /// fully contracted over colors, edge propagators, translations, and
 /// point-theory vertex integrals.  The final loop then attaches bounded flat
 /// insertions through the calibrated `S`, `Psi^{-1}`, and `R^{-1}` leg options.
-pub fn projective_graph_bounded_potential_coefficients(
-    n: usize,
+pub(crate) fn graph_bounded_potential_coefficients_with_provider<P>(
+    provider: &P,
     genus: usize,
     markings: usize,
     graph_index: usize,
     degree_max: usize,
     max_descendant_power: usize,
-    equivariant: bool,
-) -> Result<Vec<SeriesCoefficient>, GwError> {
+    insertion_profiles: impl IntoIterator<Item = Vec<P::Insertion>>,
+) -> Result<Vec<(usize, Vec<P::Insertion>, RatFun)>, GwError>
+where
+    P: SemisimpleCohftProvider,
+    P::Insertion: Clone,
+{
     if !is_stable_cohft_range(genus, markings) {
         return Err(GwError::UnsupportedInvariant(
             "graph-local rational potential is implemented for stable (g,m) CohFT ranges only"
@@ -563,7 +404,6 @@ pub fn projective_graph_bounded_potential_coefficients(
         ));
     }
 
-    let provider = ProjectiveSpaceProvider::try_new(n, equivariant)?;
     let colors = provider.colors();
     let graph_dimension = checked_stable_graph_work_dimension(genus, markings)?;
     let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
@@ -596,11 +436,10 @@ pub fn projective_graph_bounded_potential_coefficients(
     );
 
     let descendant_s = provider.descendant_s_matrix(degree_max, max_descendant_power)?;
-    let basis = crate::insertion_basis(n, max_descendant_power);
     let mut out = Vec::new();
-    for insertions in crate::insertion_monomials(&basis, markings) {
+    for insertions in insertion_profiles {
         let insertion_terms = ancestor_insertion_terms_from_provider(
-            &provider,
+            provider,
             &insertions,
             &descendant_s,
             &graph_kernel.calibration.psi_inverse,
@@ -616,16 +455,12 @@ pub fn projective_graph_bounded_potential_coefficients(
         );
 
         for degree in provider.candidate_degrees_from_dimension(genus, degree_max, &insertions) {
-            if dimension_mismatch(&provider, genus, degree, &insertions).is_some() {
+            if dimension_mismatch(provider, genus, degree, &insertions).is_some() {
                 continue;
             }
             let value = contract_external_leg_kernel_coeff(&external_kernel, &leg_options, degree);
             if !value.is_zero() {
-                out.push(SeriesCoefficient {
-                    degree,
-                    insertions: insertions.clone(),
-                    value,
-                });
+                out.push((degree, insertions.clone(), value));
             }
         }
     }
@@ -797,12 +632,12 @@ pub fn compute_semisimple_graph_series_with_coeff<C, P>(
 ) -> Result<QSeries<C>, GwError>
 where
     C: Coeff + Send + Sync,
-    P: CoefficientSemisimpleCohftProvider<C>,
+    P: SemisimpleCohftProvider<C>,
 {
     let mut profile = GraphEvalProfile::new();
     let max_descendant_power = insertions
         .iter()
-        .map(|insertion| provider.coeff_descendant_power(insertion))
+        .map(|insertion| provider.descendant_power(insertion))
         .max()
         .unwrap_or(0);
 
@@ -827,7 +662,7 @@ where
     }
 
     let calibration_started = Instant::now();
-    let kernel = provider.coeff_graph_kernel(q_degree, needed_r_order, graph_dimension)?;
+    let kernel = provider.graph_kernel(q_degree, needed_r_order, graph_dimension)?;
     profile.add_calibration_elapsed(calibration_started.elapsed());
     if profile.enabled {
         eprintln!(
@@ -841,7 +676,7 @@ where
         Vec::new()
     } else {
         let descendant_started = Instant::now();
-        let descendant_s = provider.coeff_descendant_s_matrix(q_degree, needed_s_order)?;
+        let descendant_s = provider.descendant_s_matrix(q_degree, needed_s_order)?;
         if profile.enabled {
             eprintln!(
                 "GW_PROFILE coeff_descendant_s={:.3}s",
@@ -869,7 +704,7 @@ where
             &kernel.inverse_r,
             q_degree,
             graph_dimension,
-            provider.coeff_colors(),
+            provider.colors(),
         );
         if profile.enabled {
             eprintln!(
@@ -892,12 +727,8 @@ where
         .sum();
     profile.add_option_elapsed(options_started.elapsed());
 
-    let graphs = profiled_prepared_stable_graphs(
-        genus,
-        insertions.len(),
-        provider.coeff_colors(),
-        &mut profile,
-    )?;
+    let graphs =
+        profiled_prepared_stable_graphs(genus, insertions.len(), provider.colors(), &mut profile)?;
     profile.stable_graphs = graphs.len();
 
     let graphs_started = Instant::now();
@@ -923,7 +754,7 @@ where
             .iter()
             .enumerate()
             .map(|(degree, coefficient)| {
-                if provider.coeff_degree_is_effective(degree) {
+                if provider.degree_is_effective(degree) {
                     coefficient.clone()
                 } else {
                     C::zero()
@@ -933,1094 +764,7 @@ where
     ))
 }
 
-const MASTER_SHARED_KERNEL_MAX_MARKINGS: usize = 2;
-const MASTER_MIN_SHARED_KERNEL_TASKS: usize = 8;
-const MASTER_MIN_RESTRICTED_KERNEL_TASKS: usize = 2;
-
-/// Batched sparse potential evaluator for many coefficients at once.
-///
-/// Mathematically this computes the same coefficients as repeated calls to
-/// `compute_semisimple_graph_value`.  The reorganization is purely algorithmic:
-/// it shares graph kernels and, for small marking counts, precontracts the
-/// entire stable-graph sum into an external-leg tensor.
-pub fn compute_series_master(req: &SeriesRequest) -> Result<Option<SeriesResult>, GwError> {
-    req.validate()?;
-    if req.mode != ComputeMode::Givental {
-        return Ok(None);
-    }
-
-    let provider = ProjectiveSpaceProvider::try_new(req.n, req.equivariant)?;
-    compute_series_master_with_provider(req, provider)
-}
-
-pub fn compute_series_master_with_provider<P>(
-    req: &SeriesRequest,
-    provider: P,
-) -> Result<Option<SeriesResult>, GwError>
-where
-    P: SemisimpleCohftProvider<Insertion = Insertion>,
-{
-    req.validate()?;
-    if req.mode != ComputeMode::Givental {
-        return Ok(None);
-    }
-
-    let mut prepared_coefficients = Vec::new();
-    let mut contraction_tasks = Vec::new();
-    let mut restricted_contraction_tasks = (0..=req.max_markings)
-        .map(|_| {
-            (0..=req.degree_max)
-                .map(|_| Vec::<MasterContractionTask>::new())
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let mut notes = vec![
-        "series enumerates a bounded sparse descendant potential; unsupported coefficients are skipped and profiles forced to vanish by the provider's coefficient-ring grading are dimension-pruned"
-            .to_string(),
-    ];
-    let mut complete = true;
-    let basis = crate::insertion_basis(req.n, req.max_descendant_power);
-    let mut candidates_by_degree = vec![Vec::<Vec<Insertion>>::new(); req.degree_max + 1];
-
-    for markings in 0..=req.max_markings {
-        for insertions in crate::insertion_monomials(&basis, markings) {
-            for degree in
-                provider.candidate_degrees_from_dimension(req.genus, req.degree_max, &insertions)
-            {
-                candidates_by_degree[degree].push(insertions.clone());
-            }
-        }
-    }
-
-    let shared_kernel_task_counts =
-        shared_kernel_task_counts(req, &provider, &candidates_by_degree);
-    let mut evaluator = GiventalMasterEvaluator::with_provider(req, provider);
-    evaluator.set_shared_kernel_task_counts(shared_kernel_task_counts.clone());
-    for (markings, count) in shared_kernel_task_counts.iter().copied().enumerate() {
-        if (MASTER_MIN_RESTRICTED_KERNEL_TASKS..MASTER_MIN_SHARED_KERNEL_TASKS).contains(&count) {
-            notes.push(format!(
-                "using restricted sparse S/R graph kernel for {count} coefficient(s) with {markings} marking(s); shared kernel threshold is {MASTER_MIN_SHARED_KERNEL_TASKS}"
-            ));
-        } else if count > 0 && count < MASTER_MIN_RESTRICTED_KERNEL_TASKS {
-            notes.push(format!(
-                "using scalar S/R graph evaluation for {count} coefficient(s) with {markings} marking(s); restricted kernel threshold is {MASTER_MIN_RESTRICTED_KERNEL_TASKS}"
-            ));
-        }
-    }
-
-    let mut ordinal = 0usize;
-    for (degree, candidates) in candidates_by_degree.into_iter().enumerate() {
-        let mut candidates = candidates;
-        candidates.sort_by_key(|insertions| {
-            std::cmp::Reverse(
-                insertions
-                    .iter()
-                    .map(|insertion| insertion.descendant_power)
-                    .max()
-                    .unwrap_or(0),
-            )
-        });
-
-        for insertions in candidates {
-            let current_ordinal = ordinal;
-            ordinal += 1;
-            if evaluator.is_dimension_mismatch(degree, &insertions) {
-                continue;
-            }
-
-            if evaluator.can_use_external_leg_kernel(&insertions) {
-                match evaluator.prepare_contraction_task(current_ordinal, degree, &insertions) {
-                    Ok(task) => contraction_tasks.push(task),
-                    Err(GwError::UnsupportedInvariant(msg)) => {
-                        complete = false;
-                        notes.push(format!(
-                            "skipped q^{degree} {}: {msg}",
-                            crate::insertion_monomial_label(&insertions)
-                        ));
-                    }
-                    Err(err) => return Err(err),
-                }
-                continue;
-            }
-
-            if evaluator.can_use_restricted_external_leg_kernel(&insertions) {
-                match evaluator.prepare_sparse_contraction_task(
-                    current_ordinal,
-                    degree,
-                    &insertions,
-                ) {
-                    Ok(task) => restricted_contraction_tasks[insertions.len()][degree].push(task),
-                    Err(GwError::UnsupportedInvariant(msg)) => {
-                        complete = false;
-                        notes.push(format!(
-                            "skipped q^{degree} {}: {msg}",
-                            crate::insertion_monomial_label(&insertions)
-                        ));
-                    }
-                    Err(err) => return Err(err),
-                }
-                continue;
-            }
-
-            match evaluator.compute_coefficient(degree, &insertions) {
-                Ok(value) => {
-                    if req.include_zero || !value.is_zero() {
-                        prepared_coefficients.push(OrderedSeriesCoefficient {
-                            ordinal: current_ordinal,
-                            coefficient: SeriesCoefficient {
-                                degree,
-                                insertions,
-                                value,
-                            },
-                        });
-                    }
-                }
-                Err(GwError::UnsupportedInvariant(msg)) => {
-                    complete = false;
-                    notes.push(format!(
-                        "skipped q^{degree} {}: {msg}",
-                        crate::insertion_monomial_label(&insertions)
-                    ));
-                }
-                Err(err) => return Err(err),
-            }
-        }
-    }
-
-    prepared_coefficients
-        .extend(evaluator.contract_tasks_parallel(&contraction_tasks, req.include_zero));
-    for (markings, by_degree) in restricted_contraction_tasks.iter().enumerate() {
-        for (degree, tasks) in by_degree.iter().enumerate() {
-            if tasks.is_empty() {
-                continue;
-            }
-            prepared_coefficients.extend(evaluator.contract_restricted_tasks(
-                markings,
-                degree,
-                tasks,
-                req.include_zero,
-            )?);
-        }
-    }
-    prepared_coefficients.sort_by_key(|entry| entry.ordinal);
-    let coefficients = prepared_coefficients
-        .into_iter()
-        .map(|entry| entry.coefficient)
-        .collect();
-
-    Ok(Some(SeriesResult {
-        coefficients,
-        engine: "givental-master-series",
-        complete,
-        notes,
-    }))
-}
-
-/// Computes a fixed-degree labelled resolvent potential by sharing the
-/// Givental graph contraction across all descendant/cohomology coefficients.
-///
-/// The coefficient-wise resolver calls the full invariant evaluator once for
-/// every pair `(a_i,k_i)`.  This routine instead builds the stable-graph kernel
-/// once for fixed `(g,d,m)`, precontracts the graph sum into a restricted
-/// external-leg tensor, and then attaches every resolvent leg coefficient to
-/// that tensor.  The output is still the finite Laurent polynomial in
-/// `z_i^{-1}`; only the algorithm is reorganized.
-pub fn compute_packed_resolvent_with_provider<P, N>(
-    req: &ResolventRequest,
-    provider: P,
-    engine: &'static str,
-    note: impl Into<String>,
-    mut normalize: N,
-) -> Result<ResolventResult, GwError>
-where
-    P: SemisimpleCohftProvider<Insertion = Insertion>,
-    N: FnMut(RatFun) -> Result<RatFun, GwError>,
-{
-    validate_packed_resolvent_virtual_dimension(
-        req,
-        provider.virtual_dimension(req.genus, req.degree, req.markings),
-    )?;
-
-    if !provider.degree_is_effective(req.degree) {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms: 0,
-            nonzero_terms: 0,
-            engine: "packed-resolvent-ineffective-degree",
-            notes: vec![format!(
-                "the target has no effective curve class of degree {}",
-                req.degree
-            )],
-        });
-    }
-
-    if req.virtual_dimension < 0 {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms: 0,
-            nonzero_terms: 0,
-            engine: "packed-resolvent-empty-dimension",
-            notes: vec![format!(
-                "virtual dimension {} is negative, so the packed resolvent generating function is zero",
-                req.virtual_dimension
-            )],
-        });
-    }
-
-    if req.markings == 0 {
-        return compute_no_marking_packed_resolvent(req, &provider, engine, note, normalize);
-    }
-    if !is_stable_cohft_range(req.genus, req.markings) {
-        return Err(GwError::UnsupportedInvariant(
-            "packed resolvent graph expansion is implemented for stable (g,n) CohFT ranges only"
-                .to_string(),
-        ));
-    }
-
-    let max_descendant_power = req.virtual_dimension as usize;
-    let mut evaluator = GiventalMasterEvaluator::for_problem(
-        provider,
-        req.genus,
-        req.degree,
-        max_descendant_power,
-        None,
-    );
-    let mut tasks = Vec::new();
-    let mut task_indices = Vec::<ResolventIndex>::new();
-    let candidate_terms = enumerate_resolvent_indices(req, |index| {
-        let insertions = index.to_insertions(req.target_n);
-        // A resolvent is intentionally the exact virtual-dimension slice,
-        // even when its coefficients retain equivariant parameters.
-        if exact_dimension_mismatch(&evaluator.provider, req.genus, req.degree, &insertions)
-            .is_some()
-        {
-            return Ok(());
-        }
-        evaluator.validate_truncation(req.markings, &insertions)?;
-        let mut leg_options = Vec::with_capacity(req.markings);
-        for insertion in &insertions {
-            leg_options.push(evaluator.leg_options_for_insertion_at_q(
-                req.markings,
-                insertion,
-                req.degree,
-            )?);
-        }
-        tasks.push(MasterContractionTask {
-            ordinal: tasks.len(),
-            degree: req.degree,
-            insertions,
-            markings: req.markings,
-            leg_options,
-        });
-        task_indices.push(index);
-        Ok(())
-    })?;
-    if tasks.is_empty() {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms,
-            nonzero_terms: 0,
-            engine,
-            notes: vec![note.into()],
-        });
-    }
-
-    let coefficients =
-        evaluator.contract_restricted_tasks(req.markings, req.degree, &tasks, false)?;
-    let mut value = ResolventPolynomial::zero();
-    let mut nonzero_terms = 0usize;
-    for coefficient in coefficients {
-        let index = task_indices.get(coefficient.ordinal).ok_or_else(|| {
-            GwError::AlgebraFailure(format!(
-                "packed resolvent task ordinal {} is out of range",
-                coefficient.ordinal
-            ))
-        })?;
-        let normalized = normalize(coefficient.coefficient.value)?;
-        if normalized.is_zero() {
-            continue;
-        }
-        value.add_index_coefficient(index, normalized);
-        nonzero_terms += 1;
-    }
-
-    Ok(ResolventResult {
-        value,
-        candidate_terms,
-        nonzero_terms,
-        engine,
-        notes: vec![note.into()],
-    })
-}
-
-pub fn compute_packed_resolvent_with_coeff_provider<C, P, N>(
-    req: &ResolventRequest,
-    provider: P,
-    engine: &'static str,
-    note: impl Into<String>,
-    mut normalize: N,
-) -> Result<ResolventResult<C>, GwError>
-where
-    C: Coeff + Send + Sync,
-    P: CoefficientSemisimpleCohftProvider<C, Insertion = Insertion>,
-    N: FnMut(C) -> Result<C, GwError>,
-{
-    validate_packed_resolvent_virtual_dimension(
-        req,
-        provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
-    )?;
-
-    if !provider.coeff_degree_is_effective(req.degree) {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms: 0,
-            nonzero_terms: 0,
-            engine: "packed-resolvent-ineffective-degree",
-            notes: vec![format!(
-                "the target has no effective curve class of degree {}",
-                req.degree
-            )],
-        });
-    }
-
-    if req.virtual_dimension < 0 {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms: 0,
-            nonzero_terms: 0,
-            engine: "packed-resolvent-empty-dimension",
-            notes: vec![format!(
-                "virtual dimension {} is negative, so the packed resolvent generating function is zero",
-                req.virtual_dimension
-            )],
-        });
-    }
-
-    if req.markings == 0 {
-        let mut value = ResolventPolynomial::zero();
-        let mut nonzero_terms = 0usize;
-        let candidate_terms = usize::from(req.virtual_dimension == 0);
-        let provider_dimension_matches = provider
-            .coeff_virtual_dimension(req.genus, req.degree, 0)
-            .is_none_or(|virtual_dimension| usize::try_from(virtual_dimension).ok() == Some(0));
-        if req.virtual_dimension == 0 && provider_dimension_matches {
-            let coefficient = compute_semisimple_graph_value_with_coeff::<C, _>(
-                &provider,
-                req.genus,
-                req.degree,
-                &[],
-                None,
-            )?;
-            let normalized = normalize(coefficient)?;
-            if !normalized.is_structurally_zero() {
-                value.add_index_coefficient(&ResolventIndex::empty(), normalized);
-                nonzero_terms = 1;
-            }
-        }
-        return Ok(ResolventResult {
-            value,
-            candidate_terms,
-            nonzero_terms,
-            engine,
-            notes: vec![note.into()],
-        });
-    }
-    if !is_stable_cohft_range(req.genus, req.markings) {
-        return Err(GwError::UnsupportedInvariant(
-            "packed resolvent graph expansion is implemented for stable (g,n) CohFT ranges only"
-                .to_string(),
-        ));
-    }
-
-    let graph_dimension = checked_stable_graph_work_dimension(req.genus, req.markings)?;
-    let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
-        GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
-    })?;
-    let needed_s_order = req.virtual_dimension as usize;
-    let graph_kernel = provider.coeff_graph_kernel(req.degree, needed_r_order, graph_dimension)?;
-    let descendant_s = provider.coeff_descendant_s_matrix(req.degree, needed_s_order)?;
-    let mut tasks = Vec::<MasterContractionTask<C>>::new();
-    let mut task_indices = Vec::<ResolventIndex>::new();
-    let candidate_terms = enumerate_resolvent_indices(req, |index| {
-        let insertions = index.to_insertions(req.target_n);
-        if let (Some(total_degree), Some(virtual_dimension)) = (
-            provider.coeff_insertion_degree(&insertions),
-            provider.coeff_virtual_dimension(req.genus, req.degree, req.markings),
-        ) {
-            if usize::try_from(virtual_dimension).ok() != Some(total_degree) {
-                return Ok(());
-            }
-        }
-
-        let mut leg_options = Vec::with_capacity(req.markings);
-        for insertion in &insertions {
-            let insertion_terms = ancestor_insertion_terms_from_provider(
-                &provider,
-                std::slice::from_ref(insertion),
-                &descendant_s,
-                &graph_kernel.calibration.psi_inverse,
-                req.degree,
-                graph_dimension,
-            )?;
-            let mut options = leg_options_by_marking_color(
-                &insertion_terms,
-                &graph_kernel.inverse_r,
-                req.degree,
-                graph_dimension,
-                provider.coeff_colors(),
-            );
-            leg_options.push(options.pop().unwrap_or_else(|| {
-                vec![Vec::<LegFactorOption<C>>::new(); provider.coeff_colors()]
-            }));
-        }
-
-        tasks.push(MasterContractionTask {
-            ordinal: tasks.len(),
-            degree: req.degree,
-            insertions,
-            markings: req.markings,
-            leg_options,
-        });
-        task_indices.push(index);
-        Ok(())
-    })?;
-
-    if tasks.is_empty() {
-        return Ok(ResolventResult {
-            value: ResolventPolynomial::zero(),
-            candidate_terms,
-            nonzero_terms: 0,
-            engine,
-            notes: vec![note.into()],
-        });
-    }
-
-    let template = RestrictedExternalLegKernel::from_tasks(
-        req.markings,
-        provider.coeff_colors(),
-        graph_dimension,
-        req.degree,
-        &tasks,
-    );
-    let mut profile = GraphEvalProfile::new();
-    let graphs = profiled_prepared_stable_graphs(
-        req.genus,
-        req.markings,
-        provider.coeff_colors(),
-        &mut profile,
-    )?;
-    profile.stable_graphs = graphs.len();
-    profile.edge_options = graph_kernel
-        .edge_options
-        .iter()
-        .flat_map(|row| row.iter())
-        .map(Vec::len)
-        .sum();
-    let graph_started = Instant::now();
-    let restricted_kernel = evaluate_restricted_external_graphs_parallel(
-        graphs.as_ref(),
-        &template,
-        &graph_kernel,
-        req.degree,
-        graph_dimension,
-        &mut profile,
-    );
-    profile.add_graph_elapsed(graph_started.elapsed());
-    profile.finish();
-
-    let mut value = ResolventPolynomial::zero();
-    let mut nonzero_terms = 0usize;
-    for task in &tasks {
-        let index = task_indices.get(task.ordinal).ok_or_else(|| {
-            GwError::AlgebraFailure(format!(
-                "packed resolvent task ordinal {} is out of range",
-                task.ordinal
-            ))
-        })?;
-        let coefficient = contract_restricted_external_leg_kernel_coeff_generic(
-            &restricted_kernel,
-            &task.leg_options,
-            task.degree,
-        );
-        let normalized = normalize(coefficient)?;
-        if normalized.is_structurally_zero() {
-            continue;
-        }
-        value.add_index_coefficient(index, normalized);
-        nonzero_terms += 1;
-    }
-
-    Ok(ResolventResult {
-        value,
-        candidate_terms,
-        nonzero_terms,
-        engine,
-        notes: vec![note.into()],
-    })
-}
-
-fn validate_packed_resolvent_virtual_dimension(
-    req: &ResolventRequest,
-    provider_virtual_dimension: Option<isize>,
-) -> Result<(), GwError> {
-    if let Some(actual) = provider_virtual_dimension {
-        if req.virtual_dimension != actual {
-            return Err(GwError::ConventionMismatch(format!(
-                "packed resolvent virtual dimension {} does not match provider virtual dimension {actual} for (g,d,m)=({},{},{})",
-                req.virtual_dimension, req.genus, req.degree, req.markings
-            )));
-        }
-    }
-    Ok(())
-}
-
-pub fn compute_projective_resolvent_packed(
-    req: &ResolventRequest,
-    equivariant: bool,
-) -> Result<ResolventResult, GwError> {
-    let provider = ProjectiveSpaceProvider::new(req.target_n, equivariant);
-    let engine = if equivariant {
-        "givental-packed-resolvent"
-    } else {
-        "givental-packed-resolvent-lambda-line"
-    };
-    compute_packed_resolvent_with_provider(
-        req,
-        provider,
-        engine,
-        "computed by packed S/R external-leg graph kernel; all resolvent coefficients share one stable-graph contraction",
-        Ok::<RatFun, GwError>,
-    )
-}
-
-pub(crate) fn compute_no_marking_packed_resolvent<P, N>(
-    req: &ResolventRequest,
-    provider: &P,
-    engine: &'static str,
-    note: impl Into<String>,
-    mut normalize: N,
-) -> Result<ResolventResult, GwError>
-where
-    P: SemisimpleCohftProvider<Insertion = Insertion>,
-    N: FnMut(RatFun) -> Result<RatFun, GwError>,
-{
-    let mut value = ResolventPolynomial::zero();
-    let mut nonzero_terms = 0usize;
-    let candidate_terms = usize::from(req.virtual_dimension == 0);
-    let provider_dimension_matches = provider
-        .virtual_dimension(req.genus, req.degree, 0)
-        .is_none_or(|virtual_dimension| usize::try_from(virtual_dimension).ok() == Some(0));
-    if req.virtual_dimension == 0 && provider_dimension_matches {
-        let coefficient =
-            compute_semisimple_graph_value(provider, req.genus, req.degree, &[], None)?;
-        let normalized = normalize(coefficient)?;
-        if !normalized.is_zero() {
-            value.add_index_coefficient(&ResolventIndex::empty(), normalized);
-            nonzero_terms = 1;
-        }
-    }
-
-    Ok(ResolventResult {
-        value,
-        candidate_terms,
-        nonzero_terms,
-        engine,
-        notes: vec![note.into()],
-    })
-}
-
-pub(crate) fn shared_kernel_task_counts(
-    req: &SeriesRequest,
-    provider: &impl SemisimpleCohftProvider<Insertion = Insertion>,
-    candidates_by_degree: &[Vec<Vec<Insertion>>],
-) -> Vec<usize> {
-    let mut counts = vec![0usize; req.max_markings + 1];
-    for (degree, candidates) in candidates_by_degree.iter().enumerate() {
-        for insertions in candidates {
-            if dimension_mismatch(provider, req.genus, degree, insertions).is_some() {
-                continue;
-            }
-            let markings = insertions.len();
-            if markings > 0
-                && markings <= MASTER_SHARED_KERNEL_MAX_MARKINGS
-                && is_stable_cohft_range(req.genus, markings)
-            {
-                counts[markings] += 1;
-            }
-        }
-    }
-    counts
-}
-
-#[derive(Debug)]
-pub(crate) struct GiventalMasterEvaluator<P>
-where
-    P: SemisimpleCohftProvider<Insertion = Insertion>,
-{
-    provider: P,
-    genus: usize,
-    degree_max: usize,
-    max_descendant_power: usize,
-    truncation: Option<Truncation>,
-    descendant_s_cache: HashMap<(usize, usize), SeriesSMatrix>,
-    external_kernel_cache: HashMap<usize, ExternalLegKernel>,
-    leg_options_cache: HashMap<MasterLegOptionsKey, Vec<Vec<LegFactorOption>>>,
-    shared_kernel_task_counts: Option<Vec<usize>>,
-}
-
-#[cfg(test)]
-impl GiventalMasterEvaluator<ProjectiveSpaceProvider> {
-    fn new(req: &SeriesRequest) -> Self {
-        Self::with_provider(req, ProjectiveSpaceProvider::new(req.n, req.equivariant))
-    }
-}
-
-impl<P> GiventalMasterEvaluator<P>
-where
-    P: SemisimpleCohftProvider<Insertion = Insertion>,
-{
-    fn with_provider(req: &SeriesRequest, provider: P) -> Self {
-        Self::for_problem(
-            provider,
-            req.genus,
-            req.degree_max,
-            req.max_descendant_power,
-            req.truncation.clone(),
-        )
-    }
-
-    fn for_problem(
-        provider: P,
-        genus: usize,
-        degree_max: usize,
-        max_descendant_power: usize,
-        truncation: Option<Truncation>,
-    ) -> Self {
-        Self {
-            provider,
-            genus,
-            degree_max,
-            max_descendant_power,
-            truncation,
-            descendant_s_cache: HashMap::new(),
-            external_kernel_cache: HashMap::new(),
-            leg_options_cache: HashMap::new(),
-            shared_kernel_task_counts: None,
-        }
-    }
-
-    fn set_shared_kernel_task_counts(&mut self, counts: Vec<usize>) {
-        self.shared_kernel_task_counts = Some(counts);
-    }
-
-    fn colors(&self) -> usize {
-        self.provider.colors()
-    }
-
-    fn is_dimension_mismatch(&self, degree: usize, insertions: &[Insertion]) -> bool {
-        dimension_mismatch(&self.provider, self.genus, degree, insertions).is_some()
-    }
-
-    fn compute_coefficient(
-        &mut self,
-        degree: usize,
-        insertions: &[Insertion],
-    ) -> Result<RatFun, GwError> {
-        if self.is_dimension_mismatch(degree, insertions) {
-            return Ok(RatFun::zero());
-        }
-
-        let markings = insertions.len();
-        if !self.can_use_external_leg_kernel(insertions) {
-            return match compute_semisimple_graph_value(
-                &self.provider,
-                self.genus,
-                degree,
-                insertions,
-                self.truncation.as_ref(),
-            ) {
-                Ok(value) => Ok(value),
-                Err(GwError::UnsupportedInvariant(msg)) => {
-                    if let Some(value) = self.provider.scalar_fallback_value(
-                        self.genus,
-                        degree,
-                        insertions,
-                        self.truncation.as_ref(),
-                    )? {
-                        Ok(value)
-                    } else {
-                        Err(GwError::UnsupportedInvariant(msg))
-                    }
-                }
-                Err(err) => Err(err),
-            };
-        }
-
-        self.validate_truncation(markings, insertions)?;
-        let mut leg_options = Vec::with_capacity(markings);
-        for insertion in insertions {
-            leg_options.push(self.leg_options_for_insertion(markings, insertion)?);
-        }
-        let kernel = self.external_leg_kernel(markings)?;
-        Ok(contract_external_leg_kernel_coeff(
-            kernel,
-            &leg_options,
-            degree,
-        ))
-    }
-
-    fn can_use_external_leg_kernel(&self, insertions: &[Insertion]) -> bool {
-        let markings = insertions.len();
-        if !(markings > 0
-            && markings <= MASTER_SHARED_KERNEL_MAX_MARKINGS
-            && is_stable_cohft_range(self.genus, markings))
-        {
-            return false;
-        }
-        self.shared_kernel_task_counts
-            .as_ref()
-            .and_then(|counts| counts.get(markings))
-            .is_none_or(|count| *count >= MASTER_MIN_SHARED_KERNEL_TASKS)
-    }
-
-    fn can_use_restricted_external_leg_kernel(&self, insertions: &[Insertion]) -> bool {
-        let markings = insertions.len();
-        if !(markings > 0
-            && markings <= MASTER_SHARED_KERNEL_MAX_MARKINGS
-            && is_stable_cohft_range(self.genus, markings))
-        {
-            return false;
-        }
-        self.shared_kernel_task_counts
-            .as_ref()
-            .and_then(|counts| counts.get(markings))
-            .is_some_and(|count| {
-                *count >= MASTER_MIN_RESTRICTED_KERNEL_TASKS
-                    && *count < MASTER_MIN_SHARED_KERNEL_TASKS
-            })
-    }
-
-    fn prepare_contraction_task(
-        &mut self,
-        ordinal: usize,
-        degree: usize,
-        insertions: &[Insertion],
-    ) -> Result<MasterContractionTask, GwError> {
-        if !self.can_use_external_leg_kernel(insertions) {
-            return Err(GwError::UnsupportedInvariant(
-                "external-leg master kernel is not available for this marking count".to_string(),
-            ));
-        }
-
-        let markings = insertions.len();
-        self.validate_truncation(markings, insertions)?;
-        let mut leg_options = Vec::with_capacity(markings);
-        for insertion in insertions {
-            leg_options.push(self.leg_options_for_insertion(markings, insertion)?);
-        }
-        self.external_leg_kernel(markings)?;
-        Ok(MasterContractionTask {
-            ordinal,
-            degree,
-            insertions: insertions.to_vec(),
-            markings,
-            leg_options,
-        })
-    }
-
-    fn prepare_sparse_contraction_task(
-        &mut self,
-        ordinal: usize,
-        degree: usize,
-        insertions: &[Insertion],
-    ) -> Result<MasterContractionTask, GwError> {
-        if !self.can_use_restricted_external_leg_kernel(insertions) {
-            return Err(GwError::UnsupportedInvariant(
-                "restricted external-leg kernel is not available for this marking count"
-                    .to_string(),
-            ));
-        }
-
-        let markings = insertions.len();
-        self.validate_truncation(markings, insertions)?;
-        let mut leg_options = Vec::with_capacity(markings);
-        for insertion in insertions {
-            leg_options.push(self.leg_options_for_insertion_at_q(markings, insertion, degree)?);
-        }
-        Ok(MasterContractionTask {
-            ordinal,
-            degree,
-            insertions: insertions.to_vec(),
-            markings,
-            leg_options,
-        })
-    }
-
-    fn contract_tasks_parallel(
-        &self,
-        tasks: &[MasterContractionTask],
-        include_zero: bool,
-    ) -> Vec<OrderedSeriesCoefficient> {
-        let worker_count = master_worker_count(tasks.len());
-        if worker_count <= 1 {
-            return contract_task_chunk(&self.external_kernel_cache, tasks, include_zero);
-        }
-
-        let chunk_size = tasks.len().div_ceil(worker_count);
-        thread::scope(|scope| {
-            let mut handles = Vec::new();
-            for chunk in tasks.chunks(chunk_size) {
-                let kernels = &self.external_kernel_cache;
-                handles
-                    .push(scope.spawn(move || contract_task_chunk(kernels, chunk, include_zero)));
-            }
-
-            let mut out = Vec::new();
-            for handle in handles {
-                out.extend(
-                    handle
-                        .join()
-                        .expect("master series contraction worker panicked"),
-                );
-            }
-            out
-        })
-    }
-
-    fn contract_restricted_tasks(
-        &self,
-        markings: usize,
-        q_degree: usize,
-        tasks: &[MasterContractionTask],
-        include_zero: bool,
-    ) -> Result<Vec<OrderedSeriesCoefficient>, GwError> {
-        let kernel = self.build_restricted_external_leg_kernel(markings, q_degree, tasks)?;
-        Ok(contract_restricted_tasks_parallel(
-            &kernel,
-            tasks,
-            include_zero,
-        ))
-    }
-
-    fn build_restricted_external_leg_kernel(
-        &self,
-        markings: usize,
-        q_degree: usize,
-        tasks: &[MasterContractionTask],
-    ) -> Result<RestrictedExternalLegKernel, GwError> {
-        let graph_dimension = self.graph_dimension(markings)?;
-        let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
-        let template = RestrictedExternalLegKernel::from_tasks(
-            markings,
-            self.colors(),
-            graph_dimension,
-            q_degree,
-            tasks,
-        );
-        let mut profile = GraphEvalProfile::new();
-        let graphs =
-            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile)?;
-        profile.stable_graphs = graphs.len();
-        profile.edge_options = graph_kernel
-            .edge_options
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(Vec::len)
-            .sum();
-
-        let graphs_started = Instant::now();
-        let total = evaluate_restricted_external_graphs_auto(
-            graphs.as_ref(),
-            &template,
-            &graph_kernel,
-            q_degree,
-            graph_dimension,
-            &mut profile,
-        );
-        profile.add_graph_elapsed(graphs_started.elapsed());
-        profile.finish();
-        Ok(total)
-    }
-
-    fn validate_truncation(
-        &self,
-        markings: usize,
-        insertions: &[Insertion],
-    ) -> Result<(), GwError> {
-        let graph_dimension = self.graph_dimension(markings)?;
-        let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
-            GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
-        })?;
-        let needed_s_order = insertions
-            .iter()
-            .map(|insertion| insertion.descendant_power)
-            .max()
-            .unwrap_or(0);
-        let needed_z_order = needed_r_order.max(needed_s_order);
-        if self
-            .truncation
-            .as_ref()
-            .is_some_and(|truncation| truncation.z_order < needed_z_order)
-        {
-            return Err(GwError::TruncationTooLow);
-        }
-        Ok(())
-    }
-
-    fn graph_dimension(&self, markings: usize) -> Result<usize, GwError> {
-        checked_stable_graph_work_dimension(self.genus, markings)
-    }
-
-    fn descendant_s(&mut self, q_degree: usize, z_order: usize) -> Result<&SeriesSMatrix, GwError> {
-        let key = (q_degree, z_order);
-        if !self.descendant_s_cache.contains_key(&key) {
-            let descendant_s = self.provider.descendant_s_matrix(q_degree, z_order)?;
-            self.descendant_s_cache.insert(key, descendant_s);
-        }
-        Ok(self
-            .descendant_s_cache
-            .get(&key)
-            .expect("descendant S-matrix cache populated before access"))
-    }
-
-    fn graph_kernel_for_markings(
-        &self,
-        markings: usize,
-    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
-        self.graph_kernel_for_markings_at_q(markings, self.degree_max)
-    }
-
-    fn graph_kernel_for_markings_at_q(
-        &self,
-        markings: usize,
-        q_degree: usize,
-    ) -> Result<Arc<GiventalGraphKernel>, GwError> {
-        let graph_dimension = self.graph_dimension(markings)?;
-        let needed_r_order = graph_dimension.checked_add(1).ok_or_else(|| {
-            GwError::UnsupportedInvariant("stable-graph R-order overflow".to_string())
-        })?;
-        self.provider
-            .graph_kernel(q_degree, needed_r_order, graph_dimension)
-    }
-
-    fn external_leg_kernel(&mut self, markings: usize) -> Result<&ExternalLegKernel, GwError> {
-        if !self.external_kernel_cache.contains_key(&markings) {
-            let kernel = self.build_external_leg_kernel(markings)?;
-            self.external_kernel_cache.insert(markings, kernel);
-        }
-        Ok(self
-            .external_kernel_cache
-            .get(&markings)
-            .expect("external leg kernel cache populated before access"))
-    }
-
-    fn build_external_leg_kernel(&self, markings: usize) -> Result<ExternalLegKernel, GwError> {
-        let graph_dimension = self.graph_dimension(markings)?;
-        let graph_kernel = self.graph_kernel_for_markings(markings)?;
-        let mut profile = GraphEvalProfile::new();
-        let graphs =
-            profiled_prepared_stable_graphs(self.genus, markings, self.colors(), &mut profile)?;
-        profile.stable_graphs = graphs.len();
-        profile.edge_options = graph_kernel
-            .edge_options
-            .iter()
-            .flat_map(|row| row.iter())
-            .map(Vec::len)
-            .sum();
-
-        let graphs_started = Instant::now();
-        let total = evaluate_external_graphs_auto(
-            graphs.as_ref(),
-            markings,
-            self.colors(),
-            &graph_kernel,
-            self.degree_max,
-            graph_dimension,
-            &mut profile,
-        );
-        profile.add_graph_elapsed(graphs_started.elapsed());
-        profile.finish();
-
-        Ok(total)
-    }
-
-    fn leg_options_for_insertion(
-        &mut self,
-        markings: usize,
-        insertion: &Insertion,
-    ) -> Result<Vec<Vec<LegFactorOption>>, GwError> {
-        self.leg_options_for_insertion_at_q(markings, insertion, self.degree_max)
-    }
-
-    fn leg_options_for_insertion_at_q(
-        &mut self,
-        markings: usize,
-        insertion: &Insertion,
-        q_degree: usize,
-    ) -> Result<Vec<Vec<LegFactorOption>>, GwError> {
-        let cache_key = insertion
-            .class
-            .pure_power()
-            .map(|class_power| MasterLegOptionsKey {
-                q_degree,
-                markings,
-                descendant_power: insertion.descendant_power,
-                class_power,
-            });
-        if let Some(key) = cache_key {
-            if let Some(cached) = self.leg_options_cache.get(&key) {
-                return Ok(cached.clone());
-            }
-        }
-
-        let graph_dimension = self.graph_dimension(markings)?;
-        let s_order = self.max_descendant_power.max(insertion.descendant_power);
-        let graph_kernel = self.graph_kernel_for_markings_at_q(markings, q_degree)?;
-        let colors = self.colors();
-        let psi_inverse = graph_kernel.calibration.psi_inverse.clone();
-        let inverse_r = graph_kernel.inverse_r.clone();
-        let insertion_terms = {
-            let descendant_s = self.descendant_s(q_degree, s_order)?.clone();
-            ancestor_insertion_terms_from_provider(
-                &self.provider,
-                std::slice::from_ref(insertion),
-                &descendant_s,
-                &psi_inverse,
-                q_degree,
-                graph_dimension,
-            )?
-        };
-        let mut options = leg_options_by_marking_color(
-            &insertion_terms,
-            &inverse_r,
-            q_degree,
-            graph_dimension,
-            colors,
-        );
-        let by_color = options.pop().unwrap_or_else(|| vec![Vec::new(); colors]);
-        if let Some(key) = cache_key {
-            self.leg_options_cache.insert(key, by_color.clone());
-        }
-        Ok(by_color)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct MasterContractionTask<C = RatFun> {
-    ordinal: usize,
-    degree: usize,
-    insertions: Vec<Insertion>,
-    markings: usize,
-    leg_options: Vec<Vec<Vec<LegFactorOption<C>>>>,
-}
-
-#[derive(Debug)]
-pub(crate) struct OrderedSeriesCoefficient {
-    ordinal: usize,
-    coefficient: SeriesCoefficient,
-}
-
-pub(crate) fn master_worker_count(work_items: usize) -> usize {
+pub(crate) fn graph_worker_count(work_items: usize) -> usize {
     if work_items <= 1 {
         return 1;
     }
@@ -2033,85 +777,6 @@ pub(crate) fn master_worker_count(work_items: usize) -> usize {
         .filter(|count| *count > 0)
         .unwrap_or(available);
     requested.min(work_items).max(1)
-}
-
-pub(crate) fn contract_task_chunk(
-    kernels: &HashMap<usize, ExternalLegKernel>,
-    tasks: &[MasterContractionTask],
-    include_zero: bool,
-) -> Vec<OrderedSeriesCoefficient> {
-    let mut out = Vec::new();
-    for task in tasks {
-        let kernel = kernels
-            .get(&task.markings)
-            .expect("prepared master task must have a cached external-leg kernel");
-        let value = contract_external_leg_kernel_coeff(kernel, &task.leg_options, task.degree);
-        if include_zero || !value.is_zero() {
-            out.push(OrderedSeriesCoefficient {
-                ordinal: task.ordinal,
-                coefficient: SeriesCoefficient {
-                    degree: task.degree,
-                    insertions: task.insertions.clone(),
-                    value,
-                },
-            });
-        }
-    }
-    out
-}
-
-pub(crate) fn contract_restricted_tasks_parallel(
-    kernel: &RestrictedExternalLegKernel,
-    tasks: &[MasterContractionTask],
-    include_zero: bool,
-) -> Vec<OrderedSeriesCoefficient> {
-    let worker_count = master_worker_count(tasks.len());
-    if worker_count <= 1 {
-        return contract_restricted_task_chunk(kernel, tasks, include_zero);
-    }
-
-    let chunk_size = tasks.len().div_ceil(worker_count);
-    thread::scope(|scope| {
-        let mut handles = Vec::new();
-        for chunk in tasks.chunks(chunk_size) {
-            handles.push(
-                scope.spawn(move || contract_restricted_task_chunk(kernel, chunk, include_zero)),
-            );
-        }
-
-        let mut out = Vec::new();
-        for handle in handles {
-            out.extend(
-                handle
-                    .join()
-                    .expect("restricted master series contraction worker panicked"),
-            );
-        }
-        out
-    })
-}
-
-pub(crate) fn contract_restricted_task_chunk(
-    kernel: &RestrictedExternalLegKernel,
-    tasks: &[MasterContractionTask],
-    include_zero: bool,
-) -> Vec<OrderedSeriesCoefficient> {
-    let mut out = Vec::new();
-    for task in tasks {
-        let value =
-            contract_restricted_external_leg_kernel_coeff(kernel, &task.leg_options, task.degree);
-        if include_zero || !value.is_zero() {
-            out.push(OrderedSeriesCoefficient {
-                ordinal: task.ordinal,
-                coefficient: SeriesCoefficient {
-                    degree: task.degree,
-                    insertions: task.insertions.clone(),
-                    value,
-                },
-            });
-        }
-    }
-    out
 }
 
 pub(crate) struct ScalarGraphChunkResult<C = RatFun> {
@@ -2131,7 +796,7 @@ pub(crate) fn evaluate_scalar_graphs_parallel<C>(
 where
     C: Coeff + Send + Sync,
 {
-    let worker_count = master_worker_count(graphs.len());
+    let worker_count = graph_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
         vec![evaluate_scalar_graph_chunk(
@@ -2693,6 +1358,119 @@ pub(crate) fn evaluate_restricted_external_graphs_auto(
     )
 }
 
+pub(crate) fn build_external_leg_kernel_for_problem(
+    genus: usize,
+    markings: usize,
+    colors: usize,
+    kernel: &Arc<GiventalGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+) -> Result<ExternalLegKernel, GwError> {
+    let mut profile = GraphEvalProfile::new();
+    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile)?;
+    profile.stable_graphs = graphs.len();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let started = Instant::now();
+    let result = evaluate_external_graphs_auto(
+        graphs.as_ref(),
+        markings,
+        colors,
+        kernel,
+        q_degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(started.elapsed());
+    profile.finish();
+    Ok(result)
+}
+
+pub(crate) fn build_restricted_external_leg_kernel_for_problem<'a>(
+    genus: usize,
+    markings: usize,
+    colors: usize,
+    kernel: &Arc<GiventalGraphKernel>,
+    q_degree: usize,
+    graph_dimension: usize,
+    leg_options: impl IntoIterator<Item = &'a [Vec<Vec<LegFactorOption>>]>,
+) -> Result<RestrictedExternalLegKernel, GwError> {
+    let template = RestrictedExternalLegKernel::from_leg_options(
+        markings,
+        colors,
+        graph_dimension,
+        q_degree,
+        leg_options,
+    );
+    let mut profile = GraphEvalProfile::new();
+    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile)?;
+    profile.stable_graphs = graphs.len();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let started = Instant::now();
+    let result = evaluate_restricted_external_graphs_auto(
+        graphs.as_ref(),
+        &template,
+        kernel,
+        q_degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(started.elapsed());
+    profile.finish();
+    Ok(result)
+}
+
+pub(crate) fn build_restricted_external_leg_kernel_with_coeff_for_problem<'a, C>(
+    genus: usize,
+    markings: usize,
+    colors: usize,
+    kernel: &Arc<GiventalGraphKernel<C>>,
+    q_degree: usize,
+    graph_dimension: usize,
+    leg_options: impl IntoIterator<Item = &'a [Vec<Vec<LegFactorOption<C>>>]>,
+) -> Result<RestrictedExternalLegKernel<C>, GwError>
+where
+    C: Coeff + Send + Sync + 'a,
+{
+    let template = RestrictedExternalLegKernel::from_leg_options(
+        markings,
+        colors,
+        graph_dimension,
+        q_degree,
+        leg_options,
+    );
+    let mut profile = GraphEvalProfile::new();
+    let graphs = profiled_prepared_stable_graphs(genus, markings, colors, &mut profile)?;
+    profile.stable_graphs = graphs.len();
+    profile.edge_options = kernel
+        .edge_options
+        .iter()
+        .flat_map(|row| row.iter())
+        .map(Vec::len)
+        .sum();
+    let started = Instant::now();
+    let result = evaluate_restricted_external_graphs_parallel(
+        graphs.as_ref(),
+        &template,
+        kernel,
+        q_degree,
+        graph_dimension,
+        &mut profile,
+    );
+    profile.add_graph_elapsed(started.elapsed());
+    profile.finish();
+    Ok(result)
+}
+
 /// Runs the generic graph evaluator over plain rational coefficients when the
 /// kernel and all leg options are constant, converting the result back.
 pub(crate) fn evaluate_rational_graphs_if_possible(
@@ -2734,7 +1512,7 @@ pub(crate) fn evaluate_external_graphs_parallel<C>(
 where
     C: Coeff + Send + Sync,
 {
-    let worker_count = master_worker_count(graphs.len());
+    let worker_count = graph_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
         vec![evaluate_external_graph_chunk(
@@ -2900,7 +1678,7 @@ pub(crate) fn evaluate_restricted_external_graphs_parallel<C>(
 where
     C: Coeff + Send + Sync,
 {
-    let worker_count = master_worker_count(graphs.len());
+    let worker_count = graph_worker_count(graphs.len());
     let initial_vertex_cache = kernel.vertex_cache.lock().unwrap().clone();
     let results = if worker_count <= 1 {
         vec![evaluate_restricted_external_graph_chunk(
@@ -3048,14 +1826,6 @@ fn accumulate_restricted_external_coloring<C>(
     );
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct MasterLegOptionsKey {
-    q_degree: usize,
-    markings: usize,
-    descendant_power: usize,
-    class_power: usize,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ExternalLegState {
     color: usize,
@@ -3151,17 +1921,20 @@ pub(crate) struct RestrictedExternalLegKernel<C = RatFun> {
 }
 
 impl<C: Coeff> RestrictedExternalLegKernel<C> {
-    fn from_tasks(
+    fn from_leg_options<'a>(
         markings: usize,
         colors: usize,
         max_power: usize,
         q_degree: usize,
-        tasks: &[MasterContractionTask<C>],
-    ) -> Self {
+        tasks: impl IntoIterator<Item = &'a [Vec<Vec<LegFactorOption<C>>>]>,
+    ) -> Self
+    where
+        C: 'a,
+    {
         let mut powers_by_marking_color = vec![vec![BTreeSet::<usize>::new(); colors]; markings];
-        for task in tasks {
-            debug_assert_eq!(task.markings, markings);
-            for (marking, by_color) in task.leg_options.iter().enumerate() {
+        for leg_options in tasks {
+            debug_assert_eq!(leg_options.len(), markings);
+            for (marking, by_color) in leg_options.iter().enumerate() {
                 for (color, options) in by_color.iter().enumerate() {
                     for option in options {
                         if option.power <= max_power {
@@ -3433,7 +2206,7 @@ pub(crate) fn qseries_mul_coeff_generic<C: Coeff>(
         if right_coeff.is_structurally_zero() {
             continue;
         }
-        crate::fused::add_product_assign(&mut total, left_coeff, right_coeff);
+        crate::core::fused::add_product_assign(&mut total, left_coeff, right_coeff);
     }
     total
 }
@@ -3779,10 +2552,13 @@ pub(crate) fn accumulate_restricted_external_leg_graph_factors<C>(
 }
 
 pub(crate) fn is_stable_cohft_range(genus: usize, markings: usize) -> bool {
-    crate::graphs::is_stable_moduli_range(genus, markings)
+    crate::core::moduli::pointed_curve_is_stable(genus, markings)
 }
 
-fn checked_stable_graph_work_dimension(genus: usize, markings: usize) -> Result<usize, GwError> {
+pub(crate) fn checked_stable_graph_work_dimension(
+    genus: usize,
+    markings: usize,
+) -> Result<usize, GwError> {
     crate::graphs::stable_graph_generation_bounds(genus, markings)?;
     crate::graphs::stable_graph_dimension(genus, markings)
 }
@@ -3797,7 +2573,7 @@ pub(crate) fn ancestor_insertion_terms_from_provider<C, P>(
 ) -> Result<Vec<Vec<AncestorLegTerm<C>>>, GwError>
 where
     C: Coeff,
-    P: CoefficientSemisimpleCohftProvider<C>,
+    P: SemisimpleCohftProvider<C>,
 {
     // For tau_k(gamma), the coefficient of z^{-s} in S contributes an ancestor
     // insertion psi^{k-s}.  Applying Psi^{-1} then expresses the flat class in
@@ -3808,8 +2584,8 @@ where
         .enumerate()
         .map(|(idx, insertion)| {
             let insertion_started = Instant::now();
-            let descendant_power = provider.coeff_descendant_power(insertion);
-            let flat_class_vector = provider.coeff_insertion_vector(insertion, q_degree)?;
+            let descendant_power = provider.descendant_power(insertion);
+            let flat_class_vector = provider.insertion_vector(insertion, q_degree)?;
             if profile_enabled {
                 eprintln!(
                     "GW_PROFILE ancestor_insertion_vector[{idx}]={:.3}s",

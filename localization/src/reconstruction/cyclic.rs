@@ -6,9 +6,9 @@
 //! algebra, including the change to cyclic coordinates and multiplication by
 //! an element already expressed in those coordinates.
 
-use crate::algebra::Coeff;
-use crate::error::GwError;
-use crate::series::{QSeries, SeriesMatrix};
+use crate::core::algebra::Coeff;
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
 
 use super::invert_series_matrix_coeff;
 
@@ -182,7 +182,7 @@ fn apply_matrix<C: Coeff>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::algebra::Rational;
+    use crate::core::algebra::Rational;
 
     fn constant_vector(values: &[i64], q_degree: usize) -> Vec<QSeries<Rational>> {
         values

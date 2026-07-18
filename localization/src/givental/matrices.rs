@@ -1,7 +1,10 @@
 //! Givental matrix container types: the constant R-matrix and the truncated
 //! series R- and S-matrices over a coefficient ring.
 
-use super::*;
+use super::{CalibrationId, CanonicalFrameConvention};
+use crate::core::algebra::{Coeff, RatFun};
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
 
 /// `q`-series valued `R(z) = 1 + R_1 z + ...` in the canonical frame.
 ///

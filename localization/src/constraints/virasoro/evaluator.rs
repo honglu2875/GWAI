@@ -2,22 +2,11 @@ use super::{
     CanonicalVirasoroConstraint, ConstraintTerm, CorrelatorKey, Descendant, EvaluatedTerm,
     IncompleteReason, MissingCorrelator, ResidualReport,
 };
-use crate::algebra::{RatFun, Rational};
-use crate::error::GwError;
-use crate::givental::{
-    compute_semisimple_graph_value, reconstruct_bidegree_invariants_in_theory,
-    reconstruct_bundle_invariants_in_theory, BundleInsertion, ProductInsertion,
-    ProjectiveSpaceProvider,
-};
-use crate::spaces::negative_split_projective::TwistedProjectiveSpaceProvider;
-use crate::spaces::projective_space::CohomologyClass;
-use crate::tau;
-use crate::theory::{
-    BasisId, CurveClass, CurveEffectivity, GwTheory, NegativeSplitProjectiveCompletion,
-    ProductProjectiveTheory, ProjectiveBundleTheory, ProjectiveSpaceTheory,
-};
+use crate::core::algebra::{RatFun, Rational};
+use crate::core::error::GwError;
+use crate::core::moduli::{pointed_curve_is_stable, MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI};
+use crate::core::theory::{BasisId, CurveClass, CurveEffectivity, GwTheory};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
 
 pub trait CanonicalCorrelatorEvaluator: Send + Sync {
     fn theory(&self) -> &dyn GwTheory;
@@ -378,11 +367,7 @@ fn resolve_correlator(
     // The connected potential excludes unstable constant maps.  Their
     // contribution is present only through explicit operator corrections.
     if correlator.degree.is_zero()
-        && correlator
-            .genus
-            .checked_mul(2)
-            .and_then(|twice_genus| twice_genus.checked_add(correlator.insertions().len()))
-            .is_some_and(|stability| stability <= 2)
+        && !pointed_curve_is_stable(correlator.genus, correlator.insertions().len())
     {
         return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()));
     }
@@ -402,416 +387,6 @@ fn resolve_correlator(
         .evaluate_backend(correlator)
         .map(CorrelatorResolution::Backend)
         .map_err(incomplete_reason_from_error)
-}
-
-pub struct ProjectiveSpaceEvaluator {
-    provider: ProjectiveSpaceProvider,
-    cache: Mutex<BTreeMap<CorrelatorKey<CurveClass, BasisId>, RatFun>>,
-}
-
-impl ProjectiveSpaceEvaluator {
-    pub fn new(n: usize) -> Self {
-        Self::try_new(n).expect("projective-space evaluator construction failed")
-    }
-
-    pub fn try_new(n: usize) -> Result<Self, GwError> {
-        Ok(Self {
-            provider: ProjectiveSpaceProvider::try_new(n, false)?,
-            cache: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    pub fn projective_theory(&self) -> &ProjectiveSpaceTheory {
-        self.provider.canonical_theory()
-    }
-
-    pub fn provider(&self) -> &ProjectiveSpaceProvider {
-        &self.provider
-    }
-}
-
-impl CanonicalCorrelatorEvaluator for ProjectiveSpaceEvaluator {
-    fn theory(&self) -> &dyn GwTheory {
-        self.projective_theory()
-    }
-
-    fn evaluate_backend(
-        &self,
-        correlator: &CorrelatorKey<CurveClass, BasisId>,
-    ) -> Result<RatFun, GwError> {
-        if let Some(value) = self.cache.lock().unwrap().get(correlator).cloned() {
-            return Ok(value);
-        }
-        let theory = self.projective_theory();
-        let degree = theory.degree(&correlator.degree).ok_or_else(|| {
-            GwError::ConventionMismatch("invalid projective curve class".to_string())
-        })?;
-        let insertions = correlator
-            .insertions()
-            .iter()
-            .map(|insertion| {
-                CohomologyClass::try_h_power(theory.n(), insertion.class.0)
-                    .map(|class| tau(insertion.psi_power, class))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.provider.validate_insertions(&insertions)?;
-        let value = compute_semisimple_graph_value(
-            &self.provider,
-            correlator.genus,
-            degree,
-            &insertions,
-            None,
-        )?;
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(correlator.clone(), value.clone());
-        Ok(value)
-    }
-}
-
-pub struct ProductProjectiveEvaluator {
-    theory: ProductProjectiveTheory,
-    weights_x: Vec<Rational>,
-    weights_y: Vec<Rational>,
-    cache: Mutex<BTreeMap<CorrelatorKey<CurveClass, BasisId>, RatFun>>,
-}
-
-impl ProductProjectiveEvaluator {
-    pub fn new(n: usize, m: usize) -> Result<Self, GwError> {
-        let theory = ProductProjectiveTheory::new(n, m)?;
-        let weights_x = (0..=n).map(|index| Rational::from(index + 1)).collect();
-        let weight_stride = n.checked_add(2).ok_or_else(|| {
-            GwError::UnsupportedInvariant("product default weight overflow".to_string())
-        })?;
-        let weights_y = (0..=m)
-            .map(|index| {
-                weight_stride
-                    .checked_mul(index + 1)
-                    .map(Rational::from)
-                    .ok_or_else(|| {
-                        GwError::UnsupportedInvariant("product default weight overflow".to_string())
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::with_weights(theory, weights_x, weights_y)
-    }
-
-    pub fn with_weights(
-        theory: ProductProjectiveTheory,
-        weights_x: Vec<Rational>,
-        weights_y: Vec<Rational>,
-    ) -> Result<Self, GwError> {
-        let (n, m) = theory.dimensions();
-        if weights_x.len() != n + 1 || weights_y.len() != m + 1 {
-            return Err(GwError::ConventionMismatch(
-                "product evaluator weights do not match its canonical theory".to_string(),
-            ));
-        }
-        Ok(Self {
-            theory,
-            weights_x,
-            weights_y,
-            cache: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    pub fn product_theory(&self) -> &ProductProjectiveTheory {
-        &self.theory
-    }
-}
-
-impl CanonicalCorrelatorEvaluator for ProductProjectiveEvaluator {
-    fn theory(&self) -> &dyn GwTheory {
-        &self.theory
-    }
-
-    fn evaluate_backend(
-        &self,
-        correlator: &CorrelatorKey<CurveClass, BasisId>,
-    ) -> Result<RatFun, GwError> {
-        if let Some(value) = self.cache.lock().unwrap().get(correlator).cloned() {
-            return Ok(value);
-        }
-        let (d1, d2) = self
-            .theory
-            .bidegree(&correlator.degree)
-            .ok_or_else(|| GwError::ConventionMismatch("invalid product bidegree".to_string()))?;
-        let insertions = correlator
-            .insertions()
-            .iter()
-            .map(|insertion| {
-                let (h1, h2) = self.theory.basis_powers(insertion.class).ok_or_else(|| {
-                    GwError::ConventionMismatch("invalid product basis id".to_string())
-                })?;
-                Ok(ProductInsertion::new(insertion.psi_power, h1, h2))
-            })
-            .collect::<Result<Vec<_>, GwError>>()?;
-        let value = evaluate_product_with_divisor_recursion(
-            &self.theory,
-            &self.weights_x,
-            &self.weights_y,
-            correlator.genus,
-            d1,
-            d2,
-            insertions,
-        )?;
-        let value = RatFun::from_rational(value);
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(correlator.clone(), value.clone());
-        Ok(value)
-    }
-}
-
-pub struct ProjectiveBundleEvaluator {
-    theory: ProjectiveBundleTheory,
-    weights_base: Vec<Rational>,
-    weights_fiber: Vec<Rational>,
-    cache: Mutex<BTreeMap<CorrelatorKey<CurveClass, BasisId>, RatFun>>,
-}
-
-impl ProjectiveBundleEvaluator {
-    pub fn new(theory: ProjectiveBundleTheory) -> Result<Self, GwError> {
-        let n = theory.base_dimension();
-        let weights_base = (0..=n).map(|index| Rational::from(index + 1)).collect();
-        let max_twist = *theory.twists().iter().max().expect("nonempty twists");
-        // Put the grading seeds belonging to distinct bundle summands in
-        // disjoint intervals.  This remains generic after any permutation of
-        // the normalized twists, unlike a stride that mixes the twist and
-        // summand indices additively.
-        let fiber_stride = max_twist
-            .checked_add(1)
-            .and_then(|value| value.checked_mul(n.checked_add(1)?))
-            .and_then(|value| value.checked_add(1))
-            .ok_or_else(|| {
-                GwError::UnsupportedInvariant("bundle default weight overflow".to_string())
-            })?;
-        let weights_fiber = theory
-            .twists()
-            .iter()
-            .enumerate()
-            .map(|(index, _)| {
-                fiber_stride
-                    .checked_mul(index)
-                    .map(Rational::from)
-                    .ok_or_else(|| {
-                        GwError::UnsupportedInvariant("bundle default weight overflow".to_string())
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Self::with_weights(theory, weights_base, weights_fiber)
-    }
-
-    pub fn with_weights(
-        theory: ProjectiveBundleTheory,
-        weights_base: Vec<Rational>,
-        weights_fiber: Vec<Rational>,
-    ) -> Result<Self, GwError> {
-        if weights_base.len() != theory.base_dimension() + 1 || weights_fiber.len() != theory.rank()
-        {
-            return Err(GwError::ConventionMismatch(
-                "bundle evaluator weights do not match its canonical theory".to_string(),
-            ));
-        }
-        Ok(Self {
-            theory,
-            weights_base,
-            weights_fiber,
-            cache: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    pub fn bundle_theory(&self) -> &ProjectiveBundleTheory {
-        &self.theory
-    }
-}
-
-impl CanonicalCorrelatorEvaluator for ProjectiveBundleEvaluator {
-    fn theory(&self) -> &dyn GwTheory {
-        &self.theory
-    }
-
-    fn evaluate_backend(
-        &self,
-        correlator: &CorrelatorKey<CurveClass, BasisId>,
-    ) -> Result<RatFun, GwError> {
-        if let Some(value) = self.cache.lock().unwrap().get(correlator).cloned() {
-            return Ok(value);
-        }
-        let (d1, d2) = self
-            .theory
-            .bidegree(&correlator.degree)
-            .ok_or_else(|| GwError::ConventionMismatch("invalid bundle bidegree".to_string()))?;
-        let (_, shifted) = self
-            .theory
-            .shifted_bidegree(&correlator.degree)
-            .ok_or_else(|| {
-                GwError::ConventionMismatch(
-                    "bundle bidegree is outside the shifted cone".to_string(),
-                )
-            })?;
-        let total = d1
-            .checked_add(shifted)
-            .ok_or_else(|| GwError::AlgebraFailure("bundle total degree overflow".to_string()))?;
-        let insertions = correlator
-            .insertions()
-            .iter()
-            .map(|insertion| {
-                let (h, xi) = self.theory.basis_powers(insertion.class).ok_or_else(|| {
-                    GwError::ConventionMismatch("invalid bundle basis id".to_string())
-                })?;
-                Ok(BundleInsertion::new(insertion.psi_power, h, xi))
-            })
-            .collect::<Result<Vec<_>, GwError>>()?;
-        let value = evaluate_bundle_with_divisor_recursion(
-            &self.theory,
-            &self.weights_base,
-            &self.weights_fiber,
-            correlator.genus,
-            d1,
-            d2,
-            total,
-            insertions,
-        )?;
-        let value = RatFun::from_rational(value);
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(correlator.clone(), value.clone());
-        Ok(value)
-    }
-}
-
-/// Audit a negative split-bundle theory through its compact projective
-/// completion.
-///
-/// The generated constraint is the ordinary compact Virasoro equation for
-/// `P(O + V)`.  Positive-degree dependencies in the distinguished section are
-/// evaluated by the local inverse-Euler provider after the exact restriction
-/// `H^h xi^j -> (-A)^j H^(h+j)`.  Degree-zero dependencies are deliberately
-/// evaluated by the compact bundle backend: the local/section identification
-/// is a positive-degree concavity statement and does not identify the
-/// degree-zero theories.
-///
-/// A positive class outside the distinguished section is rejected rather than
-/// assigned a placeholder zero.  Thus this adapter is suitable for
-/// section-sector constraints, not for arbitrary compact-bundle invariants.
-pub struct NegativeSplitCompletionEvaluator {
-    completion: NegativeSplitProjectiveCompletion,
-    compact_evaluator: ProjectiveBundleEvaluator,
-    local_provider: TwistedProjectiveSpaceProvider,
-    cache: Mutex<BTreeMap<CorrelatorKey<CurveClass, BasisId>, RatFun>>,
-}
-
-impl NegativeSplitCompletionEvaluator {
-    pub fn new(base_n: usize, degrees: Vec<usize>) -> Result<Self, GwError> {
-        let local_provider = TwistedProjectiveSpaceProvider::new(base_n, degrees, false)?;
-        Self::from_provider(local_provider)
-    }
-
-    pub fn from_provider(local_provider: TwistedProjectiveSpaceProvider) -> Result<Self, GwError> {
-        local_provider.validate_compact_completion_audit()?;
-        let completion =
-            NegativeSplitProjectiveCompletion::new(local_provider.canonical_theory()?.clone())?;
-        let compact_evaluator =
-            ProjectiveBundleEvaluator::new(completion.compact_theory().clone())?;
-        Ok(Self {
-            completion,
-            compact_evaluator,
-            local_provider,
-            cache: Mutex::new(BTreeMap::new()),
-        })
-    }
-
-    pub fn completion(&self) -> &NegativeSplitProjectiveCompletion {
-        &self.completion
-    }
-
-    pub fn compact_theory(&self) -> &ProjectiveBundleTheory {
-        self.completion.compact_theory()
-    }
-
-    pub fn local_provider(&self) -> &TwistedProjectiveSpaceProvider {
-        &self.local_provider
-    }
-}
-
-impl CanonicalCorrelatorEvaluator for NegativeSplitCompletionEvaluator {
-    fn theory(&self) -> &dyn GwTheory {
-        self.compact_theory()
-    }
-
-    fn evaluate_backend(
-        &self,
-        correlator: &CorrelatorKey<CurveClass, BasisId>,
-    ) -> Result<RatFun, GwError> {
-        if let Some(value) = self.cache.lock().unwrap().get(correlator).cloned() {
-            return Ok(value);
-        }
-
-        let value = if correlator.degree.is_zero() {
-            self.compact_evaluator.evaluate_backend(correlator)?
-        } else {
-            let degree = self
-                .completion
-                .section_degree(&correlator.degree)
-                .filter(|degree| *degree > 0)
-                .ok_or_else(|| {
-                    GwError::UnsupportedInvariant(format!(
-                        "compact-section evaluator only supports positive section classes, not {:?}",
-                        correlator.degree.coordinates()
-                    ))
-                })?;
-
-            let mut coefficient = Rational::one();
-            let mut insertions = Vec::new();
-            insertions
-                .try_reserve_exact(correlator.insertions().len())
-                .map_err(|_| {
-                    GwError::UnsupportedInvariant(
-                        "cannot allocate compact-section insertion restrictions".to_string(),
-                    )
-                })?;
-            for insertion in correlator.insertions() {
-                let Some((local_basis, scalar)) =
-                    self.completion.restrict_basis_to_section(insertion.class)?
-                else {
-                    let zero = RatFun::zero();
-                    self.cache
-                        .lock()
-                        .unwrap()
-                        .insert(correlator.clone(), zero.clone());
-                    return Ok(zero);
-                };
-                coefficient = coefficient * scalar;
-                let class = CohomologyClass::try_h_power(
-                    self.completion.local_theory().base_dimension(),
-                    local_basis.0,
-                )?;
-                insertions.push(tau(insertion.psi_power, class));
-            }
-            let local_value = self
-                .local_provider
-                .evaluate_nonequivariant_positive_degree(correlator.genus, degree, &insertions)?;
-            &RatFun::from_rational(coefficient) * &local_value
-        };
-
-        self.cache
-            .lock()
-            .unwrap()
-            .insert(correlator.clone(), value.clone());
-        Ok(value)
-    }
-}
-
-fn pointed_curve_is_stable(genus: usize, markings: usize) -> bool {
-    match genus {
-        0 => markings >= 3,
-        1 => markings >= 1,
-        _ => true,
-    }
 }
 
 fn check_divisor_recursion_depth(
@@ -834,38 +409,13 @@ fn check_divisor_recursion_depth(
     // so a stack-depth bound alone is not a work bound.  Keep a deliberately
     // smaller aggregate psi envelope for this adapter-only recursion; stable
     // graph evaluation retains its independent, larger descendant boundary.
-    let maximum = crate::MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI;
+    let maximum = MAX_UNSTABLE_DIVISOR_RECURSION_TOTAL_PSI;
     if total_descendant_power > maximum {
         return Err(GwError::UnsupportedInvariant(format!(
             "{target} unstable descendant degree {total_descendant_power} exceeds the divisor-recursion implementation bound {maximum}"
         )));
     }
     Ok(())
-}
-
-fn reconstruct_requested_product_value(
-    theory: &ProductProjectiveTheory,
-    weights_x: &[Rational],
-    weights_y: &[Rational],
-    genus: usize,
-    d1: usize,
-    d2: usize,
-    insertions: &[ProductInsertion],
-) -> Result<Rational, GwError> {
-    let total_degree = d1
-        .checked_add(d2)
-        .ok_or_else(|| GwError::AlgebraFailure("total bidegree overflow".to_string()))?;
-    let values = reconstruct_bidegree_invariants_in_theory(
-        theory,
-        weights_x,
-        weights_y,
-        genus,
-        total_degree,
-        insertions,
-    )?;
-    values.get(d2).cloned().ok_or_else(|| {
-        GwError::AlgebraFailure("product reconstruction omitted requested bidegree".to_string())
-    })
 }
 
 /// Evaluate a positive-degree correlator whose pointed curve may be unstable.
@@ -879,7 +429,7 @@ fn reconstruct_requested_product_value(
 /// Target adapters only translate canonical basis ids at the stable backend
 /// boundary; product and bundle theories therefore cannot drift in their
 /// stabilization signs or ring reductions.
-fn evaluate_with_divisor_recursion<F>(
+pub(crate) fn evaluate_with_divisor_recursion<F>(
     theory: &dyn GwTheory,
     genus: usize,
     curve: &CurveClass,
@@ -943,165 +493,18 @@ where
     Ok(numerator / Rational::from(intersection))
 }
 
-fn evaluate_product_with_divisor_recursion(
-    theory: &ProductProjectiveTheory,
-    weights_x: &[Rational],
-    weights_y: &[Rational],
-    genus: usize,
-    d1: usize,
-    d2: usize,
-    insertions: Vec<ProductInsertion>,
-) -> Result<Rational, GwError> {
-    let curve = theory.try_curve(d1, d2)?;
-    let canonical = insertions
-        .iter()
-        .map(|insertion| {
-            theory
-                .basis_id(insertion.h1_power, insertion.h2_power)
-                .map(|basis| Descendant::new(insertion.descendant_power, basis))
-                .ok_or_else(|| {
-                    GwError::ConventionMismatch(
-                        "product insertion is outside the canonical basis".to_string(),
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let evaluate_stable = |canonical: &[Descendant<BasisId>]| {
-        let backend_insertions = canonical
-            .iter()
-            .map(|insertion| {
-                theory
-                    .basis_powers(insertion.class)
-                    .map(|(h1_power, h2_power)| {
-                        ProductInsertion::new(insertion.psi_power, h1_power, h2_power)
-                    })
-                    .ok_or_else(|| {
-                        GwError::AlgebraFailure(
-                            "product cup product returned an invalid basis id".to_string(),
-                        )
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        reconstruct_requested_product_value(
-            theory,
-            weights_x,
-            weights_y,
-            genus,
-            d1,
-            d2,
-            &backend_insertions,
-        )
-    };
-    evaluate_with_divisor_recursion(
-        theory,
-        genus,
-        &curve,
-        canonical,
-        "product",
-        &evaluate_stable,
-    )
-}
-
-fn reconstruct_requested_bundle_value(
-    theory: &ProjectiveBundleTheory,
-    weights_base: &[Rational],
-    weights_fiber: &[Rational],
-    genus: usize,
-    d1: usize,
-    d2: i64,
-    total_degree: usize,
-    insertions: &[BundleInsertion],
-) -> Result<Rational, GwError> {
-    let values = reconstruct_bundle_invariants_in_theory(
-        theory,
-        weights_base,
-        weights_fiber,
-        genus,
-        total_degree,
-        insertions,
-    )?;
-    let requested_d2 = isize::try_from(d2).map_err(|_| {
-        GwError::AlgebraFailure("bundle fiber degree does not fit in isize".to_string())
-    })?;
-    values
-        .into_iter()
-        .find(|(candidate_d1, candidate_d2, _)| {
-            *candidate_d1 == d1 && *candidate_d2 == requested_d2
-        })
-        .map(|(_, _, value)| value)
-        .ok_or_else(|| {
-            GwError::AlgebraFailure("bundle reconstruction omitted requested bidegree".to_string())
-        })
-}
-
-fn evaluate_bundle_with_divisor_recursion(
-    theory: &ProjectiveBundleTheory,
-    weights_base: &[Rational],
-    weights_fiber: &[Rational],
-    genus: usize,
-    d1: usize,
-    d2: i64,
-    total_degree: usize,
-    insertions: Vec<BundleInsertion>,
-) -> Result<Rational, GwError> {
-    let curve = theory.try_curve(d1, d2)?;
-    let canonical = insertions
-        .iter()
-        .map(|insertion| {
-            theory
-                .basis_id(insertion.h_power, insertion.xi_power)
-                .map(|basis| Descendant::new(insertion.descendant_power, basis))
-                .ok_or_else(|| {
-                    GwError::ConventionMismatch(
-                        "projective-bundle insertion is outside the canonical basis".to_string(),
-                    )
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let evaluate_stable = |canonical: &[Descendant<BasisId>]| {
-        let backend_insertions = canonical
-            .iter()
-            .map(|insertion| {
-                theory
-                    .basis_powers(insertion.class)
-                    .map(|(h_power, xi_power)| {
-                        BundleInsertion::new(insertion.psi_power, h_power, xi_power)
-                    })
-                    .ok_or_else(|| {
-                        GwError::AlgebraFailure(
-                            "projective-bundle cup product returned an invalid basis id"
-                                .to_string(),
-                        )
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        reconstruct_requested_bundle_value(
-            theory,
-            weights_base,
-            weights_fiber,
-            genus,
-            d1,
-            d2,
-            total_degree,
-            &backend_insertions,
-        )
-    };
-    evaluate_with_divisor_recursion(
-        theory,
-        genus,
-        &curve,
-        canonical,
-        "projective-bundle",
-        &evaluate_stable,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::constraints::virasoro::{
         generate_constraint, Descendant, LinearTerm, ResidualStatus, TermOrigin, TimeMonomial,
     };
+    use crate::spaces::negative_split_projective::{
+        NegativeSplitCompletionEvaluator, TwistedProjectiveSpaceProvider,
+    };
+    use crate::spaces::product_projective::ProductProjectiveEvaluator;
+    use crate::spaces::projective_bundle::{ProjectiveBundleEvaluator, ProjectiveBundleTheory};
+    use crate::spaces::projective_space::{ProjectiveSpaceEvaluator, ProjectiveSpaceTheory};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn point_constraint(

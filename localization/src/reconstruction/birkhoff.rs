@@ -1,9 +1,9 @@
 //! Generic coefficient-matrix and Birkhoff factorization over graded Novikov
 //! rings.
 
-use crate::algebra::Coeff;
-use crate::error::GwError;
-use crate::series::{QSeries, SeriesMatrix};
+use crate::core::algebra::Coeff;
+use crate::core::error::GwError;
+use crate::core::series::{QSeries, SeriesMatrix};
 use std::collections::BTreeMap;
 use std::thread;
 

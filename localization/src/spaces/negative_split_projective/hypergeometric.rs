@@ -1,11 +1,31 @@
 //! Genus-zero QRR/Lefschetz and hypergeometric models for negative split
 //! bundles (the I-function / mirror-map / Birkhoff machinery).
 
-use super::*;
-use crate::algebra::{Coeff, RatFun, Rational};
-use crate::error::GwError;
+use super::calibration::validate_twisted_weights;
+use super::i_function::{
+    base_h_power_relation, negative_split_equivariant_i_function_coefficient,
+    negative_split_equivariant_i_function_coefficient_coeff,
+    negative_split_i_function_coefficients, negative_split_qrr_euler_factor,
+    projective_i_function_coefficient,
+};
+use super::twist::NegativeSplitBundleTwist;
+use crate::core::algebra::{Coeff, RatFun, Rational};
+use crate::core::error::GwError;
+use crate::core::series::{invert_mirror_map, SeriesMatrix};
+use crate::givental::recipe::{
+    birkhoff_descendant_s_matrix_from_fundamental,
+    birkhoff_descendant_s_matrix_from_fundamental_coeff,
+    fundamental_solution_matrix_from_j_coefficients,
+    fundamental_solution_matrix_from_j_coefficients_mod_relation,
+    fundamental_solution_matrix_from_j_coefficients_mod_relation_coeff,
+    mirror_map_coefficients_from_i_function, mirror_map_coefficients_from_i_function_coeff,
+    mirror_transformed_j_coefficients_from_i_function,
+    mirror_transformed_j_coefficients_from_i_function_mod_relation,
+    mirror_transformed_j_coefficients_from_i_function_mod_relation_coeff,
+    required_birkhoff_negative_z_depth, validate_birkhoff_request_bounds,
+};
 use crate::givental::{CalibrationId, SeriesSMatrix};
-use crate::series::{invert_mirror_map, SeriesMatrix};
+use crate::reconstruction::{base_h_power_relation_coeff, HCoeffLaurentSeries, HLaurentSeries};
 use std::collections::BTreeMap;
 
 /// Genus-zero QRR/Lefschetz operator for a negative split bundle.

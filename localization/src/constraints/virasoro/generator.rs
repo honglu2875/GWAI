@@ -4,9 +4,9 @@ use super::{
     StateSpaceConvention, TermOrigin, TheoryLabel, TimeMonomial, TimeNormalization,
     UnstableConvention, VirasoroConstraint, VirasoroConventions, VirasoroOperator,
 };
-use crate::algebra::Rational;
-use crate::error::GwError;
-use crate::theory::{
+use crate::core::algebra::Rational;
+use crate::core::error::GwError;
+use crate::core::theory::{
     BasisId, CurveClass, CurveEffectivity, GwTheory, Parity, StateSpace, StateSpaceMatrix,
     VirasoroOperatorKind,
 };
@@ -883,10 +883,11 @@ impl TermAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theory::{
-        BasisElement, CharacteristicNumbers, CurveClassSpace, CurveClassSplit,
-        NegativeSplitTotalSpaceTheory, NondegeneratePairing, ProjectiveSpaceTheory,
+    use crate::core::theory::{
+        BasisElement, CharacteristicNumbers, CurveClassSpace, CurveClassSplit, NondegeneratePairing,
     };
+    use crate::spaces::negative_split_projective::NegativeSplitTotalSpaceTheory;
+    use crate::spaces::projective_space::ProjectiveSpaceTheory;
 
     struct CountOnlyTheory(ProjectiveSpaceTheory);
 

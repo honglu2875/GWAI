@@ -53,58 +53,83 @@ adapter holds or returns the same canonical `GwTheory`.
 
 | Path | Contents |
 |---|---|
-| `src/algebra.rs` | `Rational` (BigRational wrapper), interned `Monomial`, `SparsePoly`, `RatFun`, the `Coeff` trait, lambda-line limits |
+| `src/core/algebra.rs` | `Rational` (BigRational wrapper), interned `Monomial`, `SparsePoly`, `RatFun`, the `Coeff` trait, lambda-line limits |
 | `src/factored.rs` | `FactoredRatFun`: rational functions with denominator factor lists |
-| `src/series.rs` | `QSeries<C>` (truncated Novikov series), `SeriesMatrix<C>`, plain-series utilities (exp, compose, mirror-map inversion) |
+| `src/core/series.rs` | `QSeries<C>` (truncated Novikov series), `SeriesMatrix<C>`, plain-series utilities (exp, compose, mirror-map inversion) |
+| `src/core/theory.rs` | universal `GwTheory` contract and shared state-space, curve-class, pairing, grading, and characteristic-number types; no concrete target records |
+| `src/core/{error,moduli,bounded_cache,fused}.rs` | public error and pointed-curve stability/recursion boundaries, plus crate-private target-neutral storage/arithmetic helpers |
 | `src/graphs.rs` | stable-graph generation, individualization–refinement canonicalization, automorphisms, disk cache |
 | `src/tautological.rs` | Witten–Kontsevich psi integrals (string/dilaton/DVV), shared process-wide cache |
-| `src/theory.rs` | canonical `GwTheory` data: state space, pairing, classical cup product, grading, `c1`, numerical curve classes, admissible splittings, stabilizing divisors, characteristic numbers; concrete compact and local theory records |
-| `src/spaces/` | target-oriented public discovery hierarchy; each peer module exposes its canonical theory beside provider, insertion, reconstruction, and Virasoro adapters without duplicating geometry; ordinary projective-space algebra and the negative-split implementation physically live here, while product/bundle modules currently reexport evaluator implementations from `givental/` |
-| `src/constraints/` | backend-independent identity ASTs; Getzler Virasoro generation, text/TeX rendering, exact evaluation reports, and bounded scans |
+| `src/spaces/` | target-oriented public and physical hierarchy; each peer owns its concrete theory, target-specific provider/API code, and concrete Virasoro evaluator without duplicating geometry |
+| `src/spaces/projective_space/{api,batch,resolvent}.rs` | ordinary `P^n` request/results, sparse-potential and packed-resolvent orchestration, and labelled resolvent generating functions around generic graph kernels |
+| `src/spaces/*/virasoro.rs` | concrete adapters from canonical correlator keys to each target's provider; the generic constraint engine reexports their historical names |
+| `src/constraints/` | backend-independent identity ASTs; Getzler Virasoro generation, text/TeX rendering, exact evaluation reports, and bounded scans; `virasoro/compat.rs` alone restores historical concrete-evaluator paths |
+| `src/algebra.rs`, `error.rs`, `series.rs`, `theory.rs`, `resolvent.rs` | compatibility facades for the historical public paths; new internals import `core::*` and concrete `spaces::*` paths directly |
 | `src/geometry.rs`, `src/frobenius.rs` | compatibility reexports for the projective-space implementations under `src/spaces/projective_space/` |
-| `src/givental.rs` + submodules | the contraction engine, calibration machinery, and canonical-correlator evaluation adapters (below) |
+| `src/givental.rs` + submodules | the target-neutral contraction engine and calibration machinery (below), plus compatibility reexports for the historical product/bundle paths |
 | `src/twisted.rs` | compatibility reexport for `src/spaces/negative_split_projective/` |
 | `src/reconstruction/` | crate-internal target-neutral reconstruction algebra shared by product, bundle, and negative-split adapters (details below) |
-| `src/error.rs` | public error boundary; structured `ResourceLimit` and `UnsupportedFeature` variants plus legacy broad error categories |
-| `src/bounded_cache.rs` | deterministic fixed-capacity caches for target/calibration reconstruction objects |
 | `src/formula/` | human-readable stable-graph formula rendering (text/TeX), distinct from Virasoro constraint rendering |
-| `src/resolvent.rs` | labelled resolvent generating functions |
+| `src/lib.rs` | crate module tree and compatibility reexports of the historical crate-root projective-space API |
 | `src/validation.rs`, `src/testsuite.rs`, `src/validation_backends/` | seed formulas, oracle tables, legacy localization, the built-in `gw-pn tests` suite |
 | `src/bin/gw-pn.rs` | the CLI |
+
+Inside `src/spaces/`, every top-level directory is a peer target family:
+
+| Target directory | Target-owned pieces |
+|---|---|
+| `projective_space/` | `theory` (canonical geometry), `provider`/`target` (calibration adapters), `api` (requests/results), `batch` and `resolvent` (Pn-shaped orchestration), `virasoro` (canonical-key evaluator), plus `equivariant`, `frobenius`, and small target-owned seed formulas |
+| `product_projective/` | `theory`, two-ray `provider`, and `virasoro` evaluator |
+| `projective_bundle/` | `theory`, bidegree/ray `provider`, and `virasoro` evaluator |
+| `negative_split_projective/` | canonical local `theory`, compact `completion`, twist/I-function/hypergeometric/mirror/calibration recipes, graph `provider`, and compact-completion `virasoro` evaluator |
+
+The repeated `theory`/`provider`/`virasoro` names are intentional navigation
+anchors. A target-specific implementation belongs here even when it consumes
+a generic algorithm from `givental`, `reconstruction`, or `constraints`.
 
 Inside `src/givental/`:
 
 | Path | Contents |
 |---|---|
-| `graph.rs` | the contraction engine: graph kernels, accumulators, external-leg tensors, parallel drivers, coefficient-tier dispatch, public compute/series/resolvent entry points |
-| `provider.rs` | the provider traits and the production `ProjectiveSpaceProvider` (symbolic and lambda-line), calibration caches |
+| `graph.rs` | the target-neutral contraction engine: graph kernels, accumulators, external-leg tensors, parallel drivers, coefficient-tier dispatch, and provider-generic scalar/series entry points |
+| `provider.rs` | the coefficient-generic `SemisimpleCalibration` data and sole `SemisimpleCohftProvider` contract; concrete projective-provider names are reexported only by the historical `givental` facade |
 | `matrices.rs` | `SeriesRMatrix`, `SeriesSMatrix`, convention metadata, the symplectic-unitarity check |
 | `r_solve.rs` | the R-matrix flatness recursion |
 | `classical_limit.rs` | Bernoulli/Gamma diagonal asymptotics from tangent-weight differences |
 | `recipe.rs` | target-agnostic calibration recipes (see below) |
-| `target.rs` | rank-one quantum-ring calibration input `GwTarget` and `TargetProvider` adapter; these are evaluator machinery, not canonical geometry |
-| `product.rs` | `P^n x P^m` by Novikov ray reconstruction |
-| `bundle.rs` | `P(O(a_1)+...+O(a_m))` over `P^n` from its toric I-function, bidegree Birkhoff + ray reconstruction |
+| `recipe/cone_point.rs` | Givental mirror normalization, fundamental-solution assembly, Birkhoff descendant-`S` extraction, and metric-adjoint conversion over reconstruction primitives |
+| `target.rs` | insertion-generic rank-one quantum-ring input `SemisimpleTarget` and `TargetProvider`; historical fixed-projective-insertion `GwTarget` implementations adapt into that boundary, and concrete `ProjectiveTarget` is a compatibility reexport from `spaces/projective_space/target.rs` |
+
+`givental::Truncation` is the generic caller cap for graph-calibration
+`z`-order.  The crate root and projective API reexport the same type for
+source compatibility; it is not target geometry.
 
 Inside `src/reconstruction/`:
 
 | Path | Contents |
 |---|---|
 | `birkhoff.rs` | coefficient-generic graded Laurent Birkhoff factorization |
+| `h_laurent.rs` | coefficient-generic cohomology-valued Laurent series in a cyclic power basis |
 | `series_matrix.rs` | target-neutral operations on `QSeries<C>` matrices |
 | `cyclic.rs` | typed cyclic coordinates and multiplication in a quantum algebra generated by one operator |
 | `interpolation.rs`, `linear.rs` | checked exact ray plans and rational Vandermonde recovery |
 | `truncation.rs` | grading-generic closure of positive Laurent windows and required negative depths |
 
-The target-specific Laurent representations deliberately stay with their
-targets: the `H`-power quotient series belongs to
-`spaces/negative_split_projective/`, while the bundle bidegree series belongs
-to `givental/bundle.rs`.  Only their shared algebra and dependency planning
-belong in `reconstruction/`.
+The cyclic `H`-power Laurent representation and its pure series operations are
+shared by negative-split and projective-bundle reconstruction, so they live in
+`reconstruction/`.  Calibration-specific cone-point normalization,
+fundamental-solution assembly, and descendant-`S` extraction live under
+`givental/recipe/`; this keeps the reconstruction layer independent of
+Givental types.  Negative-split code still owns its hypergeometric twist
+factors, while bundle code owns its bidegree indexing and toric coefficient
+construction.  The public Laurent type names remain reexported from
+`spaces/negative_split_projective/` for compatibility.  The historical
+`givental/product.rs` and `givental/bundle.rs` modules are also compatibility
+reexports.
 
 ## The canonical theory boundary
 
-`GwTheory` (`theory.rs`) owns every datum on which a target-independent
+`GwTheory` (`core/theory.rs`) defines every datum on which a target-independent
 identity may depend:
 
 - the homogeneous basis, unit, complex degree, and parity;
@@ -128,15 +153,20 @@ characteristic numbers.  This is executable documentation: the compact
 Virasoro generator refuses it until a twisted pairing and QRR-conjugated
 operator exist, rather than manufacturing compact data for a noncompact
 total space.
+Its compact projective-bundle audit geometry is a separate adapter in
+`spaces/negative_split_projective/completion.rs`, rather than part of the
+canonical local-theory record.
 
-`givental::target::GwTarget` is a rank-one calibration-recipe adapter.  Every
-implementation must return its canonical `GwTheory`; it can supply quantum
-multiplication, fixed-point seeds, and insertion vectors, but it cannot
-restate dimension, first-Chern degree, or effectivity.  `TargetProvider`
-derives that bookkeeping directly from the returned theory and validates the
-calibration rank against its canonical state space.  It is not a synonym for
-`GwTheory` and no universal identity queries it.  The adapter is responsible
-only for translating `BasisId` and `CurveClass` into backend requests.
+`givental::target::SemisimpleTarget` is the insertion-generic rank-one
+calibration-recipe adapter.  Every implementation returns its canonical
+`GwTheory`; it can supply quantum multiplication, fixed-point seeds, and
+insertion vectors, but it cannot restate dimension, first-Chern degree, or
+effectivity.  `TargetProvider<T>` derives that bookkeeping from the returned
+theory and validates the calibration rank against its canonical state space.
+The historical `GwTarget` contract fixes the projective-space insertion type;
+a one-way blanket implementation adapts it into `SemisimpleTarget`, preserving
+existing implementations without creating another behavior source.  Neither
+trait is a synonym for `GwTheory`, and no universal identity queries one.
 The projective, product-ray, bundle-ray, and Virasoro evaluator adapters each
 store that canonical object privately and expose it by shared reference;
 calibration weights and Novikov rays cannot replace or mutate its geometry.
@@ -144,6 +174,12 @@ In particular, product and bundle divisor recursion calls the same
 `GwTheory::classical_product` and `GwTheory::stabilizing_divisor` methods as
 any future universal recursion; an evaluator does not carry a second ring
 relation.
+
+Human-readable Virasoro notation follows the same boundary. `GwTheory`
+supplies both plain and TeX basis/curve-coordinate labels, and the checked
+`render_*_for_theory` entry points compare the theory fingerprint before
+rendering. The generic renderer never guesses target symbols by rewriting
+strings such as `H1` or `xi`.
 
 ## The Virasoro audit path
 
@@ -266,13 +302,13 @@ The graph engine consumes, via the evaluator/provider traits in `provider.rs`:
 
 `SemisimpleCohftProvider<C>` is the one coefficient-generic provider contract;
 `C = RatFun` is only its default type parameter.  The deprecated
-`CoefficientSemisimpleCohftProvider<C>` spelling remains temporarily because
-the graph engine still calls its prefixed methods.  A one-way blanket
-implementation exposes every canonical provider through that compatibility
-view; there is intentionally no reverse blanket implementation and therefore
-no second source of provider behavior.  `CalibrationId` strings are metadata
-that keep tests and error messages honest about which convention produced an
-object.
+`CoefficientSemisimpleCohftProvider<C>` spelling remains only so callers of
+the historical `coeff_*` methods keep compiling.  The graph engine calls
+`SemisimpleCohftProvider<C>` directly.  A one-way blanket implementation
+exposes every canonical provider through the deprecated view; there is no
+reverse blanket implementation or second source of provider behavior.
+`CalibrationId` strings are metadata that keep tests and error messages honest
+about which convention produced an object.
 
 ## Recipes
 
@@ -292,20 +328,24 @@ quantum differential equation).
 the `H z^{-1}` part, exponential gauge and re-expansion to J reduced by the
 classical ring relation, then `descendant_s_from_j_function` (fundamental
 solution by repeated `z q d/dq + H`-cup, Birkhoff factorization, metric
-adjoint).  For multi-parameter projective bundles, `bundle.rs` instead
-builds the raw bidegree fundamental solution and Birkhoff-factors it before
+adjoint). For multi-parameter projective bundles,
+`spaces/projective_bundle/provider.rs` instead builds the raw bidegree
+fundamental solution and Birkhoff-factors it before
 ray restriction; this lets the positive factor carry the full cone
 projection.  The projected bidegree cone point is then put in flat Novikov
 coordinates by extracting the two divisor mirror-coordinate series, gauging
 them away, and inverting the bidegree mirror map before any ray
 specialization.  The cohomology-valued Laurent machinery behind these
 operations is split at its actual abstraction boundary.  Target-neutral
-series-matrix operations, graded Birkhoff factorization, cyclic-coordinate algebra, exact
-ray interpolation, and Laurent-window planning live in `reconstruction/`.
-The concrete `H`-power quotient series and its mirror-coordinate transforms
-remain in `spaces/negative_split_projective/`; the bundle's different
-bidegree representation remains in `bundle.rs`.  Neither target imports
-generic reconstruction through the old root `twisted` compatibility path.
+series-matrix operations, the cyclic `H`-power Laurent representation, graded
+Birkhoff factorization, cyclic-coordinate algebra, exact ray interpolation,
+and Laurent-window planning live in `reconstruction/`.  Mirror normalization,
+fundamental-solution generation, and descendant-`S` extraction live in
+`givental/recipe/cone_point.rs`.  Negative-split code owns the hypergeometric
+twist coefficient construction, while the bundle's bidegree container and
+toric construction remain in
+`spaces/projective_bundle/provider.rs`.  Neither target imports generic
+reconstruction through the old root `twisted` compatibility path.
 
 **Operator frame.**  `operator_lagrange_frame` builds a canonical frame from
 an explicit quantum multiplication operator (spectral projectors applied to
@@ -336,7 +376,8 @@ documented evaluator scope is one Novikov variable and a divisor-generated
 ring.
 
 **Products.** `ProductProjectiveTheory` owns the tensor-product state space
-and geometric bidegree.  The evaluator in `product.rs` runs each requested
+and geometric bidegree.  The evaluator in
+`spaces/product_projective/provider.rs` runs each requested
 canonical correlator on the single-variable engine
 through exact Novikov ray specialization `(q1, q2) = (t, b t)`;
 `reconstruct_bidegree_invariants` runs `total_degree + 1` rays and solves
@@ -355,8 +396,9 @@ Atiyah–Bott flat metric.  Validated against Behrend's product formula
 ring basis, pairing, `c_1` action, Chern numbers, and geometric class
 `(d1,d2)`.  Its full classical cup product, including reduction by the bundle
 relation, is exposed through `GwTheory`; divisor stabilization therefore does
-not need evaluator-local multiplication rules.  The evaluator in `bundle.rs`
-computes `P(O(a_1) + ... + O(a_m))` over `P^n`
+not need evaluator-local multiplication rules. The evaluator in
+`spaces/projective_bundle/provider.rs` computes
+`P(O(a_1) + ... + O(a_m))` over `P^n`
 from its toric I-function.  This is Picard rank two and the first target with a
 nontrivial mirror map and a curve class that can be *negative* against a
 divisor (the exceptional section of a Hirzebruch surface).  The design that
@@ -510,17 +552,18 @@ A universal identity must depend on this canonical object, never on a
 calibration provider or the discovery facade.
 
 **A new rank-one Givental evaluator** (quadric, known-semisimple Fano): expose
-it from the target's `spaces/` module and implement a `GwTarget` calibration
-input--seeds, companion divisor multiplication, insertion vectors--using the
-shared machinery under `givental/`.  Wrap it in `TargetProvider` and map its
-requests to the canonical `GwTheory`.  Add an invariant-level test against
-independent numbers.  If the target also has a hypergeometric I-function,
-feed it through
+it from the target's `spaces/` module and implement a `SemisimpleTarget`
+calibration input--seeds, companion divisor multiplication, and a target-owned
+insertion dictionary--using the shared machinery under `givental/`.  Wrap it
+in `TargetProvider` and map canonical evaluator requests to the same
+`GwTheory`.  Implement `GwTarget` only when preserving the historical
+projective-insertion contract.  Add an invariant-level test against independent
+numbers.  If the target also has a hypergeometric I-function, feed it through
 `descendant_s_from_i_function` and assert the two S-matrices agree: that is
 the cheapest strong validation available.
 
 **A higher-Picard-rank target**: follow the `spaces/product_projective` and
-`spaces/projective_bundle` entry points into `product.rs`/`bundle.rs`.  Build
+`spaces/projective_bundle` entry points into their peer `provider.rs` files.  Build
 the frame in a constant classical basis of a cyclic grading generator, keep
 the Novikov multigrading through the quantum-ring or Birkhoff construction,
 then restrict to flat-coordinate rays `(t, b t)` and reconstruct bidegrees from

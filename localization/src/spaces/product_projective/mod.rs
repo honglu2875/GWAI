@@ -4,10 +4,14 @@
 //! and providers specialize its two Novikov variables only for computation;
 //! exact reconstruction returns the geometric bidegrees.
 
-pub use crate::constraints::virasoro::ProductProjectiveEvaluator;
-pub use crate::givental::product::{
+pub mod provider;
+pub mod theory;
+pub mod virasoro;
+
+pub use provider::{
     bidegree_dimension_matches, bidegree_dimension_matches_in_theory,
     reconstruct_bidegree_invariants, reconstruct_bidegree_invariants_in_theory,
     try_bidegree_dimension_matches, ProductInsertion, ProductProjectiveRay, ProductRayProvider,
 };
-pub use crate::theory::ProductProjectiveTheory;
+pub use theory::*;
+pub use virasoro::*;

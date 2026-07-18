@@ -7,10 +7,10 @@
 //! Givental `S`/`R` graph engine.
 
 use super::{labelled_leg_assignments, labelled_trees, LocEdge, LocGraph, LocVertex, MarkedLeg};
-use crate::algebra::Rational;
-use crate::error::GwError;
-use crate::givental::BundleInsertion;
-use crate::theory::{CurveClass, GwTheory, ProjectiveBundleTheory};
+use crate::core::algebra::Rational;
+use crate::core::error::GwError;
+use crate::core::theory::{CurveClass, GwTheory};
+use crate::spaces::projective_bundle::{BundleInsertion, ProjectiveBundleTheory};
 use std::collections::BTreeSet;
 
 /// Largest theory-owned shifted total degree accepted by this direct oracle.

@@ -851,7 +851,7 @@ Debug and tuning knobs, all off by default. Boolean flags are enabled by
 - `GW_PROFILE`: print timing and counter diagnostics for calibration, option
   construction, and graph contraction to stderr.
 - `GW_THREADS`: worker thread count for parallel graph evaluation (defaults to
-  available parallelism, capped at 8).
+  available parallelism, capped by the number of work items).
 - `GWAI_DISABLE_RATIONAL_GRAPH`: disable the plain-rational fast path for
   graph sums with constant coefficients and force the symbolic evaluator.
 - `GWAI_DISABLE_FACTORED_GRAPH`: disable the factored-denominator contraction
@@ -878,8 +878,11 @@ computation shortcuts.
 
 ## Architecture: Canonical Theories, Evaluators, and the CohFT Engine
 
-`theory::GwTheory` is the sole canonical source of target geometry.  It owns
-the homogeneous state space and unit, Poincare pairing, complex grading,
+`core::theory::GwTheory` is the universal contract for the sole canonical
+source of target geometry. Each concrete implementation lives with its space
+under `src/spaces/*/theory.rs`; the historical `theory::*` path is a
+compatibility facade. The contract covers the homogeneous state space and
+unit, Poincare pairing, complex grading,
 classical cup product, `c_1` action, numerical curve lattice,
 effectivity/admissible cone and degree splittings, the choice of a stabilizing
 divisor, virtual dimension, and characteristic numbers.  The concrete
@@ -893,34 +896,46 @@ data from an evaluator.  It produces a backend-independent symbolic
 constraint; a `CanonicalCorrelatorEvaluator` then maps its canonical
 `BasisId` and `CurveClass` keys to a computation backend.
 
-The Givental providers, `givental::target::GwTarget`, and product/bundle ray
-objects are therefore evaluator and calibration adapters, not competing
-descriptions of a theory.  They own algorithm-specific data such as fixed
-point weights, I-functions, quantum multiplication, canonical frames,
-`R`/`S` matrices, and ray interpolation.  Each production adapter exposes or
-privately owns its canonical `GwTheory` and exposes it by shared reference;
-compatibility is checked at that boundary.  In particular, `GwTarget` must
-return its canonical theory and cannot independently restate dimension,
-first-Chern degree, or effectivity.
+The Givental providers, insertion-generic `SemisimpleTarget` adapters, and
+product/bundle ray objects are therefore evaluation and calibration adapters,
+not competing descriptions of a theory.  They own algorithm-specific data
+such as fixed-point weights, I-functions, quantum multiplication, canonical
+frames, `R`/`S` matrices, and ray interpolation.  Each production adapter
+privately owns or exposes its canonical `GwTheory` by shared reference;
+compatibility is checked at that boundary.  The historical `GwTarget` trait
+fixes projective-space insertions and adapts one-way into
+`SemisimpleTarget`; both return the canonical theory and neither may restate
+dimension, first-Chern degree, or effectivity.
 
-For source-code navigation, start in `src/spaces/`.  Its four peer modules are
-the mathematical target hierarchy:
+For source-code navigation, start with `src/core/` for target-neutral algebra,
+series, errors, and theory contracts, then `src/spaces/` for concrete targets.
+Its four peer modules are the mathematical target hierarchy:
 
-- `projective_space/` contains the ordinary `P^n` cohomology and Frobenius
-  implementations and reexports its canonical theory and evaluators;
-- `product_projective/` and `projective_bundle/` are discovery facades over
-  their canonical theories and the current evaluator implementations in
-  `givental/product.rs` and `givental/bundle.rs`; and
-- `negative_split_projective/` contains the local/twisted implementation and
-  reexports its canonical local theory record.
+- `projective_space/` owns the ordinary `P^n` theory, cohomology, Frobenius
+  implementation, calibration and target adapters, public request/result API,
+  sparse-potential/packed-resolvent batching, labelled resolvent
+  implementation, and Virasoro evaluator;
+- `product_projective/` and `projective_bundle/` own their canonical theories,
+  ray providers, reconstruction adapters, and Virasoro evaluators; and
+- `negative_split_projective/` owns the local/twisted implementation and its
+  canonical local theory record, compact-completion adapter, and
+  compact-completion Virasoro evaluator.
 
-The root `geometry`, `frobenius`, and `twisted` modules are compatibility
-import paths, not parallel implementations.  Target-neutral reconstruction
-algebra lives in `src/reconstruction/`: coefficient-generic series matrices,
-graded Birkhoff factorization, cyclic-coordinate algebra, exact ray
-interpolation, and Laurent-window planning.  Keeping the `spaces/` modules as
-the discovery layer does not move geometry out of `GwTheory` or duplicate it
-inside a provider.
+The crate-root projective-space API and the root `algebra`, `error`, `series`,
+`theory`, `geometry`, `frobenius`, `resolvent`, and `twisted` modules are
+historical compatibility paths.  So are `givental::product` and
+`givental::bundle`, plus the concrete projective-space names reexported by the
+`givental` facade and its historical `target` path.  The internal provider
+module and public target module still own the generic contracts; they are not
+parallel concrete implementations.  Target-neutral reconstruction algebra
+lives in `src/reconstruction/`: coefficient-generic series matrices, cyclic
+cohomology-valued Laurent series, graded Birkhoff factorization,
+cyclic-coordinate algebra, exact ray interpolation, and Laurent-window
+planning.  Givental-specific mirror normalization, fundamental-solution
+assembly, and descendant-`S` extraction live under `givental::recipe` and use
+those primitives without reversing the dependency.  Keeping the `spaces/`
+modules as the discovery layer does not move geometry out of `GwTheory` or
+duplicate it inside a provider.
 
 Below the adapter boundary, the semisimple-CohFT engine consumes a
 calibration and descendant `S`-matrix and contracts stable graphs without
@@ -966,13 +981,6 @@ process-wide and are not byte-bounded.
   reconstruction for higher Picard rank (rays scale as one engine run per
   reconstruction point and cannot carry symbolic equivariant weights; a
   native layer would share one run across all bidegrees).
-- Generalize the remaining target-shaped Laurent representations only when a
-  second target needs the same representation.  The genuinely shared pieces
-  (coefficient-matrix algebra, graded Birkhoff factorization, cyclic
-  coordinates, exact ray interpolation, and safe Laurent-window planning)
-  already live in `reconstruction`; the `H`-power quotient representation
-  remains with the negative-split target and the bidegree representation with
-  the projective-bundle evaluator.
 - Implement the generalized mirror transformation needed to return a
   Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
   to the small quantum slice; until then those bundle presentations fail
