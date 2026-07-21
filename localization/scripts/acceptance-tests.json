@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "published_local_p2_higher_genus_grid",
+      "test": "twisted_local_p2_matches_published_higher_genus_grid",
+      "cargo_target": "test:verified_examples",
+      "cadence": "scheduled",
+      "category": "external-reference",
+      "target": "negative-split-projective",
+      "oracle": "Coates-Iritani local-P2 tables",
+      "ignored": true,
+      "description": "Matches eight published local-P2 invariants through genus three and degree five."
+    },
+    {
+      "id": "twisted_o1_p2_recorded_row",
+      "test": "spaces::negative_split_projective::tests::o_minus_one_p2_birkhoff_graph_matches_recorded_unsourced_row",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "recorded-unsourced",
+      "target": "negative-split-projective",
+      "oracle": "recorded constants; original localization derivation is not archived",
+      "ignored": false,
+      "description": "Pins three genus-two O(-1) over P2 constants as regression fixtures without counting them as an independently sourced oracle."
+    },
+    {
+      "id": "bundle_fixed_tree_degree_two_cover",
+      "test": "validation_backends::legacy_localization::projective_bundle::tests::degree_two_fiber_conic_through_five_points_is_one",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "independent-localization",
+      "target": "projective-bundle",
+      "oracle": "validation-only toric fixed trees",
+      "ignored": false,
+      "description": "Exercises a genuine degree-two cover in the independent bundle-localization backend."
+    },
+    {
+      "id": "bundle_fixed_tree_known_rows",
+      "test": "validation_backends::legacy_localization::projective_bundle::tests::holdout_section_and_mixed_rows_match_the_known_numbers",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "independent-localization",
+      "target": "projective-bundle",
+      "oracle": "validation-only toric fixed trees",
+      "ignored": false,
+      "description": "Checks the rank-three section and mixed-class values -27 and 19."
+    },
+    {
+      "id": "bundle_fixed_tree_weight_independence",
+      "test": "validation_backends::legacy_localization::projective_bundle::tests::holdout_rows_are_independent_of_the_generic_rational_weights",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "independent-localization",
+      "target": "projective-bundle",
+      "oracle": "disjoint generic torus weights",
+      "ignored": false,
+      "description": "Repeats the independent bundle-localization rows at a second weight specialization."
+    },
+    {
+      "id": "bundle_f1_independent_fixed_tree_crosscheck",
+      "test": "spaces::projective_bundle::provider::tests::f1_exceptional_section_matches_independent_fixed_tree_localization",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "independent-localization",
+      "target": "projective-bundle",
+      "oracle": "validation-only toric fixed trees",
+      "ignored": false,
+      "description": "Compares the production F1 reconstruction with the independent fixed-tree backend."
+    },
+    {
+      "id": "bundle_zero_twist_higher_r_product",
+      "test": "spaces::projective_bundle::provider::tests::zero_twist_bundle_r_matrix_matches_product_to_higher_order",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "cross-backend-equivalence",
+      "target": "projective-bundle",
+      "oracle": "product calibration",
+      "ignored": false,
+      "description": "Compares zero-twist bundle and product calibrations through R-order five."
+    },
+    {
+      "id": "bundle_adaptive_birkhoff_window",
+      "test": "spaces::projective_bundle::provider::tests::bounded_bidegree_birkhoff_matches_deep_full_factorization_window",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "adaptive-truncation",
+      "target": "projective-bundle",
+      "oracle": "deep fixed Laurent window",
+      "ignored": false,
+      "description": "Compares bounded bidegree Birkhoff extraction with a deliberately deep source window."
+    },
+    {
+      "id": "twisted_adaptive_birkhoff_window",
+      "test": "spaces::negative_split_projective::tests::o_minus_eight_p1_dynamic_birkhoff_depth_matches_deep_reference",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "adaptive-truncation",
+      "target": "negative-split-projective",
+      "oracle": "deep fixed Laurent window",
+      "ignored": false,
+      "description": "Checks the adaptive O(-8) over P1 Birkhoff depth against a deep reference."
+    },
+    {
+      "id": "twisted_inverse_euler_qrr_genus2",
+      "test": "spaces::negative_split_projective::virasoro::qrr::tests::genus_two_o_minus_two_p2_inverse_euler_l0_constraint_vanishes",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "virasoro-backend",
+      "target": "negative-split-projective",
+      "oracle": "exact inverse-Euler QRR L0 residual at mu_0=7",
+      "ignored": true,
+      "timeout_seconds": 1800,
+      "description": "Generates the unmarked genus-two, degree-one O(-2) over P2 QRR L0 equation symbolically, retaining the z^1, z^3, and z^5 modes, then checks its exact mu_0=7 specialization against degree-zero and positive-degree twisted graph sectors. Both genus-reduction and degree-splitting contain live mu_0-dependent contributions, and the test proves sensitivity to a corrupted nonzero genus-two dependency."
+    },
+    {
+      "id": "rank3_primary_shortcut_matches_graph",
+      "test": "spaces::projective_bundle::provider::tests::fano_asymmetric_rank3_three_primary_shortcut_matches_graph_series",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "cross-backend-equivalence",
+      "target": "projective-bundle",
+      "oracle": "generic stable-graph series",
+      "ignored": true,
+      "description": "Checks the rank-three primary shortcut against the generic graph evaluator and insertion permutations."
+    },
+    {
+      "id": "f2_native_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::f2_genus_two_exceptional_l1_relation_is_verified_natively",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "virasoro-backend",
+      "target": "projective-bundle",
+      "oracle": "exact L1 residual and corruption sensitivity",
+      "ignored": false,
+      "description": "Exercises 21 backend correlators in the F2 exceptional class and detects a perturbed value."
+    },
+    {
+      "id": "f1_native_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::f1_genus_two_l2_relation_is_nonlinear_and_perturbation_sensitive",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "virasoro-backend",
+      "target": "projective-bundle",
+      "oracle": "exact L2 residual and corruption sensitivity",
+      "ignored": false,
+      "description": "Requires nonzero genus-reduction and degree-splitting terms for native F1."
+    },
+    {
+      "id": "conifold_completion_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::conifold_completion_l1_uses_nonzero_genus_two_twisted_descendants",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "virasoro-backend",
+      "target": "negative-split-completion",
+      "oracle": "exact compact-completion L1 residual",
+      "ignored": false,
+      "description": "Routes a compact-completion relation through nonzero genus-two conifold descendants."
+    },
+    {
+      "id": "non_calabi_completion_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::non_calabi_twist_completion_l2_is_high_genus_and_perturbation_sensitive",
+      "cargo_target": "lib",
+      "cadence": "push",
+      "category": "virasoro-backend",
+      "target": "negative-split-completion",
+      "oracle": "exact L2 residual and corruption sensitivity",
+      "ignored": false,
+      "description": "Checks a 73-term non-Calabi-Yau completion relation with 29 backend dependencies."
+    },
+    {
+      "id": "stable_graph_high_genus_reference_counts",
+      "test": "graphs::tests::stable_graph_counts_match_reference_high_genus",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "combinatorial-reference",
+      "target": "stable-graphs",
+      "oracle": "pre-optimization brute-force counts",
+      "ignored": true,
+      "description": "Pins the expensive (3,0), (3,2), and (4,1) stable-graph counts."
+    },
+    {
+      "id": "twisted_large_degree_birkhoff_grid",
+      "test": "spaces::negative_split_projective::tests::p1_twist_grid_uses_dynamic_birkhoff_depth",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "adaptive-truncation",
+      "target": "negative-split-projective",
+      "oracle": "deep fixed Laurent windows",
+      "ignored": true,
+      "description": "Checks adaptive Birkhoff depth for O(-4), O(-5), O(-6), O(-8), and O(-10) over P1."
+    },
+    {
+      "id": "p1xp2_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::p1_x_p2_genus_two_l2_relation_is_nonlinear_and_perturbation_sensitive",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "virasoro-backend",
+      "target": "product-projective",
+      "oracle": "exact L2 residual and corruption sensitivity",
+      "ignored": true,
+      "description": "Exercises an asymmetric six-color product with a genuine positive curve split."
+    },
+    {
+      "id": "rank3_mixed_sign_genus2_virasoro",
+      "test": "constraints::virasoro::evaluator::tests::p2_rank3_mixed_sign_bundle_genus_two_l2_is_verified_natively",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "virasoro-backend",
+      "target": "projective-bundle",
+      "oracle": "281-term exact L2 residual and corruption sensitivity",
+      "ignored": true,
+      "description": "Audits P(O(-2)+O(1)+O(1)) over P2 through 55 backend correlators and a genuine curve split."
+    },
+    {
+      "id": "bundle_rank3_fiber_conic_independent_crosscheck",
+      "test": "spaces::projective_bundle::provider::tests::rank_three_fiber_conic_matches_independent_fixed_tree_localization",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "independent-localization",
+      "target": "projective-bundle",
+      "oracle": "validation-only toric fixed trees",
+      "ignored": true,
+      "description": "Compares production rank-three degree-two fiber reconstruction with the independent fixed-tree oracle."
+    },
+    {
+      "id": "f2_deformation_full_grid",
+      "test": "spaces::projective_bundle::provider::tests::f2_deformation_matches_p1xp1_pointwise",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "deformation-equivalence",
+      "target": "projective-bundle",
+      "oracle": "F2 to P1xP1 deformation",
+      "ignored": true,
+      "description": "Compares genus-zero and genus-one F2 invariants pointwise with the independent product backend."
+    },
+    {
+      "id": "f2_deformation_negative_section_spots",
+      "test": "spaces::projective_bundle::provider::tests::f2_negative_section_harder_spot_checks_match_p1xp1",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "deformation-equivalence",
+      "target": "projective-bundle",
+      "oracle": "F2 to P1xP1 deformation",
+      "ignored": true,
+      "description": "Checks genus-zero and genus-one descendants in the nontrivial F2 class (2,-1)."
+    },
+    {
+      "id": "f2_negative_section_genus1_value",
+      "test": "spaces::projective_bundle::provider::tests::f2_negative_section_direction_genus_one_matches_p1xp1",
+      "cargo_target": "lib",
+      "cadence": "scheduled",
+      "category": "deformation-equivalence",
+      "target": "projective-bundle",
+      "oracle": "F2 to P1xP1 deformation and fixed value -1/4",
+      "ignored": true,
+      "description": "Pins the genus-one class (2,-1) value that requires pre-ray bidegree Birkhoff projection."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
-use super::{CanonicalVirasoroConstraint, ConstraintNotation};
-use crate::core::algebra::Rational;
+use super::{CanonicalVirasoroConstraint, ConstraintNotation, SymbolicVirasoroConstraint};
+use crate::core::algebra::{RatFun, Rational};
 use crate::core::error::GwError;
 use crate::core::theory::{BasisId, CurveClass, GwTheory};
 
@@ -14,10 +14,8 @@ impl<'a> CanonicalTheoryNotation<'a> {
     pub fn new(theory: &'a dyn GwTheory) -> Self {
         Self { theory }
     }
-}
 
-impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotation<'_> {
-    fn degree_text(&self, degree: &CurveClass) -> String {
+    pub fn degree_text(&self, degree: &CurveClass) -> String {
         named_degree(
             degree,
             &self.theory.curve_class_space().coordinate_names,
@@ -25,11 +23,11 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
         )
     }
 
-    fn degree_tex(&self, degree: &CurveClass) -> String {
+    pub fn degree_tex(&self, degree: &CurveClass) -> String {
         named_degree(degree, &self.theory.curve_coordinate_tex_names(), true)
     }
 
-    fn basis_text(&self, basis: &BasisId) -> String {
+    pub fn basis_text(&self, basis: &BasisId) -> String {
         self.theory
             .state_space()
             .element(*basis)
@@ -37,10 +35,28 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
             .unwrap_or_else(|| format!("e_{}", basis.0))
     }
 
-    fn basis_tex(&self, basis: &BasisId) -> String {
+    pub fn basis_tex(&self, basis: &BasisId) -> String {
         self.theory
             .basis_tex(*basis)
             .unwrap_or_else(|| format!("e_{{{}}}", basis.0))
+    }
+}
+
+impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotation<'_> {
+    fn degree_text(&self, degree: &CurveClass) -> String {
+        Self::degree_text(self, degree)
+    }
+
+    fn degree_tex(&self, degree: &CurveClass) -> String {
+        Self::degree_tex(self, degree)
+    }
+
+    fn basis_text(&self, basis: &BasisId) -> String {
+        Self::basis_text(self, basis)
+    }
+
+    fn basis_tex(&self, basis: &BasisId) -> String {
+        Self::basis_tex(self, basis)
     }
 
     fn coefficient_text(&self, coefficient: &Rational) -> String {
@@ -48,6 +64,32 @@ impl ConstraintNotation<CurveClass, BasisId, Rational> for CanonicalTheoryNotati
     }
 
     fn coefficient_tex(&self, coefficient: &Rational) -> String {
+        coefficient.to_string()
+    }
+}
+
+impl ConstraintNotation<CurveClass, BasisId, RatFun> for CanonicalTheoryNotation<'_> {
+    fn degree_text(&self, degree: &CurveClass) -> String {
+        Self::degree_text(self, degree)
+    }
+
+    fn degree_tex(&self, degree: &CurveClass) -> String {
+        Self::degree_tex(self, degree)
+    }
+
+    fn basis_text(&self, basis: &BasisId) -> String {
+        Self::basis_text(self, basis)
+    }
+
+    fn basis_tex(&self, basis: &BasisId) -> String {
+        Self::basis_tex(self, basis)
+    }
+
+    fn coefficient_text(&self, coefficient: &RatFun) -> String {
+        coefficient.to_string()
+    }
+
+    fn coefficient_tex(&self, coefficient: &RatFun) -> String {
         coefficient.to_string()
     }
 }
@@ -95,6 +137,32 @@ impl CanonicalVirasoroConstraint {
     /// generated this constraint.
     pub fn render_tex_for_theory(&self, theory: &dyn GwTheory) -> Result<String, GwError> {
         Ok(self.render_tex_with(&self.checked_notation(theory)?))
+    }
+}
+
+impl SymbolicVirasoroConstraint {
+    fn checked_symbolic_notation<'a>(
+        &self,
+        theory: &'a dyn GwTheory,
+    ) -> Result<CanonicalTheoryNotation<'a>, GwError> {
+        if self.theory_fingerprint != theory.theory_fingerprint() {
+            return Err(GwError::ConventionMismatch(
+                "cannot render a symbolic Virasoro constraint with notation from a different theory"
+                    .to_string(),
+            ));
+        }
+        Ok(CanonicalTheoryNotation::new(theory))
+    }
+
+    pub fn render_symbolic_text_for_theory(
+        &self,
+        theory: &dyn GwTheory,
+    ) -> Result<String, GwError> {
+        Ok(self.render_text_with(&self.checked_symbolic_notation(theory)?))
+    }
+
+    pub fn render_symbolic_tex_for_theory(&self, theory: &dyn GwTheory) -> Result<String, GwError> {
+        Ok(self.render_tex_with(&self.checked_symbolic_notation(theory)?))
     }
 }
 

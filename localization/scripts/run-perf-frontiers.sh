@@ -8,6 +8,7 @@ repeat="${GW_PERF_REPEAT:-1}"
 graph_cache_mode="${GW_PERF_GRAPH_CACHE_MODE:-shared}"
 features="${GW_PERF_FEATURES:-}"
 all_features="${GW_PERF_ALL_FEATURES:-}"
+capture_profile="${GW_PERF_CAPTURE_PROFILE:-}"
 
 if [ -n "$features" ]; then
   set -- --features "$features" "$@"
@@ -15,6 +16,10 @@ fi
 
 if [ -n "$all_features" ]; then
   set -- --all-features "$@"
+fi
+
+if [ -n "$capture_profile" ] && [ "$capture_profile" != "0" ]; then
+  set -- --capture-profile "$@"
 fi
 
 exec scripts/perf_frontiers.py \

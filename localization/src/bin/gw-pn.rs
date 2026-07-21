@@ -1,10 +1,11 @@
 use clap::{Args, Parser, Subcommand};
 use gw_pn::constraints::virasoro::{
     evaluate_constraint_with_bounds as evaluate_virasoro_constraint,
-    generate_constraint_with_term_limit, scan_constraints, CanonicalCorrelatorEvaluator,
-    CorrelatorEvaluationBounds, Descendant, NegativeSplitCompletionEvaluator,
-    ProductProjectiveEvaluator, ProjectiveBundleEvaluator, ProjectiveSpaceEvaluator,
-    ResidualOutcome, ResidualStatus, TimeMonomial, VirasoroScanBounds,
+    evaluate_symbolic_constraint_with_bounds, generate_constraint_with_term_limit,
+    scan_constraints, CanonicalCorrelatorEvaluator, CorrelatorEvaluationBounds, Descendant,
+    NegativeSplitCompletionEvaluator, ProductProjectiveEvaluator, ProjectiveBundleEvaluator,
+    ProjectiveSpaceEvaluator, ResidualOutcome, ResidualReport, ResidualStatus, TimeMonomial,
+    VirasoroScanBounds,
 };
 use gw_pn::error::GwError;
 use gw_pn::formula::{build_formula_skeleton, FormulaBasisMode, FormulaExpansion, FormulaRequest};
@@ -12,8 +13,10 @@ use gw_pn::resolvent::{compute_resolvent_generating_function, ResolventRequest};
 use gw_pn::spaces::negative_split_projective::{
     compute_negative_split_twisted, compute_negative_split_twisted_factored,
     compute_negative_split_twisted_resolvent_packed,
-    compute_negative_split_twisted_resolvent_packed_factored, NegativeSplitBundleTwist,
-    NegativeSplitTotalSpaceTheory, TwistedInvariantRequest,
+    compute_negative_split_twisted_resolvent_packed_factored,
+    inverse_euler_qrr_l0_operator_for_constraint, NegativeSplitBundleTwist,
+    NegativeSplitFixedFiberQrrEvaluator, NegativeSplitQrrEvaluator, NegativeSplitTotalSpaceTheory,
+    TwistedInvariantRequest,
 };
 use gw_pn::spaces::product_projective::{
     bidegree_dimension_matches_in_theory, reconstruct_bidegree_invariants_in_theory,
@@ -47,6 +50,8 @@ const EXAMPLES: &str = "Examples:
   gw-pn formula --n 2 --g 2 --markings 1 --max-descendant 5 --d 3
   gw-pn formula --n 2 --g 2 --markings 1 --basis raw --format tex
   gw-pn virasoro formula --n 0 --k 1 --g 0 --d 0 --insert 1 --insert 1 --insert 1 --insert 1
+  gw-pn virasoro formula --n 2 --local-twist -2 --k 0 --g 2 --d 1
+  gw-pn virasoro check --n 2 --local-twist -2 --k 0 --g 2 --d 1 --fiber-weights 7
   gw-pn virasoro check --n 0 --k 0 --g 1 --d 0
   gw-pn virasoro scan --n 0 --k-max 1 --g-max 1 --d-max 0 --markings-max 4
   gw-pn resolvent --n 2 --g 0 --d 1 --markings 3
@@ -177,6 +182,10 @@ struct VirasoroCheckArgs {
     d: Option<String>,
     #[arg(long)]
     insert: Vec<String>,
+    /// Exact nonzero rational fiber weights used to specialize a symbolic local QRR constraint
+    /// (one comma-separated value per summand, e.g. 7 or 3/2,5)
+    #[arg(long, allow_hyphen_values = true)]
+    fiber_weights: Option<String>,
     /// Print the generated human-readable equation before its residual
     #[arg(long)]
     show_formula: bool,
@@ -576,6 +585,45 @@ fn run_virasoro_formula(args: VirasoroFormulaArgs) -> Result<(), GwError> {
     let target = build_virasoro_target(&args.target)?;
     let degree = parse_virasoro_degree(&target, args.d.as_deref())?;
     let time = parse_virasoro_time(&target, &args.insert)?;
+    if let CliVirasoroTheory::Local(theory) = &target {
+        if args.k != 0 {
+            return Err(GwError::UnsupportedInvariant(
+                "the exact inverse-Euler QRR generator currently implements L_0; other local Virasoro operators require full differential-operator conjugation"
+                    .to_string(),
+            ));
+        }
+        let operator =
+            inverse_euler_qrr_l0_operator_for_constraint(theory, args.g, &degree, &time)?;
+        let constraint = operator.generate_constraint_with_term_limit(
+            theory,
+            args.g,
+            degree,
+            time,
+            args.term_limit,
+        )?;
+        match args.format.trim().to_ascii_lowercase().as_str() {
+            "text" | "txt" => {
+                print!("{}\nCoefficient equation:\n", operator.render_text()?);
+                print!(
+                    "{}",
+                    constraint.render_symbolic_text_for_theory(target.theory())?
+                );
+            }
+            "tex" | "latex" => {
+                println!("{}", operator.render_tex()?);
+                print!(
+                    "{}",
+                    constraint.render_symbolic_tex_for_theory(target.theory())?
+                );
+            }
+            other => {
+                return Err(GwError::ParseError(format!(
+                    "unknown Virasoro formula format `{other}`; expected text or tex"
+                )))
+            }
+        }
+        return Ok(());
+    }
     let constraint = generate_constraint_with_term_limit(
         target.theory(),
         args.k,
@@ -598,8 +646,68 @@ fn run_virasoro_formula(args: VirasoroFormulaArgs) -> Result<(), GwError> {
 
 fn run_virasoro_check(args: VirasoroCheckArgs) -> Result<(), GwError> {
     let target = build_virasoro_target(&args.target)?;
+    if args.fiber_weights.is_some() && !matches!(&target, CliVirasoroTheory::Local(_)) {
+        return Err(GwError::ParseError(
+            "--fiber-weights is only valid with --local-twist".to_string(),
+        ));
+    }
     let degree = parse_virasoro_degree(&target, args.d.as_deref())?;
     let time = parse_virasoro_time(&target, &args.insert)?;
+    if let CliVirasoroTheory::Local(theory) = &target {
+        if args.k != 0 {
+            return Err(GwError::UnsupportedInvariant(
+                "the exact inverse-Euler QRR checker currently implements L_0".to_string(),
+            ));
+        }
+        let operator =
+            inverse_euler_qrr_l0_operator_for_constraint(theory, args.g, &degree, &time)?;
+        let constraint = operator.generate_constraint_with_term_limit(
+            theory,
+            args.g,
+            degree,
+            time,
+            args.term_limit,
+        )?;
+        if args.show_formula {
+            println!("{}\nCoefficient equation:", operator.render_text()?);
+            println!(
+                "{}",
+                constraint.render_symbolic_text_for_theory(target.theory())?
+            );
+        }
+        let bounds = CorrelatorEvaluationBounds {
+            dependency_limit: args.dependency_limit,
+            ..CorrelatorEvaluationBounds::unbounded()
+        };
+        let report = if let Some(raw_weights) = args.fiber_weights.as_deref() {
+            let raw_degrees = parse_negative_twist(
+                args.target
+                    .local_twist
+                    .as_deref()
+                    .expect("local target was matched above"),
+            )?;
+            let weights = parse_rational_weights(raw_weights, raw_degrees.len())?;
+            let evaluator = NegativeSplitFixedFiberQrrEvaluator::new(
+                theory.base_dimension(),
+                raw_degrees,
+                weights,
+            )?;
+            let specialized = evaluator.specialize_constraint(&constraint)?;
+            let assignments = specialized
+                .assignments()
+                .iter()
+                .map(|(name, value)| format!("{name}={value}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("specialization: {assignments}");
+            evaluate_virasoro_constraint(&evaluator, specialized.constraint(), bounds)
+        } else {
+            let evaluator =
+                NegativeSplitQrrEvaluator::new(theory.base_dimension(), theory.degrees().to_vec())?;
+            evaluate_symbolic_constraint_with_bounds(&evaluator, &constraint, bounds)
+        };
+        return finish_virasoro_report(target.theory(), report, args.show_missing);
+    }
     let constraint = generate_constraint_with_term_limit(
         target.theory(),
         args.k,
@@ -619,6 +727,14 @@ fn run_virasoro_check(args: VirasoroCheckArgs) -> Result<(), GwError> {
             ..CorrelatorEvaluationBounds::unbounded()
         },
     );
+    finish_virasoro_report(target.theory(), report, args.show_missing)
+}
+
+fn finish_virasoro_report(
+    theory: &dyn GwTheory,
+    report: ResidualReport<CurveClass, BasisId, gw_pn::algebra::RatFun>,
+    show_missing: usize,
+) -> Result<(), GwError> {
     print_virasoro_outcome(report.outcome());
     println!(
         "terms: {}/{} evaluated; dependencies: backend={} structural-zero={} missing={}",
@@ -628,19 +744,19 @@ fn run_virasoro_check(args: VirasoroCheckArgs) -> Result<(), GwError> {
         report.structural_zero_correlator_count(),
         report.missing_correlator_count()
     );
-    for missing in report.missing_correlators().iter().take(args.show_missing) {
+    for missing in report.missing_correlators().iter().take(show_missing) {
         println!(
             "missing: g={} beta={} {} ({:?})",
             missing.correlator.genus,
             missing.correlator.degree,
-            virasoro_insertion_label(target.theory(), missing.correlator.insertions()),
+            virasoro_insertion_label(theory, missing.correlator.insertions()),
             missing.reason
         );
     }
-    if report.missing_correlator_count() > args.show_missing {
+    if report.missing_correlator_count() > show_missing {
         println!(
             "missing: ... {} additional retained diagnostics not shown",
-            report.missing_correlator_count() - args.show_missing
+            report.missing_correlator_count() - show_missing
         );
     }
     for note in report.notes() {
@@ -2011,6 +2127,38 @@ fn parse_integer_weights(raw: &str, expected: usize) -> Result<Vec<Rational>, Gw
     Ok(weights)
 }
 
+fn parse_rational_weights(raw: &str, expected: usize) -> Result<Vec<Rational>, GwError> {
+    let weights = raw
+        .split(',')
+        .map(|part| {
+            let part = part.trim();
+            let (numerator, denominator) = match part.split_once('/') {
+                Some((numerator, denominator)) => (numerator.trim(), denominator.trim()),
+                None => (part, "1"),
+            };
+            let numerator = numerator.parse::<i128>().map_err(|_| {
+                GwError::ParseError(format!("invalid rational weight `{part}` in `{raw}`"))
+            })?;
+            let denominator = denominator.parse::<i128>().map_err(|_| {
+                GwError::ParseError(format!("invalid rational weight `{part}` in `{raw}`"))
+            })?;
+            if denominator == 0 || numerator == 0 {
+                return Err(GwError::ParseError(format!(
+                    "fiber weight `{part}` must be a nonzero rational number"
+                )));
+            }
+            Ok(Rational::new(numerator, denominator))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if weights.len() != expected {
+        return Err(GwError::ParseError(format!(
+            "expected {expected} comma-separated fiber weights, got {}",
+            weights.len()
+        )));
+    }
+    Ok(weights)
+}
+
 fn parse_product_insertion(raw: &str) -> Result<ProductInsertion, GwError> {
     let invalid = || {
         GwError::ParseError(format!(
@@ -2464,7 +2612,7 @@ mod tests {
     }
 
     #[test]
-    fn local_virasoro_formula_fails_before_using_compact_operator() {
+    fn ordinary_local_virasoro_generator_fails_before_using_compact_operator() {
         let local = build_virasoro_target(&VirasoroTargetArgs {
             n: 2,
             product_m: None,
@@ -2483,6 +2631,72 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, GwError::UnsupportedFeature { .. }));
         assert!(error.to_string().contains("QRR"));
+    }
+
+    #[test]
+    fn local_virasoro_formula_routes_l0_through_qrr() {
+        run_virasoro_formula(VirasoroFormulaArgs {
+            target: VirasoroTargetArgs {
+                n: 0,
+                product_m: None,
+                bundle_twists: None,
+                local_twist: Some("-1".to_string()),
+                local_completion_twist: None,
+            },
+            k: 0,
+            g: 1,
+            d: Some("0".to_string()),
+            insert: vec!["1".to_string()],
+            format: "text".to_string(),
+            term_limit: 100,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn local_virasoro_check_routes_l0_through_qrr() {
+        run_virasoro_check(VirasoroCheckArgs {
+            target: VirasoroTargetArgs {
+                n: 0,
+                product_m: None,
+                bundle_twists: None,
+                local_twist: Some("-1".to_string()),
+                local_completion_twist: None,
+            },
+            k: 0,
+            g: 1,
+            d: Some("0".to_string()),
+            insert: vec!["1".to_string()],
+            fiber_weights: None,
+            show_formula: false,
+            term_limit: 100,
+            dependency_limit: 100,
+            show_missing: 10,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn local_virasoro_check_accepts_an_exact_fixed_fiber_specialization() {
+        run_virasoro_check(VirasoroCheckArgs {
+            target: VirasoroTargetArgs {
+                n: 0,
+                product_m: None,
+                bundle_twists: None,
+                local_twist: Some("-1".to_string()),
+                local_completion_twist: None,
+            },
+            k: 0,
+            g: 1,
+            d: Some("0".to_string()),
+            insert: vec!["1".to_string()],
+            fiber_weights: Some("7/2".to_string()),
+            show_formula: false,
+            term_limit: 100,
+            dependency_limit: 100,
+            show_missing: 10,
+        })
+        .unwrap();
     }
 
     #[test]

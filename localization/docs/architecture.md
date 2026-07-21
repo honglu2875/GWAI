@@ -81,7 +81,7 @@ Inside `src/spaces/`, every top-level directory is a peer target family:
 | `projective_space/` | `theory` (canonical geometry), `provider`/`target` (calibration adapters), `api` (requests/results), `batch` and `resolvent` (Pn-shaped orchestration), `virasoro` (canonical-key evaluator), plus `equivariant`, `frobenius`, and small target-owned seed formulas |
 | `product_projective/` | `theory`, two-ray `provider`, and `virasoro` evaluator |
 | `projective_bundle/` | `theory`, bidegree/ray `provider`, and `virasoro` evaluator |
-| `negative_split_projective/` | canonical local `theory`, compact `completion`, twist/I-function/hypergeometric/mirror/calibration recipes, graph `provider`, and compact-completion `virasoro` evaluator |
+| `negative_split_projective/` | canonical local `theory`, compact `completion`, twist/I-function/hypergeometric/mirror/calibration recipes, graph `provider`, and `virasoro` adapters for direct inverse-Euler QRR and compact-completion audits |
 
 The repeated `theory`/`provider`/`virasoro` names are intentional navigation
 anchors. A target-specific implementation belongs here even when it consumes
@@ -150,9 +150,11 @@ reconstruction grading, not a replacement for that geometric class.
 `NegativeSplitTotalSpaceTheory` records the numerical local target but
 deliberately omits an ordinary compact pairing, `c_1` action, and
 characteristic numbers.  This is executable documentation: the compact
-Virasoro generator refuses it until a twisted pairing and QRR-conjugated
-operator exist, rather than manufacturing compact data for a noncompact
-total space.
+Virasoro generator refuses it rather than manufacturing compact data for a
+noncompact total space.  The separate provider-owned QRR path derives the
+inverse-Euler twisted pairing and operator from this same canonical record;
+it currently specializes the closed `L_0` conjugation and does not add fake
+compact fields to `GwTheory`.
 Its compact projective-bundle audit geometry is a separate adapter in
 `spaces/negative_split_projective/completion.rs`, rather than part of the
 canonical local-theory record.
@@ -252,12 +254,17 @@ transient orbit-building copies.  Prepared coloring/orbit tables then live in
 deterministic eight-entry bounded caches.
 
 **Graph kernels** (`graph.rs`).  `GiventalGraphKernel<C>` is everything
-graph-local derived from a calibration: `R^{-1}` (`inverse_r_coefficients`),
-the translation `T(psi) = psi(1 - R^{-1})1` (`translation_coefficients`),
-and the symplectic edge propagator (`edge_propagator_coefficients`).  Built
-by `GiventalGraphKernel::from_calibration`, which is generic over `Coeff` —
-this genericity is what lets the equivariant path construct its kernel
-natively in factored arithmetic.
+graph-local derived from a calibration: `R^{-1}`, the translation
+`T(psi) = psi(1 - R^{-1})1` (`translation_coefficients`), and the symplectic
+edge propagator (`edge_propagator_coefficients`).  Kernel construction uses
+the `SeriesRMatrix` contract `R(-z)^T eta R(z)=eta`, hence
+`(R^{-1})_k=(-1)^k eta^{-1}R_k^T eta`; the diagonal canonical metric makes
+this an entrywise row/column scaling instead of a dense formal-inverse
+recurrence.  The recurrence remains as an independent test oracle, and
+calibration builders can audit the contract with `check_unitarity`.  Built by
+`GiventalGraphKernel::from_calibration`, the path is generic over `Coeff` — this
+genericity is what lets the equivariant path construct its kernel natively in
+factored arithmetic.
 
 **Contraction.**  `compute_semisimple_graph_value/_series` walk every
 prepared graph and coloring, choosing leg/edge factor options recursively
@@ -274,6 +281,8 @@ picks the cheapest faithful representation per call: constants run over
 plain `Rational` (`evaluate_rational_graphs_if_possible`, also used for the
 external-leg tensors), genuine symbolics run over `FactoredRatFun`
 (`evaluate_factored_graphs`), and expanded `RatFun` remains the fallback.
+The factored twin is initialized once per cached symbolic kernel, so a family
+of correlators reuses both the conversion and the factored vertex cache.
 Escape hatches: `GWAI_DISABLE_RATIONAL_GRAPH`, `GWAI_DISABLE_FACTORED_GRAPH`.
 
 **Vertex theory.**  `WittenKontsevich::shared()` is the process-wide psi
@@ -443,9 +452,20 @@ pipeline, including factored-coefficient wrappers for symbolic fiber weights.
 `twisted.rs` is only the old import path.  The provider is an evaluator adapter
 for the canonical local record, not a second source of state-space or
 curve-lattice semantics.  Ordinary invariant evaluation is available, but
-compact Virasoro checking is not: the correct local operator is obtained by
-Quantum Riemann--Roch conjugation and needs the twisted pairing and degree-zero
-sector.  The explicitly separate
+the standard compact Virasoro generator remains invalid.  The peer
+`virasoro/qrr.rs` specialization builds the fixed-fiber-equivariant
+inverse-Euler twisted pairing and QRR-conjugated `L_0` from the canonical
+negative-split degrees.  `NegativeSplitQrrEvaluator` uses the same provider
+for stable degree-zero graphs and positive-degree correlators, including a
+single full descendant-divisor stabilization policy for unstable pointed
+ranges.  Its peer `NegativeSplitFixedFiberQrrEvaluator` specializes the same
+theory at recorded nonzero rational `mu_i`, retaining a symbolic auxiliary
+base lambda line so native-factored graph arithmetic is univariate until the final
+limit.  The target-independent `SpecializedVirasoroConstraint` applies that
+same named point to operator coefficients while preserving all equation
+metadata.  General QRR Hamiltonian data live target-independently in
+`constraints/virasoro/qrr.rs`; target specialization and evaluation stay with
+the space provider.  The explicitly separate
 `NegativeSplitCompletionEvaluator` is a compact-section audit adapter: its
 compact projective-bundle theory remains the source of Virasoro data and
 degree-zero invariants, while positive section classes `(d,-A d)` restrict by
@@ -582,5 +602,8 @@ engine, kernel builder, and recipe layer are available at that ring.
 `GwTheory`, but absent geometric data must remain absent rather than be
 guessed.  Implement the evaluator against the CohFT contract and promote
 shared constructions into `recipe.rs`.  Constraint support is a separate
-step: for local Virasoro this means the twisted pairing, degree-zero sector,
-and an independently generated QRR-conjugated operator.
+step: use the target-independent `QrrConjugationFormula`, then let the provider
+specialize the characteristic class, twisted pairing, degree-zero sector, and
+exact operator conjugation.  Inverse-Euler `L_0` is the reference
+implementation; arbitrary classes and higher modes must fail closed until all
+four pieces exist.

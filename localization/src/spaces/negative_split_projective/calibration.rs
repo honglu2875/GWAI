@@ -19,7 +19,7 @@ use crate::givental::{
 };
 use crate::reconstruction::{
     canonical_evaluation_matrix_local, derivative_qseries_polynomial_coefficients,
-    determinant_qseries_polynomial_matrix, evaluate_qseries_polynomial, invert_series_matrix_coeff,
+    determinant_qseries_polynomial_matrix, evaluate_qseries_polynomial,
     multiply_qseries_polynomial_by_affine, multiply_qseries_polynomial_by_linear,
     relative_sqrt_delta_series_coeff, relative_sqrt_delta_series_local, series_matrix_scale,
 };
@@ -164,7 +164,58 @@ pub struct SpecializedTwistedBirkhoffCanonicalData<C = RatFun> {
     pub metric_norms: Vec<QSeries<C>>,
     pub inverse_metric_norms: Vec<QSeries<C>>,
     pub transition_to_flat: Vec<Vec<QSeries<C>>>,
+    pub flat_to_canonical: Vec<Vec<QSeries<C>>>,
     pub quantum_h: SeriesMatrix<C>,
+}
+
+/// Inverts an idempotent transition through the Frobenius pairing.
+///
+/// If the columns of `transition` are the canonical idempotents, Frobenius
+/// orthogonality says
+///
+/// `transition^T flat_metric transition = diag(metric_norms)`.
+///
+/// Therefore its inverse is exactly
+///
+/// `diag(metric_norms^{-1}) transition^T flat_metric`.
+///
+/// This form avoids a second symbolic Gaussian elimination after the
+/// canonical metric and its diagonal inverse have already been computed.
+fn frobenius_adjoint_transition_inverse<C: Coeff>(
+    transition: &SeriesMatrix<C>,
+    flat_metric: &SeriesMatrix<C>,
+    inverse_metric_norms: &[QSeries<C>],
+) -> Result<SeriesMatrix<C>, GwError> {
+    let size = transition.rows();
+    let q_degree = transition.max_degree();
+    if transition.cols() != size
+        || flat_metric.rows() != size
+        || flat_metric.cols() != size
+        || flat_metric.max_degree() != q_degree
+        || inverse_metric_norms.len() != size
+        || inverse_metric_norms
+            .iter()
+            .any(|norm| norm.max_degree() != q_degree)
+    {
+        return Err(GwError::ConventionMismatch(
+            "canonical transition, flat metric, and norm truncations do not agree".to_string(),
+        ));
+    }
+
+    let mut entries = vec![vec![QSeries::<C>::zero(q_degree); size]; size];
+    for branch in 0..size {
+        for flat_col in 0..size {
+            let mut pairing = QSeries::<C>::zero(q_degree);
+            for flat_row in 0..size {
+                pairing.add_product_assign(
+                    transition.entry(flat_row, branch),
+                    flat_metric.entry(flat_row, flat_col),
+                );
+            }
+            entries[branch][flat_col] = inverse_metric_norms[branch].mul(&pairing);
+        }
+    }
+    Ok(SeriesMatrix::from_entries(entries))
 }
 
 pub fn specialized_twisted_birkhoff_canonical_data(
@@ -300,12 +351,17 @@ pub(crate) fn specialized_twisted_birkhoff_canonical_data_with_mode_and_validati
         inverse_metric_norms.push(norm.inverse()?);
         metric_norms.push(norm);
     }
+    let flat_to_canonical =
+        frobenius_adjoint_transition_inverse(&transition, &flat_metric, &inverse_metric_norms)?
+            .entries()
+            .to_vec();
 
     Ok(SpecializedTwistedBirkhoffCanonicalData {
         roots,
         metric_norms,
         inverse_metric_norms,
         transition_to_flat,
+        flat_to_canonical,
         quantum_h,
     })
 }
@@ -388,12 +444,17 @@ pub(crate) fn specialized_twisted_birkhoff_canonical_data_for_coeff_weights_with
         inverse_metric_norms.push(norm.inverse()?);
         metric_norms.push(norm);
     }
+    let flat_to_canonical =
+        frobenius_adjoint_transition_inverse(&transition, &flat_metric, &inverse_metric_norms)?
+            .entries()
+            .to_vec();
 
     Ok(SpecializedTwistedBirkhoffCanonicalData {
         roots,
         metric_norms,
         inverse_metric_norms,
         transition_to_flat,
+        flat_to_canonical,
         quantum_h,
     })
 }
@@ -472,7 +533,7 @@ pub(crate) fn negative_split_twisted_birkhoff_calibration_skeleton_from_canonica
 
     let relative_scale = SeriesMatrix::diagonal(relative_sqrt_delta.clone());
     let relative_scale_inv = SeriesMatrix::diagonal(relative_sqrt_delta_inv.clone());
-    let transition_inverse = invert_series_matrix_coeff(&transition)?;
+    let transition_inverse = SeriesMatrix::from_entries(canonical.flat_to_canonical.clone());
     let psi = transition.mul(&relative_scale);
     let psi_inverse = relative_scale_inv.mul(&transition_inverse);
     let connection = psi_inverse.mul(&psi.q_derivative());
@@ -1750,4 +1811,93 @@ pub(crate) fn twisted_classical_limit_diagonal_coefficients_for_branch_coeff<C: 
         exponent[order] = coefficient.mul(&weight_sum);
     }
     Ok(exp_scalar_z_series(&exponent))
+}
+
+#[cfg(test)]
+mod frobenius_transition_inverse_tests {
+    use super::*;
+    use crate::factored::FactoredRatFun;
+
+    fn assert_factored_matrix_semantically_equal(
+        left: &SeriesMatrix<FactoredRatFun>,
+        right: &SeriesMatrix<FactoredRatFun>,
+    ) {
+        assert_eq!((left.rows(), left.cols()), (right.rows(), right.cols()));
+        for row in 0..left.rows() {
+            for col in 0..left.cols() {
+                for degree in 0..=left.max_degree() {
+                    let difference = left.entry(row, col).coeff(degree).unwrap().to_ratfun()
+                        - right.entry(row, col).coeff(degree).unwrap().to_ratfun();
+                    assert!(
+                        difference.is_zero(),
+                        "matrix entries differ at ({row},{col}), q^{degree}: {difference}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn frobenius_adjoint_is_positive_degree_transition_inverse_over_ratfun() {
+        let twist = NegativeSplitBundleTwist::new(vec![2]).unwrap();
+        let base_weights = [Rational::from(1), Rational::from(2), Rational::from(4)]
+            .into_iter()
+            .map(RatFun::from_rational)
+            .collect::<Vec<_>>();
+        let fiber_weights = [Rational::from(11)]
+            .into_iter()
+            .map(RatFun::from_rational)
+            .collect::<Vec<_>>();
+        let canonical =
+            specialized_twisted_birkhoff_canonical_data_for_coeff_weights_with_validation(
+                2,
+                &twist,
+                1,
+                &base_weights,
+                &fiber_weights,
+                TwistedCalibrationValidation::Full,
+            )
+            .unwrap();
+        let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
+        let frobenius_inverse = SeriesMatrix::from_entries(canonical.flat_to_canonical);
+        let reference = crate::reconstruction::invert_series_matrix_coeff(&transition).unwrap();
+
+        assert_eq!(frobenius_inverse, reference);
+        assert_eq!(
+            frobenius_inverse.mul(&transition),
+            SeriesMatrix::identity(3, 1)
+        );
+    }
+
+    #[test]
+    fn frobenius_adjoint_is_positive_degree_transition_inverse_over_factored() {
+        let twist = NegativeSplitBundleTwist::new(vec![2]).unwrap();
+        let base_weights = [Rational::from(1), Rational::from(2), Rational::from(4)]
+            .into_iter()
+            .map(FactoredRatFun::from_rational)
+            .collect::<Vec<_>>();
+        let fiber_weights = [Rational::from(11)]
+            .into_iter()
+            .map(FactoredRatFun::from_rational)
+            .collect::<Vec<_>>();
+        let canonical =
+            specialized_twisted_birkhoff_canonical_data_for_coeff_weights_with_validation(
+                2,
+                &twist,
+                1,
+                &base_weights,
+                &fiber_weights,
+                TwistedCalibrationValidation::Full,
+            )
+            .unwrap();
+        let transition = SeriesMatrix::from_entries(canonical.transition_to_flat.clone());
+        let frobenius_inverse = SeriesMatrix::from_entries(canonical.flat_to_canonical);
+        let reference = crate::reconstruction::invert_series_matrix_coeff(&transition).unwrap();
+
+        assert_factored_matrix_semantically_equal(&frobenius_inverse, &reference);
+        assert_factored_matrix_semantically_equal(
+            &frobenius_inverse.mul(&transition),
+            &SeriesMatrix::identity(3, 1),
+        );
+    }
 }

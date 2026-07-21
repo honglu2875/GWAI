@@ -414,8 +414,12 @@ mod tests {
         assert_eq!(report.verified_zero_count(), 30);
         assert_eq!(report.nonzero_count(), 0);
         assert_eq!(report.incomplete_count(), 0);
-        assert_eq!(report.backend_exercised_count(), 10);
-        assert_eq!(report.structural_only_count(), 20);
+        // Quadratic terms with a certified structural-zero factor no longer
+        // force evaluation of their irrelevant second factor.  The scan still
+        // verifies the same 30 equations exactly, with five genuinely needed
+        // backend rows and the remaining 25 closed structurally.
+        assert_eq!(report.backend_exercised_count(), 5);
+        assert_eq!(report.structural_only_count(), 25);
         assert_eq!(report.vacuous_count(), 0);
         assert_eq!(
             report.vacuous_count()

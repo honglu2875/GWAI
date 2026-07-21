@@ -11,7 +11,11 @@ use crate::core::series::{QSeries, SeriesMatrix};
 /// In Givental-Teleman reconstruction this is the upper-triangular symplectic
 /// loop-group calibration.  It transforms the product-of-point-theories TFT
 /// into the target CohFT after the descendant/ancestor calibration has been
-/// applied.
+/// applied.  Its defining metric contract is
+/// `R(-z)^T eta R(z) = eta`; in particular
+/// `(R^{-1})_k = (-1)^k eta^{-1} R_k^T eta`.  Graph-kernel construction uses
+/// this identity, while [`SeriesRMatrix::check_unitarity`] provides the full
+/// coefficientwise audit when a calibration is produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeriesRMatrix<C = RatFun> {
     pub(crate) size: usize,

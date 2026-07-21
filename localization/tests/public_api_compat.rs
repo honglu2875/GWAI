@@ -189,3 +189,34 @@ fn historical_paths_remain_source_compatible() {
     let _ = product_alias;
     let _ = bundle_alias;
 }
+
+#[test]
+fn qrr_virasoro_api_is_source_compatible() {
+    use gw_pn::constraints::virasoro::{
+        CanonicalTheoryNotation, CorrelatorDimensionPolicy, QrrConjugationFormula,
+        SpecializedVirasoroConstraint, SymbolicVirasoroConstraint,
+    };
+    use gw_pn::core::theory::BasisId;
+    use gw_pn::spaces::projective_space::ProjectiveSpaceTheory;
+
+    let _ = gw_pn::constraints::virasoro::qrr_bernoulli_number;
+    let _ = gw_pn::constraints::virasoro::evaluate_symbolic_constraint;
+    let _ = gw_pn::constraints::virasoro::evaluate_symbolic_constraint_with_bounds;
+    let _ = gw_pn::constraints::virasoro::specialize_symbolic_constraint_parameters;
+    let _ = gw_pn::spaces::negative_split_projective::certified_l0_positive_z_bound;
+    let _ = gw_pn::spaces::negative_split_projective::generate_inverse_euler_qrr_l0_constraint;
+    let _ = gw_pn::spaces::negative_split_projective::inverse_euler_qrr_l0_operator_for_constraint;
+    let _ =
+        std::mem::size_of::<gw_pn::spaces::negative_split_projective::InverseEulerQrrL0Operator>();
+    let _ = std::mem::size_of::<QrrConjugationFormula>();
+    let _ = std::mem::size_of::<SymbolicVirasoroConstraint>();
+    let _ = std::mem::size_of::<SpecializedVirasoroConstraint>();
+    let _ = std::mem::size_of::<
+        gw_pn::spaces::negative_split_projective::NegativeSplitFixedFiberQrrEvaluator,
+    >();
+    let _ = CorrelatorDimensionPolicy::EquivariantWeights;
+
+    let theory = ProjectiveSpaceTheory::new(1);
+    let notation = CanonicalTheoryNotation::new(&theory);
+    assert_eq!(notation.basis_text(&BasisId(1)), "H");
+}

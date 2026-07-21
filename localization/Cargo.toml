@@ -40,3 +40,14 @@ type_complexity = "allow"
 codegen-units = 1
 lto = "thin"
 debug = true
+
+# Scheduled mathematical holdouts benefit from optimized exact arithmetic, but
+# release-profile LTO makes a clean CI build unnecessarily expensive.  This
+# profile keeps release optimizations while favoring iteration and cached CI
+# rebuilds; use it through scripts/run-acceptance-tests.sh.
+[profile.acceptance]
+inherits = "release"
+codegen-units = 16
+lto = false
+debug = "line-tables-only"
+incremental = true

@@ -1107,7 +1107,7 @@ fn local_p2_birkhoff_graph_recovers_known_genus_zero_divisor_row() {
 }
 
 #[test]
-fn o_minus_one_p2_birkhoff_graph_matches_localization_row() {
+fn o_minus_one_p2_birkhoff_graph_matches_recorded_unsourced_row() {
     let provider = TwistedProjectiveSpaceProvider::rational_lambda_line_with_weights(
         2,
         vec![1],
@@ -1133,11 +1133,11 @@ fn o_minus_one_p2_birkhoff_graph_matches_localization_row() {
         ),
     ];
 
-    for (insertion, oracle, label) in cases {
+    for (insertion, expected, label) in cases {
         let value =
             crate::givental::compute_semisimple_graph_value(&provider, 2, 2, &[insertion], None)
                 .unwrap();
-        assert_eq!(value, oracle, "O(-1)->P2 g=2 d=2 {label}");
+        assert_eq!(value, expected, "O(-1)->P2 g=2 d=2 {label}");
     }
 }
 
@@ -1411,7 +1411,7 @@ fn negative_split_compute_matches_resolved_conifold_closed_formula() {
 }
 
 #[test]
-fn o_minus_one_p2_genus_zero_two_point_descendant_uses_unstable_s_matrix() {
+fn o_minus_one_p2_genus_zero_two_point_descendant_uses_full_divisor_recursion() {
     let req = TwistedInvariantRequest::new(
         2,
         vec![1],
@@ -1425,7 +1425,7 @@ fn o_minus_one_p2_genus_zero_two_point_descendant_uses_unstable_s_matrix() {
     .unwrap();
     let result = compute_negative_split_twisted(&req).unwrap();
     assert_eq!(result.value, RatFun::from_rational(Rational::new(-1, 2)));
-    assert!(result.notes[0].contains("two-point unstable S-matrix"));
+    assert!(result.notes[0].contains("full descendant divisor equation"));
 }
 
 #[test]

@@ -192,7 +192,7 @@ Release/no-cache frontier-suite medians (`repeat=3`) against commit
 | area | representative row | before | after | read |
 |---|---|---:|---:|---|
 | product | `P^1 x P^2`, `g=1`, total `d=2` | 0.096s | 0.082s | 1.17x faster, likely from fused series accumulation. |
-| bundle | rank-3 `P(O(2)+O(1)+O(-3))`, shifted `d=3` | 0.556s | 0.541s | 1.03x faster from classical setup reuse plus fused kernels. |
+| bundle | historical rank-3 `P(O(2)+O(1)+O(-3))`, shifted `d=3` | 0.556s | 0.541s | 1.03x faster from classical setup reuse plus fused kernels. |
 | bundle | `F_2`, `g=1`, shifted `d=5` | 0.607s | 0.587s | 1.03x faster. |
 | twisted | `P^2`, `O(-1)^3`, `g=2`, `d=2` | 0.065s | 0.064s | Small neutral-to-positive movement. |
 | formula | `g=3`, `m=2` stable graphs | 0.135s | 0.142s | No graph-generator win; the attempted composition visitor was reverted. |

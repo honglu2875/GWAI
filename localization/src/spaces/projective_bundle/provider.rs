@@ -2442,6 +2442,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow rank-three primary shortcut/graph acceptance test"]
     fn fano_asymmetric_rank3_three_primary_shortcut_matches_graph_series() {
         let target = ProjectiveBundleRay::new(
             2,
@@ -3183,6 +3184,72 @@ mod tests {
                 (0, 2, Rational::zero()),
             ]
         );
+    }
+
+    #[test]
+    #[ignore = "slow degree-two independent-localization acceptance test"]
+    fn rank_three_fiber_conic_matches_independent_fixed_tree_localization() {
+        // This is deliberately degree two: a primitive fiber line would not
+        // exercise edge-cover factors in the validation-only localization
+        // backend.  The two paths share the canonical target data and exact
+        // rational arithmetic, but not reconstruction algorithms.  In
+        // particular, the fixed-tree oracle does not use the bundle
+        // I-function, Birkhoff factorization, ray interpolation, S/R data, or
+        // the universal stable-graph contraction engine.
+        let twists = [0, 3, 3];
+        let base = [Rational::from(1), Rational::from(2), Rational::from(4)];
+        let fiber = [Rational::from(0), Rational::from(17), Rational::from(43)];
+        let theory = ProjectiveBundleTheory::new(2, twists.to_vec()).unwrap();
+        let mut insertions = vec![BundleInsertion::new(0, 2, 2)];
+        insertions.extend(std::iter::repeat_n(BundleInsertion::new(0, 0, 2), 4));
+
+        let oracle = crate::validation_backends::legacy_localization::projective_bundle::genus_zero_primary_projective_bundle_localization(
+            &theory,
+            &base,
+            &fiber,
+            &theory.curve(0, 2),
+            &insertions,
+        )
+        .unwrap();
+        let reconstructed =
+            reconstruct_bundle_invariants(2, &twists, &base, &fiber, 0, 2, &insertions).unwrap();
+        let production = reconstructed
+            .iter()
+            .find(|(d1, d2, _)| (*d1, *d2) == (0, 2))
+            .map(|(_, _, value)| value)
+            .expect("fiber-conic class must occur in shifted degree two");
+
+        assert_eq!(oracle, Rational::one());
+        assert_eq!(production, &oracle);
+    }
+
+    #[test]
+    fn f1_exceptional_section_matches_independent_fixed_tree_localization() {
+        let twists = [0, 1];
+        let base = [Rational::from(2), Rational::from(5)];
+        let fiber = [Rational::from(11), Rational::from(23)];
+        let theory = ProjectiveBundleTheory::new(1, twists.to_vec()).unwrap();
+        let xi = BundleInsertion::new(0, 0, 1);
+        let insertions = [xi.clone(), xi.clone(), xi];
+
+        let oracle = crate::validation_backends::legacy_localization::projective_bundle::genus_zero_primary_projective_bundle_localization(
+            &theory,
+            &base,
+            &fiber,
+            &theory.curve(1, -1),
+            &insertions,
+        )
+        .unwrap();
+        let production =
+            reconstruct_bundle_invariants(1, &twists, &base, &fiber, 0, 1, &insertions)
+                .unwrap()
+                .into_iter()
+                .find(|(d1, d2, _)| (*d1, *d2) == (1, -1))
+                .map(|(_, _, value)| value)
+                .expect("exceptional-section class must occur in shifted degree one");
+
+        assert_eq!(oracle, -Rational::one());
+        assert_eq!(production, oracle);
     }
 
     #[test]

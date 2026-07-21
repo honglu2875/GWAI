@@ -610,11 +610,12 @@ pub(crate) fn invert_series_with_linear_term_one<C: Coeff>(
     max_degree: usize,
 ) -> Vec<C> {
     assert_eq!(series.first(), Some(&C::zero()));
+    if max_degree == 0 {
+        return vec![C::zero()];
+    }
     assert_eq!(series.get(1), Some(&C::one()));
     let mut inverse = vec![C::zero(); max_degree + 1];
-    if max_degree >= 1 {
-        inverse[1] = C::one();
-    }
+    inverse[1] = C::one();
     for degree in 2..=max_degree {
         // With series = z + O(z^2) and input = z + ..., the coefficient of
         // z^degree in series(input) depends on input[degree] with derivative
@@ -736,6 +737,18 @@ mod tests {
             };
             assert_eq!(*coeff, expected, "composition defect at degree {degree}");
         }
+    }
+
+    #[test]
+    fn series_inversion_accepts_degree_zero_truncation() {
+        assert_eq!(
+            invert_series_with_linear_term_one(&[RatFun::zero()], 0),
+            vec![RatFun::zero()]
+        );
+        assert_eq!(
+            invert_mirror_map(&[RatFun::zero()], 0),
+            vec![RatFun::zero()]
+        );
     }
 
     #[test]

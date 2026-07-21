@@ -1,6 +1,6 @@
 use super::{
     CanonicalVirasoroConstraint, ConstraintTerm, CorrelatorKey, Descendant, EvaluatedTerm,
-    IncompleteReason, MissingCorrelator, ResidualReport,
+    IncompleteReason, MissingCorrelator, ResidualReport, SymbolicVirasoroConstraint,
 };
 use crate::core::algebra::{RatFun, Rational};
 use crate::core::error::GwError;
@@ -11,6 +11,31 @@ use std::collections::{BTreeMap, BTreeSet};
 pub trait CanonicalCorrelatorEvaluator: Send + Sync {
     fn theory(&self) -> &dyn GwTheory;
 
+    /// Whether ordinary cohomological dimension is a structural-zero oracle.
+    ///
+    /// Equivariant inverse-Euler theories can have rational weight factors of
+    /// nonzero degree.  Their correlators must be sent to the backend even
+    /// when the insertions alone do not match the nonequivariant virtual
+    /// dimension.  Compact and nonequivariant evaluators retain the strict
+    /// default.
+    fn dimension_policy(&self) -> CorrelatorDimensionPolicy {
+        CorrelatorDimensionPolicy::StrictNonequivariant
+    }
+
+    /// Optional target-specific structural-zero certificate.
+    ///
+    /// This hook must be cheaper than backend evaluation and may return `true`
+    /// only for a mathematically exact vanishing rule.  It exists for refined
+    /// equivariant policies that are neither strict dimension equality nor an
+    /// unrestricted backend query.  Certified zeros participate in quadratic
+    /// factor short-circuiting.
+    fn certified_zero(
+        &self,
+        _correlator: &CorrelatorKey<CurveClass, BasisId>,
+    ) -> Result<bool, GwError> {
+        Ok(false)
+    }
+
     /// Evaluate a correlator that has already passed the canonical structural
     /// zero checks.  Unsupported coefficients must return
     /// [`GwError::UnsupportedInvariant`], never a placeholder zero.
@@ -18,6 +43,37 @@ pub trait CanonicalCorrelatorEvaluator: Send + Sync {
         &self,
         correlator: &CorrelatorKey<CurveClass, BasisId>,
     ) -> Result<RatFun, GwError>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CorrelatorDimensionPolicy {
+    StrictNonequivariant,
+    EquivariantWeights,
+}
+
+trait ConstraintCoefficient {
+    fn is_zero_coefficient(&self) -> bool;
+    fn as_ratfun(&self) -> RatFun;
+}
+
+impl ConstraintCoefficient for Rational {
+    fn is_zero_coefficient(&self) -> bool {
+        self.is_zero()
+    }
+
+    fn as_ratfun(&self) -> RatFun {
+        RatFun::from_rational(self.clone())
+    }
+}
+
+impl ConstraintCoefficient for RatFun {
+    fn is_zero_coefficient(&self) -> bool {
+        self.is_zero()
+    }
+
+    fn as_ratfun(&self) -> RatFun {
+        self.clone()
+    }
 }
 
 /// Hard limits on the correlator dependency closure evaluated for one
@@ -123,10 +179,12 @@ impl CorrelatorResolution {
 
 /// Substitute exact backend values into a generated constraint.
 ///
-/// Every unique dependency is resolved once.  Ineffective, dimension-mismatched,
-/// and degree-zero unstable correlators are certified as structural zeros;
-/// unknown effectivity is queried.  Any unsupported or failed dependency makes
-/// the report `Incomplete` even when the exact partial sum happens to vanish.
+/// Every mathematically required unique dependency is resolved once.
+/// Ineffective, dimension-mismatched, and degree-zero unstable correlators are
+/// certified as structural zeros; unknown effectivity is queried.  A certified
+/// zero factor short-circuits the other factor of a quadratic term.  Any
+/// unsupported or failed dependency that remains necessary makes the report
+/// `Incomplete` even when the exact partial sum happens to vanish.
 pub fn evaluate_constraint(
     evaluator: &dyn CanonicalCorrelatorEvaluator,
     constraint: &CanonicalVirasoroConstraint,
@@ -138,6 +196,28 @@ pub fn evaluate_constraint(
     )
 }
 
+/// Substitute exact backend values into a QRR/equivariant constraint whose
+/// coefficients are symbolic rational functions.
+pub fn evaluate_symbolic_constraint(
+    evaluator: &dyn CanonicalCorrelatorEvaluator,
+    constraint: &SymbolicVirasoroConstraint,
+) -> ResidualReport<CurveClass, BasisId, RatFun> {
+    evaluate_constraint_with_coefficients(
+        evaluator,
+        constraint,
+        CorrelatorEvaluationBounds::unbounded(),
+    )
+}
+
+/// Bounded counterpart of [`evaluate_symbolic_constraint`].
+pub fn evaluate_symbolic_constraint_with_bounds(
+    evaluator: &dyn CanonicalCorrelatorEvaluator,
+    constraint: &SymbolicVirasoroConstraint,
+    bounds: CorrelatorEvaluationBounds,
+) -> ResidualReport<CurveClass, BasisId, RatFun> {
+    evaluate_constraint_with_coefficients(evaluator, constraint, bounds)
+}
+
 /// Substitute exact values while enforcing an explicit dependency envelope.
 ///
 /// This function is fail-closed: one dependency outside the envelope is
@@ -146,6 +226,14 @@ pub fn evaluate_constraint(
 pub fn evaluate_constraint_with_bounds(
     evaluator: &dyn CanonicalCorrelatorEvaluator,
     constraint: &CanonicalVirasoroConstraint,
+    bounds: CorrelatorEvaluationBounds,
+) -> ResidualReport<CurveClass, BasisId, RatFun> {
+    evaluate_constraint_with_coefficients(evaluator, constraint, bounds)
+}
+
+fn evaluate_constraint_with_coefficients<C: ConstraintCoefficient>(
+    evaluator: &dyn CanonicalCorrelatorEvaluator,
+    constraint: &super::VirasoroConstraint<CurveClass, BasisId, C>,
     bounds: CorrelatorEvaluationBounds,
 ) -> ResidualReport<CurveClass, BasisId, RatFun> {
     let theory = evaluator.theory();
@@ -184,20 +272,72 @@ pub fn evaluate_constraint_with_bounds(
     }
 
     let mut values = BTreeMap::new();
+    let mut pending_backend = BTreeSet::new();
     let mut backend_correlators = Vec::new();
     let mut structural_zero_correlators = Vec::new();
     for correlator in retained {
         let resolution = if bounds.contains(&correlator) {
-            resolve_correlator(theory, evaluator, &correlator)
+            preflight_correlator(theory, evaluator, &correlator)
         } else {
             Err(IncompleteReason::OutsideBounds)
         };
         match &resolution {
-            Ok(CorrelatorResolution::Backend(_)) => backend_correlators.push(correlator.clone()),
-            Ok(CorrelatorResolution::StructuralZero(_)) => {
+            Ok(Some(CorrelatorResolution::StructuralZero(_))) => {
                 structural_zero_correlators.push(correlator.clone())
             }
+            Ok(Some(CorrelatorResolution::Backend(_))) => {
+                unreachable!("correlator preflight cannot produce a backend value")
+            }
+            Ok(None) => {
+                pending_backend.insert(correlator);
+                continue;
+            }
             Err(_) => {}
+        }
+        values.insert(
+            correlator,
+            resolution
+                .map(|resolution| resolution.expect("resolved preflight entry must carry a value")),
+        );
+    }
+
+    // A quadratic contribution is known exactly once either factor is a
+    // certified structural zero.  Do not make the other factor an artificial
+    // backend dependency: besides saving work, this prevents an unsupported
+    // but mathematically irrelevant correlator from making a zero product
+    // incomplete.  Errors and out-of-bounds entries are deliberately not
+    // short-circuited; malformed or truncated constraints remain fail-closed.
+    let mut required_backend = BTreeSet::new();
+    for term in &constraint.terms {
+        match term {
+            ConstraintTerm::Constant { .. } => {}
+            ConstraintTerm::Linear(term) if term.coefficient.is_zero_coefficient() => {}
+            ConstraintTerm::Linear(term) => {
+                if pending_backend.contains(&term.correlator) {
+                    required_backend.insert(term.correlator.clone());
+                }
+            }
+            ConstraintTerm::Quadratic(term) if term.coefficient.is_zero_coefficient() => {}
+            ConstraintTerm::Quadratic(term)
+                if dependency_is_structural_zero(&values, &term.left)
+                    || dependency_is_structural_zero(&values, &term.right) => {}
+            ConstraintTerm::Quadratic(term) => {
+                if pending_backend.contains(&term.left) {
+                    required_backend.insert(term.left.clone());
+                }
+                if pending_backend.contains(&term.right) {
+                    required_backend.insert(term.right.clone());
+                }
+            }
+        }
+    }
+    for correlator in required_backend {
+        let resolution = evaluator
+            .evaluate_backend(&correlator)
+            .map(CorrelatorResolution::Backend)
+            .map_err(incomplete_reason_from_error);
+        if matches!(resolution, Ok(CorrelatorResolution::Backend(_))) {
+            backend_correlators.push(correlator.clone());
         }
         values.insert(correlator, resolution);
     }
@@ -206,15 +346,23 @@ pub fn evaluate_constraint_with_bounds(
     let mut evaluated_terms = Vec::new();
     for (term_index, term) in constraint.terms.iter().enumerate() {
         let contribution = match term {
-            ConstraintTerm::Constant { coefficient, .. } => {
-                Some(RatFun::from_rational(coefficient.clone()))
+            ConstraintTerm::Constant { coefficient, .. } => Some(coefficient.as_ratfun()),
+            ConstraintTerm::Linear(term) if term.coefficient.is_zero_coefficient() => {
+                Some(RatFun::zero())
             }
-            ConstraintTerm::Linear(term) if term.coefficient.is_zero() => Some(RatFun::zero()),
             ConstraintTerm::Linear(term) => values
                 .get(&term.correlator)
                 .and_then(|value| value.as_ref().ok())
-                .map(|value| &RatFun::from_rational(term.coefficient.clone()) * value.value()),
-            ConstraintTerm::Quadratic(term) if term.coefficient.is_zero() => Some(RatFun::zero()),
+                .map(|value| &term.coefficient.as_ratfun() * value.value()),
+            ConstraintTerm::Quadratic(term) if term.coefficient.is_zero_coefficient() => {
+                Some(RatFun::zero())
+            }
+            ConstraintTerm::Quadratic(term)
+                if dependency_is_structural_zero(&values, &term.left)
+                    || dependency_is_structural_zero(&values, &term.right) =>
+            {
+                Some(RatFun::zero())
+            }
             ConstraintTerm::Quadratic(term) => values
                 .get(&term.left)
                 .and_then(|value| value.as_ref().ok())
@@ -225,7 +373,7 @@ pub fn evaluate_constraint_with_bounds(
                 )
                 .map(|(left, right)| {
                     let product = left.value() * right.value();
-                    &RatFun::from_rational(term.coefficient.clone()) * &product
+                    &term.coefficient.as_ratfun() * &product
                 }),
         };
         if let Some(contribution) = contribution {
@@ -271,20 +419,35 @@ pub fn evaluate_constraint_with_bounds(
     }
 }
 
+fn dependency_is_structural_zero(
+    values: &BTreeMap<
+        CorrelatorKey<CurveClass, BasisId>,
+        Result<CorrelatorResolution, IncompleteReason>,
+    >,
+    correlator: &CorrelatorKey<CurveClass, BasisId>,
+) -> bool {
+    matches!(
+        values.get(correlator),
+        Some(Ok(CorrelatorResolution::StructuralZero(value))) if value.is_zero()
+    )
+}
+
 struct BoundedDependencyClosure {
     retained: Vec<CorrelatorKey<CurveClass, BasisId>>,
     omitted_witness: Option<CorrelatorKey<CurveClass, BasisId>>,
 }
 
-fn dependency_refs<'a>(
-    constraint: &'a CanonicalVirasoroConstraint,
+fn dependency_refs<'a, C: ConstraintCoefficient>(
+    constraint: &'a super::VirasoroConstraint<CurveClass, BasisId, C>,
 ) -> impl Iterator<Item = &'a CorrelatorKey<CurveClass, BasisId>> + 'a {
     constraint.terms.iter().flat_map(|term| {
         let dependencies = match term {
             ConstraintTerm::Constant { .. } => [None, None],
-            ConstraintTerm::Linear(term) if term.coefficient.is_zero() => [None, None],
+            ConstraintTerm::Linear(term) if term.coefficient.is_zero_coefficient() => [None, None],
             ConstraintTerm::Linear(term) => [Some(&term.correlator), None],
-            ConstraintTerm::Quadratic(term) if term.coefficient.is_zero() => [None, None],
+            ConstraintTerm::Quadratic(term) if term.coefficient.is_zero_coefficient() => {
+                [None, None]
+            }
             ConstraintTerm::Quadratic(term) => [Some(&term.left), Some(&term.right)],
         };
         dependencies.into_iter().flatten()
@@ -296,8 +459,8 @@ fn dependency_refs<'a>(
 /// extraction result therefore owns at most `limit + 1` dependency keys
 /// regardless of the full closure size (with the usual unbounded behavior at
 /// `usize::MAX`).
-fn bounded_dependencies(
-    constraint: &CanonicalVirasoroConstraint,
+fn bounded_dependencies<C: ConstraintCoefficient>(
+    constraint: &super::VirasoroConstraint<CurveClass, BasisId, C>,
     limit: usize,
 ) -> BoundedDependencyClosure {
     let mut retained = BTreeSet::new();
@@ -324,11 +487,28 @@ fn bounded_dependencies(
     }
 }
 
+#[cfg(test)]
 fn resolve_correlator(
     theory: &dyn GwTheory,
     evaluator: &dyn CanonicalCorrelatorEvaluator,
     correlator: &CorrelatorKey<CurveClass, BasisId>,
 ) -> Result<CorrelatorResolution, IncompleteReason> {
+    if let Some(resolution) = preflight_correlator(theory, evaluator, correlator)? {
+        return Ok(resolution);
+    }
+    evaluator
+        .evaluate_backend(correlator)
+        .map(CorrelatorResolution::Backend)
+        .map_err(incomplete_reason_from_error)
+}
+
+/// Validate a correlator and apply only theory-owned structural-zero rules.
+/// `Ok(None)` means that an actual backend value is still required.
+fn preflight_correlator(
+    theory: &dyn GwTheory,
+    evaluator: &dyn CanonicalCorrelatorEvaluator,
+    correlator: &CorrelatorKey<CurveClass, BasisId>,
+) -> Result<Option<CorrelatorResolution>, IncompleteReason> {
     theory
         .curve_class_space()
         .validate(&correlator.degree)
@@ -359,7 +539,7 @@ fn resolve_correlator(
         .map_err(incomplete_reason_from_error)?
     {
         CurveEffectivity::Ineffective => {
-            return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()))
+            return Ok(Some(CorrelatorResolution::StructuralZero(RatFun::zero())))
         }
         CurveEffectivity::Effective | CurveEffectivity::Unknown => {}
     }
@@ -369,24 +549,31 @@ fn resolve_correlator(
     if correlator.degree.is_zero()
         && !pointed_curve_is_stable(correlator.genus, correlator.insertions().len())
     {
-        return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()));
+        return Ok(Some(CorrelatorResolution::StructuralZero(RatFun::zero())));
     }
 
-    let virtual_dimension = theory
-        .virtual_dimension(
-            correlator.genus,
-            &correlator.degree,
-            correlator.insertions().len(),
-        )
-        .map_err(incomplete_reason_from_error)?;
-    if virtual_dimension < 0 || usize::try_from(virtual_dimension).ok() != Some(insertion_degree) {
-        return Ok(CorrelatorResolution::StructuralZero(RatFun::zero()));
+    if evaluator
+        .certified_zero(correlator)
+        .map_err(incomplete_reason_from_error)?
+    {
+        return Ok(Some(CorrelatorResolution::StructuralZero(RatFun::zero())));
     }
 
-    evaluator
-        .evaluate_backend(correlator)
-        .map(CorrelatorResolution::Backend)
-        .map_err(incomplete_reason_from_error)
+    if evaluator.dimension_policy() == CorrelatorDimensionPolicy::StrictNonequivariant {
+        let virtual_dimension = theory
+            .virtual_dimension(
+                correlator.genus,
+                &correlator.degree,
+                correlator.insertions().len(),
+            )
+            .map_err(incomplete_reason_from_error)?;
+        if virtual_dimension < 0
+            || usize::try_from(virtual_dimension).ok() != Some(insertion_degree)
+        {
+            return Ok(Some(CorrelatorResolution::StructuralZero(RatFun::zero())));
+        }
+    }
+    Ok(None)
 }
 
 fn check_divisor_recursion_depth(
@@ -497,7 +684,8 @@ where
 mod tests {
     use super::*;
     use crate::constraints::virasoro::{
-        generate_constraint, Descendant, LinearTerm, ResidualStatus, TermOrigin, TimeMonomial,
+        generate_constraint, Descendant, LinearTerm, QuadraticTerm, ResidualStatus, TermOrigin,
+        TimeMonomial,
     };
     use crate::spaces::negative_split_projective::{
         NegativeSplitCompletionEvaluator, TwistedProjectiveSpaceProvider,
@@ -730,6 +918,41 @@ mod tests {
             self.backend_calls.fetch_add(1, Ordering::SeqCst);
             Ok(RatFun::zero())
         }
+    }
+
+    #[test]
+    fn structural_zero_factor_short_circuits_irrelevant_backend_dependency() {
+        let evaluator = CountingEvaluator {
+            theory: ProjectiveSpaceTheory::new(0),
+            backend_calls: AtomicUsize::new(0),
+        };
+        let curve = evaluator.theory.curve(0);
+        let unstable_zero =
+            CorrelatorKey::new(0, curve.clone(), vec![Descendant::new(0, BasisId(0))]);
+        let otherwise_required = CorrelatorKey::new(1, curve, vec![Descendant::new(1, BasisId(0))]);
+        let mut constraint = generate_constraint(
+            &evaluator.theory,
+            0,
+            1,
+            evaluator.theory.curve(0),
+            TimeMonomial::one(),
+        )
+        .unwrap();
+        constraint.terms = vec![ConstraintTerm::Quadratic(QuadraticTerm::new(
+            Rational::one(),
+            unstable_zero.clone(),
+            otherwise_required,
+            TermOrigin::DegreeSplitting,
+        ))];
+
+        let report = evaluate_constraint(&evaluator, &constraint);
+        assert_eq!(report.status(), ResidualStatus::VerifiedZero);
+        assert_eq!(report.exact_residual(), Some(&RatFun::zero()));
+        assert_eq!(report.evaluated_term_count(), 1);
+        assert_eq!(report.structural_zero_correlators(), &[unstable_zero]);
+        assert_eq!(report.backend_correlator_count(), 0);
+        assert_eq!(report.missing_correlator_count(), 0);
+        assert_eq!(evaluator.backend_calls.load(Ordering::SeqCst), 0);
     }
 
     fn point_constraint_with_dependencies(

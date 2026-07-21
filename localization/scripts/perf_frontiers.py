@@ -290,6 +290,38 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         "frontier",
+        "virasoro",
+        "fixed_fiber_qrr",
+        "qrr_fixed_fiber_o2_p1_g1_d1",
+        "P^1, inverse Euler O(-2), L0 at g=1, d=1, H; mu=7",
+        (
+            "virasoro",
+            "check",
+            "--n",
+            "1",
+            "--local-twist=-2",
+            "--k",
+            "0",
+            "--g",
+            "1",
+            "--d",
+            "1",
+            "--insert",
+            "H",
+            "--fiber-weights",
+            "7",
+            "--term-limit",
+            "1000",
+            "--dependency-limit",
+            "1000",
+        ),
+        (
+            "Exact fixed-fiber QRR specialization with positive-degree and "
+            "stable-graph dependencies."
+        ),
+    ),
+    Case(
+        "frontier",
         "twisted",
         "twist_rank",
         "conifold_g2_d3",
@@ -447,30 +479,30 @@ CASES: tuple[Case, ...] = (
         "frontier",
         "bundle",
         "twist_rank",
-        "rank3_bundle_g0_d3_primary",
-        "P(O(2)+O(1)+O(-3)), g=0, shifted d=3, primary ruling",
+        "rank3_bundle_g0_d2_fiber_points",
+        "P(O+O+O(1)), g=0, shifted d=2, three fiber-point insertions",
         (
             "bundle",
             "--n",
             "1",
             "--twists",
-            "2,1,-3",
+            "0,0,1",
             "--g",
             "0",
             "--d",
-            "3",
+            "2",
             "--insert",
             "H*xi^2",
             "--insert",
-            "H",
+            "H*xi^2",
             "--insert",
-            "H",
+            "H*xi^2",
             "--weights-base",
             "1,2",
             "--weights-fiber",
             "0,10,30",
         ),
-        "Current rank-3 bundle frontier case.",
+        "Supported rank-3 bidegree-Birkhoff probe with three Novikov rays.",
     ),
     Case(
         "extended",
@@ -736,14 +768,14 @@ CASES: tuple[Case, ...] = (
         "extended",
         "bundle",
         "twist_rank",
-        "rank3_bundle_g0_d4_primary",
-        "P(O(2)+O(1)+O(-3)), g=0, shifted d=4, primary ruling",
+        "rank3_bundle_g0_d4_fiber_points",
+        "P(O+O+O(1)), g=0, shifted d=4, three fiber-point insertions",
         (
             "bundle",
             "--n",
             "1",
             "--twists",
-            "2,1,-3",
+            "0,0,1",
             "--g",
             "0",
             "--d",
@@ -751,23 +783,51 @@ CASES: tuple[Case, ...] = (
             "--insert",
             "H*xi^2",
             "--insert",
-            "H",
+            "H*xi^2",
             "--insert",
-            "H",
+            "H*xi^2",
             "--weights-base",
             "1,2",
             "--weights-fiber",
             "0,10,30",
         ),
-        "Rank-3 bundle degree frontier probe.",
+        "Supported rank-3 bundle degree-growth probe.",
     ),
 )
 
 
+HOTSPOT_CASE_NAMES = {
+    "p3_g2_d2_one_descendant",
+    "f2_g1_d5_three_descendants",
+    "qrr_fixed_fiber_o2_p1_g1_d1",
+}
+
+# `GW_PROFILE` output is intentionally parsed as an open set of events.  These
+# are the minimum phase markers that make the three hotspot probes meaningful;
+# failing to emit one turns the case into `profile_missing` rather than a
+# deceptively successful wall-clock measurement.
+HOTSPOT_REQUIRED_PROFILE_KEYS: dict[str, set[str]] = {
+    "p3_g2_d2_one_descendant": {"graphs"},
+    "f2_g1_d5_three_descendants": {"bundle_bidegree_birkhoff", "graphs"},
+    "qrr_fixed_fiber_o2_p1_g1_d1": {
+        "fixed_fiber_qrr_correlator",
+        "factored_twisted_calibration",
+        "graph_kernel_edges",
+        "factored_lambda_limit_series",
+        "graphs",
+    },
+}
+
+
 def main() -> int:
     args = parse_args()
+    if args.suite == "hotspots":
+        args.capture_profile = True
     if args.repeat < 1:
         print("error: --repeat must be at least 1", file=sys.stderr)
+        return 2
+    if args.timeout <= 0:
+        print("error: --timeout must be positive", file=sys.stderr)
         return 2
     if args.features and args.all_features:
         print("error: --features and --all-features cannot be used together", file=sys.stderr)
@@ -777,6 +837,9 @@ def main() -> int:
         for case in selected:
             print(f"{case.suite:8} {case.group:10} {case.axis:14} {case.name}")
         return 0
+    if not selected:
+        print("error: no performance cases matched the requested suite/filter", file=sys.stderr)
+        return 2
 
     baseline_rows = load_baseline(args.baseline) if args.baseline else {}
     binary = resolve_binary(args)
@@ -807,6 +870,7 @@ def main() -> int:
             args.graph_cache_mode,
             graph_cache_dir,
             cold_graph_cache_base,
+            args.capture_profile,
         )
         row["profile"] = profile_label(args)
         row["features"] = feature_label(args)
@@ -837,7 +901,17 @@ def main() -> int:
     print(f"wrote {out_dir / 'latest.md'}")
     if args.save_baseline:
         print(f"wrote baseline {args.save_baseline}")
-    if any(row.get("regression") for row in rows):
+    if any(
+        row.get("regression")
+        or row.get("status") == "profile_missing"
+        or str(row.get("status", "")).startswith("exit_")
+        # The broad frontier suites intentionally record a timeout as a
+        # discovered performance boundary.  A hotspot run is different: it
+        # promises that every focused row reached its required instrumented
+        # phases, so a timeout must fail closed instead of looking successful.
+        or (args.suite == "hotspots" and row.get("status") != "ok")
+        for row in rows
+    ):
         return 1
     return 0
 
@@ -846,9 +920,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--suite",
-        choices=("smoke", "frontier", "extended", "all"),
+        choices=("smoke", "frontier", "extended", "hotspots", "all"),
         default="frontier",
-        help="case set to run; frontier includes smoke cases",
+        help=(
+            "case set to run; frontier includes smoke cases, while hotspots "
+            "selects bundle-Birkhoff, graph-contraction, and fixed-fiber QRR probes"
+        ),
     )
     parser.add_argument("--case", action="append", default=[], help="substring filter")
     parser.add_argument("--list", action="store_true", help="list selected cases and exit")
@@ -904,11 +981,21 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--no-build", action="store_true", help="skip cargo build")
+    parser.add_argument(
+        "--capture-profile",
+        action="store_true",
+        help=(
+            "set GW_PROFILE=1, parse phase events from stderr, and fail hotspot "
+            "rows that omit their required phase markers"
+        ),
+    )
     return parser.parse_args()
 
 
 def select_cases(args: argparse.Namespace) -> list[Case]:
-    if args.suite == "smoke":
+    if args.suite == "hotspots":
+        cases = [case for case in CASES if case.name in HOTSPOT_CASE_NAMES]
+    elif args.suite == "smoke":
         suites = {"smoke"}
     elif args.suite == "frontier":
         suites = {"smoke", "frontier"}
@@ -916,8 +1003,8 @@ def select_cases(args: argparse.Namespace) -> list[Case]:
         suites = {"smoke", "frontier", "extended"}
     else:
         suites = {"smoke", "frontier", "extended"}
-
-    cases = [case for case in CASES if case.suite in suites]
+    if args.suite != "hotspots":
+        cases = [case for case in CASES if case.suite in suites]
     for pattern in args.case:
         needle = pattern.lower()
         cases = [
@@ -968,13 +1055,18 @@ def run_case(
     graph_cache_mode: str,
     graph_cache_dir: Path | None,
     cold_graph_cache_base: Path | None,
+    capture_profile: bool,
 ) -> dict[str, object]:
     cmd = [str(binary), *case.cmd]
     base_env = os.environ.copy()
-    base_env.pop("GW_PROFILE", None)
+    if capture_profile:
+        base_env["GW_PROFILE"] = "1"
+    else:
+        base_env.pop("GW_PROFILE", None)
     samples = []
     statuses = []
     graph_cache_dirs = []
+    profile_samples = []
     stdout = ""
     stderr = ""
     for attempt in range(repeat):
@@ -1011,6 +1103,14 @@ def run_case(
 
         samples.append(elapsed)
         statuses.append(status)
+        if capture_profile:
+            profile_samples.append(
+                {
+                    "attempt": attempt + 1,
+                    "status": status,
+                    "events": parse_profile_events(stderr),
+                }
+            )
         if status != "ok":
             break
         if attempt + 1 < repeat:
@@ -1018,6 +1118,23 @@ def run_case(
 
     elapsed = median(samples)
     status = statuses[-1]
+    missing_profile_keys = []
+    if capture_profile and status == "ok":
+        required_profile_keys = HOTSPOT_REQUIRED_PROFILE_KEYS.get(case.name, set())
+        for sample in profile_samples:
+            observed_profile_keys = {
+                key for event in sample["events"] for key in event
+            }
+            missing_profile_keys.extend(
+                f"attempt{sample['attempt']}:{key}"
+                for key in sorted(required_profile_keys - observed_profile_keys)
+            )
+        if missing_profile_keys:
+            status = "profile_missing"
+            stderr += (
+                "\nmissing required GW_PROFILE keys: "
+                + ", ".join(missing_profile_keys)
+            )
 
     return {
         "suite": case.suite,
@@ -1035,12 +1152,61 @@ def run_case(
         "graph_cache_mode": graph_cache_mode,
         "graph_cache_dirs": ",".join(graph_cache_dirs),
         "frontier": status == "timeout" or elapsed >= frontier_seconds,
+        "profile_capture": capture_profile,
+        "profile_event_count": sum(
+            len(sample["events"]) for sample in profile_samples
+        ),
+        "profile_missing_keys": ",".join(missing_profile_keys),
+        "profile_samples": profile_samples,
         "stdout_bytes": len(stdout.encode()),
         "stderr_bytes": len(stderr.encode()),
         "stdout_tail": tail(stdout),
         "stderr_tail": tail(stderr),
         "notes": case.notes,
     }
+
+
+def parse_profile_events(stderr: str) -> list[dict[str, object]]:
+    """Parse the crate's whitespace-delimited `GW_PROFILE key=value` lines.
+
+    The event schema is intentionally open: adding a production phase does not
+    require changing this harness.  Numeric seconds lose their trailing `s`
+    and become floats; integer counters become integers; other values remain
+    strings.  The original order and repeated events are preserved.
+    """
+    marker = "GW_PROFILE "
+    events = []
+    for line in stderr.splitlines():
+        marker_at = line.find(marker)
+        if marker_at < 0:
+            continue
+        event = {}
+        payload = line[marker_at + len(marker) :]
+        for token in payload.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if not key or not value:
+                continue
+            event[key] = profile_scalar(value)
+        if event:
+            events.append(event)
+    return events
+
+
+def profile_scalar(value: str) -> object:
+    if value.endswith("s"):
+        try:
+            return float(value[:-1])
+        except ValueError:
+            return value
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return float(value)
+        except ValueError:
+            return value
 
 
 def configure_graph_cache(
@@ -1173,6 +1339,10 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         "features",
         "graph_cache_mode",
         "graph_cache_dirs",
+        "profile_capture",
+        "profile_event_count",
+        "profile_missing_keys",
+        "profile_samples",
         "baseline_s",
         "delta_s",
         "change_percent",
@@ -1188,7 +1358,11 @@ def write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in rows:
-            writer.writerow({field: row[field] for field in fields})
+            csv_row = {field: row[field] for field in fields}
+            csv_row["profile_samples"] = json.dumps(
+                row["profile_samples"], sort_keys=True, separators=(",", ":")
+            )
+            writer.writerow(csv_row)
 
 
 def write_markdown(path: Path, rows: list[dict[str, object]], args: argparse.Namespace) -> None:
@@ -1203,6 +1377,7 @@ def write_markdown(path: Path, rows: list[dict[str, object]], args: argparse.Nam
         f"- profile: `{profile_label(args)}`",
         f"- cargo features: `{feature_label(args)}`",
         f"- graph cache mode: `{args.graph_cache_mode}`",
+        f"- phase profile capture: `{args.capture_profile}`",
         f"- baseline: `{args.baseline or 'none'}`",
         "",
         render_markdown_table(rows),

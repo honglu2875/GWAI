@@ -1,5 +1,6 @@
 //! Canonical Gromov--Witten theory data for negative split total spaces.
 
+use crate::core::algebra::Rational;
 use crate::core::error::GwError;
 use crate::core::theory::{
     canonicalize_line_summand_payloads, ensure_curve_bound_fits_i64, power_label,
@@ -365,6 +366,35 @@ impl GwTheory for NegativeSplitTotalSpaceTheory {
                 CurveEffectivity::Ineffective
             },
         )
+    }
+
+    fn classical_product(
+        &self,
+        left: BasisId,
+        right: BasisId,
+    ) -> Result<Vec<(BasisId, Rational)>, GwError> {
+        if left.0 > self.base_n || right.0 > self.base_n {
+            return Err(GwError::ConventionMismatch(
+                "negative-split classical product contains an unknown hyperplane-basis id"
+                    .to_string(),
+            ));
+        }
+        let power = left.0.checked_add(right.0).ok_or_else(|| {
+            GwError::UnsupportedInvariant(
+                "negative-split classical hyperplane power overflow".to_string(),
+            )
+        })?;
+        Ok(if power <= self.base_n {
+            vec![(BasisId(power), Rational::one())]
+        } else {
+            Vec::new()
+        })
+    }
+
+    fn stabilizing_divisor(&self, curve: &CurveClass) -> Result<Option<(BasisId, i64)>, GwError> {
+        self.curve_space.validate(curve)?;
+        let degree = curve.coordinates()[0];
+        Ok((self.base_n > 0 && degree > 0).then_some((BasisId(1), degree)))
     }
 
     fn characteristic_numbers(&self) -> Option<&CharacteristicNumbers> {

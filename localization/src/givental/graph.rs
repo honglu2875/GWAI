@@ -170,6 +170,13 @@ pub struct GiventalGraphKernel<C = RatFun> {
     translation: Vec<Vec<QSeries<C>>>,
     edge_options: Vec<Vec<Vec<EdgeFactorOption<C>>>>,
     vertex_cache: Mutex<HashMap<VertexContributionKey, Arc<QSeries<C>>>>,
+    // Symbolic graph contraction uses factored denominators.  Keeping the
+    // converted twin here is important when one provider evaluates a family
+    // of correlators (for example a Virasoro dependency closure): rebuilding
+    // it for every correlator also discarded its reusable vertex cache.
+    // The field is present on every coefficient specialization so the generic
+    // kernel remains one type; only the RatFun entry point initializes it.
+    factored_twin: OnceLock<Arc<GiventalGraphKernel<FactoredRatFun>>>,
 }
 
 impl<C: Coeff> GiventalGraphKernel<C> {
@@ -177,16 +184,64 @@ impl<C: Coeff> GiventalGraphKernel<C> {
     ///
     /// This performs the universal part of quantization:
     /// `R -> R^{-1}`, `R^{-1}1 -> T`, and `R^{-1},eta^{-1} ->` edge
-    /// propagators.  It does not inspect target geometry.
+    /// propagators.  The first step uses the `SeriesRMatrix` symplectic
+    /// contract
+    ///
+    /// `R(-z)^T eta R(z) = eta`,
+    ///
+    /// hence `(R^{-1})_k = (-1)^k eta^{-1} R_k^T eta`.  Because `eta` is the
+    /// diagonal canonical metric, this is implemented by row/column scaling
+    /// rather than dense matrix products.  It does not inspect target
+    /// geometry.
     pub fn from_calibration(
         calibration: SemisimpleCalibration<C>,
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
+        let profile = crate::env_flag("GW_PROFILE");
+        let started = std::time::Instant::now();
         let q_degree = calibration.r_matrix.q_degree();
-        let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
+        let stage = std::time::Instant::now();
+        let inverse_metric = constant_inverse_metric_diagonal(&calibration, q_degree)?;
+        let inverse_r = symplectic_inverse_r_coefficients(
+            &calibration.r_matrix,
+            &calibration.metric,
+            &inverse_metric,
+        )?;
+        if profile {
+            eprintln!(
+                "GW_PROFILE graph_kernel_inverse_r={:.3}s q_degree={} r_order={} colors={}",
+                stage.elapsed().as_secs_f64(),
+                q_degree,
+                calibration.r_matrix.z_order(),
+                calibration.r_matrix.size()
+            );
+        }
         let unit = calibration.relative_sqrt_delta_inverse.clone();
+        let stage = std::time::Instant::now();
         let translation = translation_coefficients(&inverse_r, &unit, q_degree);
-        Self::from_parts(calibration, inverse_r, translation, graph_dimension)
+        if profile {
+            eprintln!(
+                "GW_PROFILE graph_kernel_translation={:.3}s",
+                stage.elapsed().as_secs_f64()
+            );
+        }
+        let stage = std::time::Instant::now();
+        let kernel = Self::from_parts_with_inverse_metric(
+            calibration,
+            inverse_r,
+            translation,
+            inverse_metric,
+            graph_dimension,
+        )?;
+        if profile {
+            eprintln!(
+                "GW_PROFILE graph_kernel_edges={:.3}s graph_dimension={} total={:.3}s",
+                stage.elapsed().as_secs_f64(),
+                graph_dimension,
+                started.elapsed().as_secs_f64()
+            );
+        }
+        Ok(kernel)
     }
 
     /// Builds a graph kernel when a caller has already supplied `R^{-1}` and
@@ -201,12 +256,32 @@ impl<C: Coeff> GiventalGraphKernel<C> {
         graph_dimension: usize,
     ) -> Result<Self, GwError> {
         let q_degree = calibration.r_matrix.q_degree();
-        let edge_coefficients = edge_propagator_coefficients(
-            &inverse_r,
+        let inverse_metric = constant_inverse_metric_diagonal(&calibration, q_degree)?;
+        validate_canonical_metric_inverse(
             &calibration.metric,
-            graph_dimension,
+            &inverse_metric,
+            calibration.r_matrix.size(),
             q_degree,
         )?;
+        Self::from_parts_with_inverse_metric(
+            calibration,
+            inverse_r,
+            translation,
+            inverse_metric,
+            graph_dimension,
+        )
+    }
+
+    fn from_parts_with_inverse_metric(
+        calibration: SemisimpleCalibration<C>,
+        inverse_r: Vec<SeriesMatrix<C>>,
+        translation: Vec<Vec<QSeries<C>>>,
+        inverse_metric: Vec<QSeries<C>>,
+        graph_dimension: usize,
+    ) -> Result<Self, GwError> {
+        let q_degree = calibration.r_matrix.q_degree();
+        let edge_coefficients =
+            edge_propagator_coefficients(&inverse_r, &inverse_metric, graph_dimension, q_degree)?;
         let edge_options = edge_options_by_color(&edge_coefficients);
         Ok(Self {
             calibration,
@@ -214,6 +289,7 @@ impl<C: Coeff> GiventalGraphKernel<C> {
             translation,
             edge_options,
             vertex_cache: Mutex::new(HashMap::new()),
+            factored_twin: OnceLock::new(),
         })
     }
 
@@ -228,6 +304,45 @@ impl<C: Coeff> GiventalGraphKernel<C> {
     pub fn translation(&self) -> &[Vec<QSeries<C>>] {
         &self.translation
     }
+}
+
+/// Extracts the inverse of the constant canonical metric without performing a
+/// second symbolic inversion.
+///
+/// `SemisimpleCalibration::metric` stores the constant canonical metric, while
+/// `delta` stores the inverse metric norm as a Novikov series for the TFT
+/// vertex factors.  Its constant coefficient is therefore exactly the
+/// diagonal inverse needed by the edge propagator.  Re-inverting `metric`
+/// here is mathematically redundant and is particularly costly for coefficient
+/// rings which retain a sum of factored fractions.
+fn constant_inverse_metric_diagonal<C: Coeff>(
+    calibration: &SemisimpleCalibration<C>,
+    q_degree: usize,
+) -> Result<Vec<QSeries<C>>, GwError> {
+    let colors = calibration.metric.rows();
+    if calibration.metric.cols() != colors || calibration.delta.len() != colors {
+        return Err(GwError::ConventionMismatch(format!(
+            "canonical metric/delta shape mismatch: metric is {}x{}, delta has {} entries",
+            calibration.metric.rows(),
+            calibration.metric.cols(),
+            calibration.delta.len()
+        )));
+    }
+    calibration
+        .delta
+        .iter()
+        .map(|delta| {
+            delta
+                .coeff(0)
+                .cloned()
+                .map(|constant| QSeries::constant(constant, q_degree))
+                .ok_or_else(|| {
+                    GwError::ConventionMismatch(
+                        "canonical inverse-metric series has no constant coefficient".to_string(),
+                    )
+                })
+        })
+        .collect()
 }
 
 pub(crate) fn dimension_mismatch<P>(
@@ -878,7 +993,12 @@ where
 {
     let mut profile = GraphEvalProfile::new();
     let mut total = QSeries::<C>::zero(q_degree);
-    for prepared in graphs {
+    for (prepared_index, prepared) in graphs.iter().enumerate() {
+        let graph_started = Instant::now();
+        // Keep one graph's colorings together before merging it into the
+        // worker total. Besides making profile complexity attributable, this
+        // also lets coefficient rings combine like denominators locally.
+        let mut prepared_total = QSeries::<C>::zero(q_degree);
         for coloring_index in 0..prepared.colorings.len() {
             accumulate_scalar_coloring(
                 prepared,
@@ -888,10 +1008,22 @@ where
                 q_degree,
                 graph_dimension,
                 &mut vertex_cache,
-                &mut total,
+                &mut prepared_total,
                 &mut profile,
             );
         }
+        if profile.enabled {
+            eprintln!(
+                "GW_PROFILE scalar_graph[{prepared_index}]={:.3}s vertices={} edges={} colorings={} terms={} factors={}",
+                graph_started.elapsed().as_secs_f64(),
+                prepared.graph.vertices.len(),
+                prepared.graph.edges.len(),
+                prepared.colorings.len(),
+                prepared_total.complexity_terms(),
+                prepared_total.complexity_denominator_factors(),
+            );
+        }
+        total.add_assign(&prepared_total);
     }
     ScalarGraphChunkResult {
         total,
@@ -1052,6 +1184,7 @@ pub(crate) fn kernel_to_rational(
             })
             .collect::<Option<Vec<_>>>()?,
         vertex_cache: Mutex::new(HashMap::new()),
+        factored_twin: OnceLock::new(),
     })
 }
 
@@ -1191,7 +1324,17 @@ pub(crate) fn kernel_to_factored(
             })
             .collect(),
         vertex_cache: Mutex::new(HashMap::new()),
+        factored_twin: OnceLock::new(),
     }
+}
+
+fn cached_factored_kernel(
+    kernel: &GiventalGraphKernel,
+) -> Arc<GiventalGraphKernel<FactoredRatFun>> {
+    kernel
+        .factored_twin
+        .get_or_init(|| Arc::new(kernel_to_factored(kernel)))
+        .clone()
 }
 
 pub(crate) fn leg_options_to_factored(
@@ -1226,7 +1369,7 @@ pub(crate) fn evaluate_factored_graphs(
     graph_dimension: usize,
     profile: &mut GraphEvalProfile,
 ) -> QSeries {
-    let factored_kernel = Arc::new(kernel_to_factored(kernel));
+    let factored_kernel = cached_factored_kernel(kernel);
     let factored_leg_options = leg_options_to_factored(leg_options);
     let total = evaluate_scalar_graphs_parallel(
         graphs,
@@ -2688,11 +2831,14 @@ pub(crate) fn qseries_vector_complexity<C: Coeff>(vector: &[QSeries<C>]) -> (usi
     )
 }
 
+#[cfg(test)]
 pub(crate) fn inverse_r_coefficients<C: Coeff>(
     coefficients: &[SeriesMatrix<C>],
 ) -> Vec<SeriesMatrix<C>> {
-    // Formal inverse of R(z) with R_0 = 1.  The recurrence is the coefficient
-    // extraction of R(z) R(z)^{-1} = 1.
+    // Reference construction of the formal inverse of R(z) with R_0 = 1.
+    // The graph-kernel hot path instead uses the equivalent symplectic adjoint
+    // below.  Retaining this convolution gives tests an implementation which
+    // is independent of the symplectic identity.
     let size = coefficients[0].rows();
     let q_degree = coefficients[0].max_degree();
     let mut inverse = Vec::with_capacity(coefficients.len());
@@ -2705,6 +2851,131 @@ pub(crate) fn inverse_r_coefficients<C: Coeff>(
         inverse.push(total.neg());
     }
     inverse
+}
+
+/// Computes `R(z)^{-1}` from the symplectic adjoint of a canonical-frame
+/// `R`-matrix.
+///
+/// The [`SeriesRMatrix`] contract is
+/// `R(-z)^T eta R(z) = eta`, so
+///
+/// `(R^{-1})_k = (-1)^k eta^{-1} R_k^T eta`.
+///
+/// The canonical metric is diagonal.  Thus entry `(i,j)` only needs the two
+/// scalar series multiplications
+/// `eta_i^{-1} (R_k)_{j,i} eta_j`, avoiding dense products.  Unitarity itself
+/// is the provider's calibration contract and can be audited with
+/// [`SeriesRMatrix::check_unitarity`]; this routine validates every structural
+/// precondition and exact metric/inverse-metric coherence before indexing so
+/// malformed calibrations return an error rather than panicking.
+pub(crate) fn symplectic_inverse_r_coefficients<C: Coeff>(
+    r_matrix: &SeriesRMatrix<C>,
+    metric: &SeriesMatrix<C>,
+    inverse_metric_diagonal: &[QSeries<C>],
+) -> Result<Vec<SeriesMatrix<C>>, GwError> {
+    let size = r_matrix.size();
+    let q_degree = r_matrix.q_degree();
+    if size == 0
+        || r_matrix.coefficients().len() != r_matrix.z_order() + 1
+        || r_matrix.coefficients().iter().any(|coefficient| {
+            coefficient.rows() != size
+                || coefficient.cols() != size
+                || coefficient.max_degree() != q_degree
+        })
+    {
+        return Err(GwError::ConventionMismatch(
+            "R-matrix shape/truncation is invalid for symplectic inversion".to_string(),
+        ));
+    }
+    validate_canonical_metric_inverse(metric, inverse_metric_diagonal, size, q_degree)?;
+
+    if (0..size).any(|row| {
+        (0..size).any(|col| {
+            let entry = r_matrix.coefficients()[0].entry(row, col);
+            if row == col {
+                !entry.is_structurally_one()
+            } else {
+                !entry.is_structurally_zero()
+            }
+        })
+    }) {
+        return Err(GwError::ConventionMismatch(
+            "SeriesRMatrix must have R_0 = identity".to_string(),
+        ));
+    }
+
+    Ok(r_matrix
+        .coefficients()
+        .iter()
+        .enumerate()
+        .map(|(order, coefficient)| {
+            let entries = (0..size)
+                .map(|row| {
+                    (0..size)
+                        .map(|col| {
+                            let entry = inverse_metric_diagonal[row]
+                                .mul(coefficient.entry(col, row))
+                                .mul(metric.entry(col, col));
+                            if order % 2 == 0 {
+                                entry
+                            } else {
+                                entry.neg()
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            SeriesMatrix::from_entries(entries)
+        })
+        .collect())
+}
+
+fn validate_canonical_metric_inverse<C: Coeff>(
+    metric: &SeriesMatrix<C>,
+    inverse_metric_diagonal: &[QSeries<C>],
+    size: usize,
+    q_degree: usize,
+) -> Result<(), GwError> {
+    if metric.rows() != size
+        || metric.cols() != size
+        || metric.max_degree() != q_degree
+        || inverse_metric_diagonal.len() != size
+        || inverse_metric_diagonal
+            .iter()
+            .any(|entry| entry.max_degree() != q_degree)
+    {
+        return Err(GwError::ConventionMismatch(
+            "canonical metric/inverse-metric shape or q-truncation mismatch".to_string(),
+        ));
+    }
+
+    for row in 0..size {
+        for col in 0..size {
+            if row != col && !metric.entry(row, col).is_structurally_zero() {
+                return Err(GwError::ConventionMismatch(
+                    "symplectic fast inverse requires a diagonal canonical metric".to_string(),
+                ));
+            }
+        }
+    }
+
+    // The optimized adjoint and edge formulas receive the inverse metric
+    // through the constant terms of `delta`.  `SemisimpleCalibration` is
+    // publicly constructible, so reject incoherent inputs at both public
+    // kernel constructors instead of silently computing with a non-inverse.
+    // The structural branch is the allocation-free path used by normal
+    // providers; the exact fallback also accepts coefficient types with
+    // noncanonical representations of one.
+    let unit = QSeries::<C>::one(q_degree);
+    for color in 0..size {
+        let product = inverse_metric_diagonal[color].mul(metric.entry(color, color));
+        if !product.is_structurally_one() && !product.sub(&unit).is_zero() {
+            return Err(GwError::ConventionMismatch(
+                "the canonical metric and inverse-metric norm must be exact inverses".to_string(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn translation_coefficients<C>(
@@ -2734,7 +3005,7 @@ where
 
 pub(crate) fn edge_propagator_coefficients<C>(
     inverse_r: &[SeriesMatrix<C>],
-    metric: &SeriesMatrix<C>,
+    metric_inverse: &[QSeries<C>],
     max_power: usize,
     q_degree: usize,
 ) -> Result<Vec<Vec<Vec<Vec<QSeries<C>>>>>, GwError>
@@ -2746,39 +3017,73 @@ where
     //       / (psi_1 + psi_2).
     // This expands that quotient into coefficients of psi_1^a psi_2^b for
     // every pair of endpoint colors.
-    let size = metric.rows();
-    let mut metric_inverse = Vec::with_capacity(size);
-    for color in 0..size {
-        metric_inverse.push(metric.entry(color, color).inverse()?);
+    let size = metric_inverse.len();
+    if inverse_r.first().is_none_or(|matrix| {
+        matrix.rows() != size || matrix.cols() != size || matrix.max_degree() != q_degree
+    }) || metric_inverse
+        .iter()
+        .any(|entry| entry.max_degree() != q_degree)
+    {
+        return Err(GwError::ConventionMismatch(
+            "inverse metric/R-matrix shape or q-truncation mismatch".to_string(),
+        ));
     }
 
+    let profile = crate::env_flag("GW_PROFILE");
+    let coefficients_started = std::time::Instant::now();
     let mut out =
         vec![vec![vec![vec![QSeries::zero(q_degree); max_power + 1]; max_power + 1]; size]; size];
     for left_color in 0..size {
         for right_color in 0..size {
+            // Every numerator coefficient on the diagonal p + q <= D + 1
+            // occurs in several quotient coefficients.  Computing it inside
+            // the alternating sums below repeats the two matrix-entry
+            // products O(D) times; that is especially costly for factored
+            // coefficient rings.  Cache the triangular numerator table once
+            // for this ordered pair of endpoint colors.
+            let numerator_width = max_power + 2;
+            let mut numerators =
+                vec![vec![QSeries::zero(q_degree); numerator_width]; numerator_width];
+            for left_order in 1..numerator_width {
+                for right_order in 0..(numerator_width - left_order) {
+                    numerators[left_order][right_order] = edge_numerator_coefficient(
+                        inverse_r,
+                        metric_inverse,
+                        left_color,
+                        right_color,
+                        left_order,
+                        right_order,
+                        q_degree,
+                    );
+                }
+            }
+
             for left_power in 0..=max_power {
-                for right_power in 0..=max_power {
+                // A stable-graph contraction of dimension D never consumes an
+                // edge monomial psi_1^a psi_2^b with a + b > D.  Leave that
+                // unused half of the public rectangular table at zero.
+                for right_power in 0..=(max_power - left_power) {
                     let mut coefficient = QSeries::zero(q_degree);
                     for shift in 0..=right_power {
-                        let numerator = edge_numerator_coefficient(
-                            inverse_r,
-                            &metric_inverse,
-                            left_color,
-                            right_color,
-                            left_power + 1 + shift,
-                            right_power - shift,
-                            q_degree,
-                        );
+                        let numerator = &numerators[left_power + 1 + shift][right_power - shift];
                         coefficient = if shift % 2 == 0 {
-                            coefficient.sub(&numerator)
+                            coefficient.sub(numerator)
                         } else {
-                            coefficient.add(&numerator)
+                            coefficient.add(numerator)
                         };
                     }
                     out[left_color][right_color][left_power][right_power] = coefficient;
                 }
             }
         }
+    }
+    if profile {
+        eprintln!(
+            "GW_PROFILE graph_kernel_edge_coefficients={:.3}s colors={} max_power={}",
+            coefficients_started.elapsed().as_secs_f64(),
+            size,
+            max_power
+        );
     }
     Ok(out)
 }

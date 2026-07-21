@@ -271,10 +271,37 @@ pub(crate) fn metric_adjoint_descendant_s_matrix_with_inverse_coeff<C: Coeff>(
     flat_metric: &SeriesMatrix<C>,
     metric_inverse: &SeriesMatrix<C>,
 ) -> Result<SeriesSMatrix<C>, GwError> {
+    let size = s_matrix.size();
+    let q_degree = s_matrix.q_degree();
     let coefficients = s_matrix
         .coefficients()
         .iter()
-        .map(|matrix| metric_inverse.mul(&matrix.transpose()).mul(flat_metric))
+        .map(|matrix| {
+            // Birkhoff normalization gives S_0 = I exactly.  Multiplying
+            // eta^{-1} I eta is algebraically redundant, but over a factored
+            // coefficient ring it can materialize a large sum which is only
+            // recognized as I after expanding common denominators.  Preserve
+            // an already structural identity before taking the metric
+            // adjoint.  Nonidentity coefficients still follow the complete
+            // eta^{-1} S_k^T eta formula below.
+            let structural_identity = matrix.rows() == size
+                && matrix.cols() == size
+                && (0..size).all(|row| {
+                    (0..size).all(|col| {
+                        let entry = matrix.entry(row, col);
+                        if row == col {
+                            entry.is_structurally_one()
+                        } else {
+                            entry.is_structurally_zero()
+                        }
+                    })
+                });
+            if structural_identity {
+                SeriesMatrix::identity(size, q_degree)
+            } else {
+                metric_inverse.mul(&matrix.transpose()).mul(flat_metric)
+            }
+        })
         .collect::<Vec<_>>();
     SeriesSMatrix::from_coefficients(
         s_matrix.size(),
@@ -283,4 +310,94 @@ pub(crate) fn metric_adjoint_descendant_s_matrix_with_inverse_coeff<C: Coeff>(
         coefficients,
         CalibrationId(format!("{}-metric-adjoint", s_matrix.calibration().0)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::algebra::RatFun;
+    use crate::factored::FactoredRatFun;
+
+    #[test]
+    fn metric_adjoint_preserves_structural_identity_without_changing_other_modes() {
+        let a = FactoredRatFun::variable("a");
+        let one = FactoredRatFun::one();
+        let zero = FactoredRatFun::zero();
+        let determinant = &(&a * &a) - &one;
+        let inverse_determinant = &one / &determinant;
+        let metric = SeriesMatrix::constant(
+            vec![vec![a.clone(), one.clone()], vec![one.clone(), a.clone()]],
+            0,
+        );
+        let metric_inverse = SeriesMatrix::constant(
+            vec![
+                vec![&a * &inverse_determinant, -inverse_determinant.clone()],
+                vec![-inverse_determinant.clone(), &a * &inverse_determinant],
+            ],
+            0,
+        );
+        let identity = SeriesMatrix::<FactoredRatFun>::identity(2, 0);
+        let nonidentity =
+            SeriesMatrix::constant(vec![vec![one.clone(), one.clone()], vec![zero, one]], 0);
+
+        // This is the pre-optimization formula.  It is semantically I, but
+        // the cross-denominator cancellation is not a structural identity in
+        // the factored representation.
+        let expanded_identity_adjoint = metric_inverse.mul(&identity.transpose()).mul(&metric);
+        assert!(!expanded_identity_adjoint.entry(0, 0).is_structurally_one());
+        for row in 0..2 {
+            for col in 0..2 {
+                let expected = if row == col {
+                    RatFun::one()
+                } else {
+                    RatFun::zero()
+                };
+                assert_eq!(
+                    expanded_identity_adjoint
+                        .entry(row, col)
+                        .coeff(0)
+                        .unwrap()
+                        .to_ratfun(),
+                    expected
+                );
+            }
+        }
+
+        let old_nonidentity_adjoint = metric_inverse.mul(&nonidentity.transpose()).mul(&metric);
+        let s = SeriesSMatrix::from_coefficients(
+            2,
+            0,
+            1,
+            vec![identity.clone(), nonidentity],
+            CalibrationId("structural-identity-regression".to_string()),
+        )
+        .unwrap();
+        let adjoint =
+            metric_adjoint_descendant_s_matrix_with_inverse_coeff(s, &metric, &metric_inverse)
+                .unwrap();
+
+        assert_eq!(adjoint.coefficient(0).unwrap(), &identity);
+        for row in 0..2 {
+            for col in 0..2 {
+                assert_eq!(
+                    adjoint
+                        .coefficient(1)
+                        .unwrap()
+                        .entry(row, col)
+                        .coeff(0)
+                        .unwrap()
+                        .to_ratfun(),
+                    old_nonidentity_adjoint
+                        .entry(row, col)
+                        .coeff(0)
+                        .unwrap()
+                        .to_ratfun()
+                );
+            }
+        }
+        assert_ne!(
+            adjoint.coefficient(1).unwrap(),
+            &SeriesMatrix::identity(2, 0)
+        );
+    }
 }

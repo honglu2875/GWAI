@@ -638,6 +638,16 @@ fn factored_graph_path_matches_symbolic_evaluator() {
 }
 
 #[test]
+fn factored_graph_kernel_twin_is_reused_across_correlators() {
+    let provider = ProjectiveSpaceProvider::symbolic_equivariant(1);
+    let kernel = provider.graph_kernel(1, 2, 1).unwrap();
+    let first = cached_factored_kernel(kernel.as_ref());
+    let second = cached_factored_kernel(kernel.as_ref());
+
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[test]
 fn graph_kernel_constructor_matches_projective_kernel_builder() {
     let weights = [
         crate::core::algebra::Rational::from(2),
@@ -650,6 +660,270 @@ fn graph_kernel_constructor_matches_projective_kernel_builder() {
     assert_eq!(direct.inverse_r(), projective.inverse_r());
     assert_eq!(direct.translation(), projective.translation());
     assert_eq!(direct.calibration(), projective.calibration());
+}
+
+fn assert_series_matrix_semantically_equal<C: crate::core::algebra::Coeff>(
+    left: &SeriesMatrix<C>,
+    right: &SeriesMatrix<C>,
+) {
+    assert_eq!((left.rows(), left.cols()), (right.rows(), right.cols()));
+    assert_eq!(left.max_degree(), right.max_degree());
+    assert!(left.sub(right).is_zero());
+}
+
+#[test]
+fn symplectic_adjoint_inverse_matches_formal_recurrence_over_both_coefficient_rings() {
+    // This weighted P1 calibration has nonzero R_1, R_2, and R_3 and is
+    // unitary for a non-identity canonical metric, so neither transpose nor
+    // metric scaling is vacuous.
+    let weights = [
+        crate::core::algebra::Rational::from(2),
+        crate::core::algebra::Rational::from(5),
+    ];
+    let calibration = projective_space_j_calibration_at_lambda_weights(1, 1, 3, &weights).unwrap();
+    calibration
+        .r_matrix
+        .check_unitarity(&calibration.metric)
+        .unwrap();
+    let recurrence = inverse_r_coefficients(calibration.r_matrix.coefficients());
+    let kernel = GiventalGraphKernel::from_calibration(calibration.clone(), 1).unwrap();
+    assert_eq!(kernel.inverse_r().len(), recurrence.len());
+    for (fast, reference) in kernel.inverse_r().iter().zip(&recurrence) {
+        assert_series_matrix_semantically_equal(fast, reference);
+    }
+
+    let factored_calibration = calibration_to_factored(&calibration);
+    factored_calibration
+        .r_matrix
+        .check_unitarity(&factored_calibration.metric)
+        .unwrap();
+    let factored_recurrence = inverse_r_coefficients(factored_calibration.r_matrix.coefficients());
+    let factored_kernel = GiventalGraphKernel::from_calibration(factored_calibration, 1).unwrap();
+    assert_eq!(factored_kernel.inverse_r().len(), factored_recurrence.len());
+    for (fast, reference) in factored_kernel.inverse_r().iter().zip(&factored_recurrence) {
+        assert_series_matrix_semantically_equal(fast, reference);
+    }
+}
+
+#[test]
+fn symplectic_adjoint_inverse_rejects_malformed_shapes_without_indexing() {
+    let r = SeriesRMatrix::<RatFun>::identity(
+        2,
+        1,
+        1,
+        CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+    );
+    let metric = SeriesMatrix::<RatFun>::identity(2, 1);
+    let inverse_metric = vec![QSeries::<RatFun>::one(1); 2];
+
+    let wrong_metric = SeriesMatrix::<RatFun>::identity(1, 1);
+    assert!(matches!(
+        symplectic_inverse_r_coefficients(&r, &wrong_metric, &inverse_metric),
+        Err(GwError::ConventionMismatch(_))
+    ));
+
+    let wrong_inverse_truncation = vec![QSeries::<RatFun>::one(0); 2];
+    assert!(matches!(
+        symplectic_inverse_r_coefficients(&r, &metric, &wrong_inverse_truncation),
+        Err(GwError::ConventionMismatch(_))
+    ));
+
+    let wrong_inverse_value = vec![QSeries::constant(RatFun::from(2), 1); 2];
+    assert!(matches!(
+        symplectic_inverse_r_coefficients(&r, &metric, &wrong_inverse_value),
+        Err(GwError::ConventionMismatch(_))
+    ));
+
+    let mut malformed_r = r;
+    malformed_r.coefficients[1] = SeriesMatrix::<RatFun>::identity(1, 1);
+    assert!(matches!(
+        symplectic_inverse_r_coefficients(&malformed_r, &metric, &inverse_metric),
+        Err(GwError::ConventionMismatch(_))
+    ));
+}
+
+#[test]
+fn public_kernel_rejects_incoherent_metric_and_delta_constant() {
+    let q_degree = 0;
+    let identity = SeriesMatrix::<RatFun>::identity(1, q_degree);
+    let calibration = SemisimpleCalibration {
+        r_matrix: SeriesRMatrix::identity(
+            1,
+            q_degree,
+            0,
+            CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+        ),
+        metric: SeriesMatrix::constant(vec![vec![RatFun::from(2)]], q_degree),
+        psi: identity.clone(),
+        psi_inverse: identity.clone(),
+        connection: identity,
+        delta: vec![QSeries::constant(RatFun::from(3), q_degree)],
+        inverse_delta: vec![QSeries::constant(
+            RatFun::from_rational(crate::core::algebra::Rational::new(1, 3)),
+            q_degree,
+        )],
+        relative_sqrt_delta: vec![QSeries::one(q_degree)],
+        relative_sqrt_delta_inverse: vec![QSeries::one(q_degree)],
+    };
+
+    let inverse_r = vec![SeriesMatrix::<RatFun>::identity(1, q_degree)];
+    let translation = translation_coefficients(&inverse_r, &[QSeries::one(q_degree)], q_degree);
+    let from_parts_error =
+        GiventalGraphKernel::from_parts(calibration.clone(), inverse_r, translation, 0)
+            .unwrap_err();
+    assert!(matches!(
+        from_parts_error,
+        GwError::ConventionMismatch(message) if message.contains("exact inverses")
+    ));
+
+    let error = GiventalGraphKernel::from_calibration(calibration, 0).unwrap_err();
+    assert!(matches!(
+        error,
+        GwError::ConventionMismatch(message) if message.contains("exact inverses")
+    ));
+}
+
+#[test]
+fn public_kernel_accepts_novikov_dependent_delta_with_inverse_constant_metric() {
+    let q_degree = 1;
+    let identity = SeriesMatrix::<RatFun>::identity(1, q_degree);
+    let rational = |numerator, denominator| {
+        RatFun::from_rational(crate::core::algebra::Rational::new(numerator, denominator))
+    };
+    let calibration = SemisimpleCalibration {
+        r_matrix: SeriesRMatrix::identity(
+            1,
+            q_degree,
+            0,
+            CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+        ),
+        metric: SeriesMatrix::constant(vec![vec![rational(2, 1)]], q_degree),
+        psi: identity.clone(),
+        psi_inverse: identity.clone(),
+        connection: identity,
+        delta: vec![QSeries::from_coeffs(vec![rational(1, 2), rational(1, 1)])],
+        inverse_delta: vec![QSeries::from_coeffs(vec![rational(2, 1), rational(-4, 1)])],
+        relative_sqrt_delta: vec![QSeries::from_coeffs(vec![rational(1, 1), rational(1, 1)])],
+        relative_sqrt_delta_inverse: vec![QSeries::from_coeffs(vec![
+            rational(1, 1),
+            rational(-1, 1),
+        ])],
+    };
+
+    let kernel = GiventalGraphKernel::from_calibration(calibration, 1).unwrap();
+    assert_eq!(
+        kernel.calibration().delta[0].coeff(1),
+        Some(&rational(1, 1))
+    );
+}
+
+#[test]
+fn supplied_inverse_metric_builds_the_same_edge_propagator_as_direct_inversion() {
+    let weights = [
+        crate::core::algebra::Rational::from(2),
+        crate::core::algebra::Rational::from(5),
+    ];
+    let calibration = projective_space_j_calibration_at_lambda_weights(1, 1, 2, &weights).unwrap();
+    let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
+    let supplied = constant_inverse_metric_diagonal(&calibration, 1).unwrap();
+    let recomputed = (0..calibration.metric.rows())
+        .map(|color| calibration.metric.entry(color, color).inverse().unwrap())
+        .collect::<Vec<_>>();
+
+    let supplied_edges = edge_propagator_coefficients(&inverse_r, &supplied, 2, 1).unwrap();
+    let recomputed_edges = edge_propagator_coefficients(&inverse_r, &recomputed, 2, 1).unwrap();
+    assert_eq!(supplied_edges, recomputed_edges);
+}
+
+fn naive_bounded_edge_propagator_coefficients<C: Coeff>(
+    inverse_r: &[SeriesMatrix<C>],
+    metric_inverse: &[QSeries<C>],
+    max_power: usize,
+    q_degree: usize,
+) -> Vec<Vec<Vec<Vec<QSeries<C>>>>> {
+    let colors = metric_inverse.len();
+    let mut out =
+        vec![
+            vec![vec![vec![QSeries::zero(q_degree); max_power + 1]; max_power + 1]; colors];
+            colors
+        ];
+    for (left_color, by_right_color) in out.iter_mut().enumerate() {
+        for (right_color, by_left_power) in by_right_color.iter_mut().enumerate() {
+            for (left_power, by_right_power) in by_left_power.iter_mut().enumerate() {
+                for (right_power, slot) in by_right_power
+                    .iter_mut()
+                    .enumerate()
+                    .take(max_power - left_power + 1)
+                {
+                    let mut coefficient = QSeries::zero(q_degree);
+                    for shift in 0..=right_power {
+                        let numerator = edge_numerator_coefficient(
+                            inverse_r,
+                            metric_inverse,
+                            left_color,
+                            right_color,
+                            left_power + 1 + shift,
+                            right_power - shift,
+                            q_degree,
+                        );
+                        coefficient = if shift % 2 == 0 {
+                            coefficient.sub(&numerator)
+                        } else {
+                            coefficient.add(&numerator)
+                        };
+                    }
+                    *slot = coefficient;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn cached_edge_numerators_match_naive_bounded_quotient_expansion() {
+    let weights = [
+        crate::core::algebra::Rational::from(2),
+        crate::core::algebra::Rational::from(5),
+    ];
+    let q_degree = 1;
+    let max_power = 3;
+    let calibration =
+        projective_space_j_calibration_at_lambda_weights(1, q_degree, 4, &weights).unwrap();
+    let inverse_r = inverse_r_coefficients(calibration.r_matrix.coefficients());
+    let metric_inverse = constant_inverse_metric_diagonal(&calibration, q_degree).unwrap();
+
+    let optimized =
+        edge_propagator_coefficients(&inverse_r, &metric_inverse, max_power, q_degree).unwrap();
+    let reference = naive_bounded_edge_propagator_coefficients(
+        &inverse_r,
+        &metric_inverse,
+        max_power,
+        q_degree,
+    );
+    assert_eq!(optimized, reference);
+
+    // Exercise the generic implementation over the factored coefficient ring
+    // used by symbolic twisted graph kernels, not only over expanded RatFun.
+    let factored_inverse_r = inverse_r
+        .iter()
+        .map(series_matrix_to_factored)
+        .collect::<Vec<_>>();
+    let factored_metric_inverse = qseries_slice_to_factored(&metric_inverse);
+    let optimized_factored = edge_propagator_coefficients(
+        &factored_inverse_r,
+        &factored_metric_inverse,
+        max_power,
+        q_degree,
+    )
+    .unwrap();
+    let reference_factored = naive_bounded_edge_propagator_coefficients(
+        &factored_inverse_r,
+        &factored_metric_inverse,
+        max_power,
+        q_degree,
+    );
+    assert_eq!(optimized_factored, reference_factored);
 }
 
 #[test]
@@ -875,6 +1149,76 @@ fn factored_identity_kernel(
         Arc::new(GiventalGraphKernel::from_calibration(calibration, graph_dimension).unwrap()),
         scalar,
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NoDivisionCoeff(crate::core::algebra::Rational);
+
+impl Coeff for NoDivisionCoeff {
+    fn zero() -> Self {
+        Self(crate::core::algebra::Rational::zero())
+    }
+
+    fn one() -> Self {
+        Self(crate::core::algebra::Rational::one())
+    }
+
+    fn from_rational(value: crate::core::algebra::Rational) -> Self {
+        Self(value)
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0.is_zero()
+    }
+
+    fn neg(&self) -> Self {
+        Self(-self.0.clone())
+    }
+
+    fn add(&self, rhs: &Self) -> Self {
+        Self(self.0.clone() + rhs.0.clone())
+    }
+
+    fn sub(&self, rhs: &Self) -> Self {
+        Self(self.0.clone() - rhs.0.clone())
+    }
+
+    fn mul(&self, rhs: &Self) -> Self {
+        Self(self.0.clone() * rhs.0.clone())
+    }
+
+    fn div(&self, _rhs: &Self) -> Self {
+        panic!("the graph kernel redundantly inverted its supplied metric")
+    }
+}
+
+#[test]
+fn edge_builder_reuses_the_calibration_inverse_metric() {
+    // With identity R there is no other division in kernel construction.  The
+    // coefficient deliberately refuses division, so this regression detects a
+    // return to re-inverting `metric` instead of using the inverse metric norm
+    // already carried by `delta`.
+    let q_degree = 0;
+    let scalar = QSeries::<NoDivisionCoeff>::one(q_degree);
+    let matrix = SeriesMatrix::<NoDivisionCoeff>::identity(1, q_degree);
+    let calibration = SemisimpleCalibration {
+        r_matrix: SeriesRMatrix::identity(
+            1,
+            q_degree,
+            0,
+            CanonicalFrameConvention::NormalizedCanonicalIdempotents,
+        ),
+        metric: matrix.clone(),
+        psi: matrix.clone(),
+        psi_inverse: matrix.clone(),
+        connection: matrix,
+        delta: vec![scalar.clone()],
+        inverse_delta: vec![scalar.clone()],
+        relative_sqrt_delta: vec![scalar.clone()],
+        relative_sqrt_delta_inverse: vec![scalar],
+    };
+
+    GiventalGraphKernel::from_calibration(calibration, 2).unwrap();
 }
 
 #[test]

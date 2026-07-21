@@ -50,13 +50,16 @@ jobs:
       - name: Test optional GMP rational backend
         run: cargo test --locked --features gmp-rational
 
+      - name: Audit acceptance-test registry
+        run: scripts/run-acceptance-tests.sh --audit-only --all-features
+
       - name: Rustdoc, all features (deny warnings)
         run: cargo doc --locked --all-features --no-deps
         env:
           RUSTDOCFLAGS: "-D warnings"
 
   latest-stable:
-    name: latest stable + ignored acceptance tests
+    name: latest stable
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -79,8 +82,53 @@ jobs:
       - name: Clippy all features on latest stable
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
 
-      - name: Run ignored reference and acceptance tests, default features
-        run: cargo test --locked -- --ignored
 
-      - name: Run ignored reference and acceptance tests, all features
-        run: cargo test --locked --all-features -- --ignored
+  scheduled-acceptance:
+    name: scheduled acceptance (${{ matrix.backend }})
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    # The runner continues after a per-case timeout and needs enough job-level
+    # headroom to write/upload every later result even if several cases hang.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: default
+            feature_args: ""
+          - backend: all-features
+            feature_args: "--all-features"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: localization
+
+      - name: Run curated scheduled mathematical holdouts
+        run: >-
+          scripts/run-acceptance-tests.sh
+          --suite scheduled
+          --profile acceptance
+          --timeout-seconds 480
+          ${{ matrix.feature_args }}
+          --output-dir target/acceptance-tests/${{ matrix.backend }}
+
+      - name: Publish acceptance summary
+        if: always()
+        run: |
+          if test -f target/acceptance-tests/${{ matrix.backend }}/summary.md; then
+            cat target/acceptance-tests/${{ matrix.backend }}/summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload acceptance reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathematical-acceptance-${{ matrix.backend }}
+          path: localization/target/acceptance-tests/${{ matrix.backend }}/
+          if-no-files-found: warn

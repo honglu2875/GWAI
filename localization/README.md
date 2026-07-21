@@ -2,7 +2,8 @@
 
 Experimental exact computations for Gromov-Witten invariants of projective
 spaces, products, projective bundles, and negative split-bundle twists, with
-exact symbolic Virasoro auditing for the compact theories.
+exact symbolic Virasoro auditing for compact theories and QRR-conjugated
+inverse-Euler `L_0` auditing for local theories.
 
 Run commands through Cargo from the repository root:
 
@@ -45,6 +46,21 @@ The optional GMP rational backend is behind a feature flag:
 ```bash
 cargo test --quiet --features gmp-rational
 ```
+
+Curated mathematical holdouts and regression fixtures have a separate timed
+runner and machine-readable registry.  Normal push CI audits that registry
+without repeating the slow cases; the cumulative suite is intended for
+scheduled CI:
+
+```bash
+scripts/run-acceptance-tests.sh --suite push
+scripts/run-acceptance-tests.sh --suite scheduled --profile acceptance
+```
+
+See [docs/acceptance-testing.md](docs/acceptance-testing.md) for categories,
+per-test JSONL/Markdown reports, and the ignored-test coverage guard.  The
+separate [oracle coverage audit](docs/oracle-coverage.md) records which checks
+are algorithmically independent and which still share production machinery.
 
 ## Insertions
 
@@ -179,6 +195,10 @@ Expected outputs:
 0
 -7/480
 ```
+
+These three `O(-1) -> P^2` constants are retained as regression fixtures.  The
+original localization derivation was not archived, so the oracle inventory
+does not count them as independently sourced validation.
 
 Local `P^2 = O(-3) -> P^2`, no insertions:
 
@@ -399,8 +419,9 @@ zero, for the same `xi`-coordinate reason described under `bundle` above.
 
 Two negative-split selectors have deliberately different meanings:
 
-- `--n N --local-twist ...` names the local theory itself and returns the
-  explicit QRR-required error described below; and
+- `--n N --local-twist ...` names the local theory itself.  `formula` and
+  `check` support its fixed-fiber-equivariant, QRR-conjugated inverse-Euler
+  `L_0`; other operator indices fail closed; and
 - `--n N --local-completion-twist ...` audits its distinguished section inside
   a compact projective bundle.  It generates the ordinary compact-completion
   equation, not a QRR-conjugated local Virasoro equation.
@@ -461,6 +482,36 @@ cargo run --quiet -- virasoro scan --n 1 --bundle-twists 0,1 \
   --markings-max 2 --descendant-max 0 --equation-limit 100
 ```
 
+Direct inverse-Euler QRR example:
+
+```bash
+# Prints the general QRR identity, its closed inverse-Euler L_0 modes, and
+# the unmarked genus-two, degree-one coefficient equation without querying
+# an invariant backend.  Omitting --insert selects the empty time monomial.
+cargo run --quiet -- virasoro formula --n 2 --local-twist -2 \
+  --k 0 --g 2 --d 1
+
+# Specializes that symbolic equation and its backend to the exact frozen
+# fiber weight mu_0=7, then evaluates the residual.
+cargo run --quiet -- virasoro check --n 2 --local-twist -2 \
+  --k 0 --g 2 --d 1 --fiber-weights 7 --show-formula
+```
+
+The formula artifact keeps the fiber weights `mu_i` symbolic and frozen in the
+coefficient field; this fixed-parameter operator has no `mu_i d/dmu_i` Euler
+term.  `--fiber-weights` accepts one exact, nonzero rational value per summand,
+for example `7` or `3/2,5`.  It specializes the already-generated symbolic
+constraint and records the named assignments rather than replacing the
+formula with a separate numerical construction.  Setting `mu_i=0` termwise is
+invalid; a nonequivariant limit is meaningful only after cancellation in an
+appropriate coefficient.
+
+For `O(-2) -> P^2`, the selected unmarked `g=2`, `d=1` equation reaches the
+positive QRR modes `z^1`, `z^3`, and `z^5`.  Its genus-reduction and
+degree-splitting sectors both contain live `mu_0`-dependent contributions.
+The scheduled acceptance suite evaluates the exact specialization `mu_0=7`,
+including stable degree-zero and positive-degree twisted graph sectors.
+
 Negative-split projective-completion example:
 
 ```bash
@@ -485,9 +536,10 @@ check incomplete rather than being treated as zero.  Insertions use bundle
 syntax such as `tau1(H*xi)`.
 
 This completion audit is particularly useful for testing high-genus twisted
-values, but it is not generic twisted Virasoro.  Arbitrary multiplicative
-twists still require the twisted pairing, degree-zero sector, and the
-Quantum-Riemann--Roch-conjugated operators.  See
+values, but it is not the direct twisted Virasoro theory.  The direct local
+path above is a genuine QRR specialization, currently for inverse Euler and
+`L_0`; arbitrary multiplicative twists still require provider-owned
+characteristic data and a compatible degree-zero evaluator.  See
 [docs/virasoro.md](docs/virasoro.md) for the precise boundary.
 
 The point scan above reports 90 verified-zero equations, of which 26 are
@@ -580,21 +632,20 @@ with missing dependencies is still `Incomplete`, not `Nonzero`.  `check`
 exits successfully only for `VerifiedZero`; `scan` exits successfully only
 when every generated equation is verified zero.
 
-Direct negative-split/local targets are deliberately refused by the compact
-checker.  For example,
+Direct negative-split/local targets deliberately bypass the compact checker.
+The supported operator is currently `L_0`; for example, asking for `L_1`
 
 ```bash
 cargo run --quiet -- virasoro check --n 2 --local-twist -3 \
-  --k 0 --g 1 --d 0
+  --k 1 --g 2 --d 1
 ```
 
-reports that local Virasoro generation requires the twisted pairing and the
-Quantum Riemann--Roch-conjugated operator.  The CLI does not substitute an
-ordinary compact operator built from the noncompact total-space dimension and
-`c_1`.  The separately named `--local-completion-twist` mode instead makes its
-compact target explicit, so it does not change this refusal or claim to be a
-generic local operator.  See [docs/virasoro.md](docs/virasoro.md) for the QRR
-boundary and the precise Getzler convention.
+reports that higher local operators still require full differential-operator
+conjugation.  The CLI never substitutes an ordinary compact operator built
+from the noncompact total-space dimension and `c_1`.  The separately named
+`--local-completion-twist` mode instead makes its compact target explicit.
+See [docs/virasoro.md](docs/virasoro.md) for the QRR formulas, the opposite
+Coates--Givental/Getzler hat signs, and the precise support boundary.
 
 ## `formula`
 
@@ -973,7 +1024,9 @@ does not retain every large calibration forever.  Stable-graph caches have a
 separate hard work envelope; prepared coloring metadata is target-rank
 dependent and therefore uses smaller deterministic eight-entry caches.  Only
 universal graph-topology tables and the shared point-theory table remain
-process-wide and are not byte-bounded.
+process-wide and are not byte-bounded.  A cached symbolic graph kernel also
+owns one lazily converted factored twin, preserving its vertex cache across
+the many correlators in a constraint audit.
 
 ## TODO
 
@@ -985,9 +1038,9 @@ process-wide and are not byte-bounded.
   Birkhoff-projected bundle cone point with higher-primary `z^-1` coordinates
   to the small quantum slice; until then those bundle presentations fail
   closed rather than feeding a big-quantum path to divisor reconstruction.
-- Add the twisted pairing, degree-zero twisted sector, and independently
-  generated QRR-conjugated Virasoro operators needed to audit
-  negative-split/local theories without misusing the compact operator.
+- Extend the provider-owned QRR specialization beyond inverse-Euler `L_0` to
+  higher Virasoro modes and arbitrary multiplicative classes, preserving the
+  twisted pairing, degree-zero sector, and projective quantization cocycle.
 - Route the twisted and series/master equivariant paths through the same
   factored kernel construction the ordinary equivariant path now uses.
 - Speed up high-genus stable-graph generation further: the remaining cost is

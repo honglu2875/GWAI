@@ -3,8 +3,10 @@
 //!
 //! These guard the twisted (negative split-bundle), ordinary Givental, and
 //! Witten-Kontsevich paths against silent numerical drift. Each value here is a
-//! documented or independently published output; if one changes, either the
-//! corresponding reference/convention or a computation path regressed.
+//! documented regression output or independently published output; the oracle
+//! provenance inventory distinguishes those evidence levels. If one changes,
+//! either the corresponding fixture/reference/convention or a computation
+//! path regressed.
 
 use gw_pn::algebra::{RatFun, Rational};
 use gw_pn::geometry::CohomologyClass;
@@ -75,6 +77,7 @@ fn twisted_local_p2_g2_d3() {
 }
 
 #[test]
+#[ignore = "slow published local-P2 higher-genus acceptance grid"]
 fn twisted_local_p2_matches_published_higher_genus_grid() {
     // Coates-Iritani, "Gromov-Witten Invariants of Local P^2 and Modular
     // Forms", Appendix C, Tables 2 and 3 (arXiv:1804.03292).

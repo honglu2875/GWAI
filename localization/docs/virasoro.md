@@ -195,10 +195,11 @@ nonsection classes and fail closed; focused `formula` and `check` requests in
 section classes are the intended high-genus audit interface.
 
 This construction is not the Virasoro conjecture for an arbitrary twisted
-theory.  The direct `--local-twist` selector remains refused by the ordinary
-compact generator.  Genuine twisted Virasoro operators require conjugating
-by Quantum Riemann--Roch and representing the twisted pairing and degree-zero
-sector; none of those data are silently replaced by the compact completion.
+theory.  It remains separate from the direct `--local-twist` path: the latter
+now has an actual QRR-conjugated inverse-Euler `L_0` generator, twisted
+pairing, and stable degree-zero evaluator, whereas the completion path checks
+ordinary compact Virasoro equations.  Neither path is silently substituted
+for the other, and direct local operators other than `L_0` still fail closed.
 See [Coates--Givental, *Quantum Riemann--Roch, Lefschetz and
 Serre*](https://arxiv.org/abs/math/0110142) for that conjugation framework.
 Ordinary Virasoro constraints for the compact toric-bundle target are covered
@@ -344,30 +345,186 @@ its compact base.  It is not the ordinary compact GW theory of the
 noncompact total space, so substituting the total-space dimension and
 `c_1` into Getzler's compact operator is not valid.
 
-For a multiplicative class `c` and bundle `E`, Quantum Riemann--Roch changes
-the pairing and Fock coordinate to
+For a multiplicative class
+
+```text
+c(V) = exp(sum_(k>=0) s_k ch_k(V))
+```
+
+and a bundle `E`, Quantum Riemann--Roch changes the pairing and identifies the
+twisted Fock coordinate with the ordinary one by
 
 ```text
 (a,b)_tw = integral_X c(E) a b,
-q_tw(z)  = sqrt(c(E)) (t(z)-z),
+q_CG(z)  = sqrt(c(E)) (t(z)-z).
 ```
 
-and relates the potentials by a quantized Bernoulli/Chern-character
-operator `Delta`.  The appropriate fixed-parameter annihilator is therefore
+Define
 
 ```text
-L_m^tw = Delta_hat L_m^base Delta_hat^-1,
+A_- = sum_(l>0) s_(l-1) ch_l(E) z^-1,
+A_+ = sum_(m>0,l>=0)
+        s_(2m-1+l) B_(2m)/(2m)! ch_l(E) z^(2m-1).
+```
+
+In the Coates--Givental Hamiltonian convention,
+
+```text
+U_(c,E) = exp(hat_CG(A_+)) exp(hat_CG(A_-)).
+```
+
+The crate's Getzler normal-order map has the opposite infinitesimal sign, so
+the same differential operator is
+
+```text
+U_(c,E) = exp(-hat_G(A_+)) exp(-hat_G(A_-)).
+```
+
+Recording both signs is essential; copying the first display into the
+Getzler coordinate implementation would conjugate in the wrong direction.
+The appropriate fixed-parameter annihilator is
+
+```text
+L_m^tw = U_(c,E) L_m^base U_(c,E)^-1,
 ```
 
 not the ordinary `L_m` for a putative total space.  See
 [Coates--Givental, *Quantum Riemann--Roch, Lefschetz and
-Serre*](https://arxiv.org/abs/math/0110142), especially Theorem 1.
+Serre*](https://arxiv.org/abs/math/0110142), especially Theorem 1 and
+equation (7).  The QRR genus-one determinant changes the partition function
+by a central scalar; it cancels from this operator conjugation and is therefore
+not a missing term in `L_m^tw`.
+
+### Symbolic artifact
+
+`QrrConjugationFormula` is a backend-independent, public representation of
+the two Hamiltonians above.  Its finite term table records the exact
+Bernoulli multiplier, Chern-character index, characteristic-parameter index,
+and loop-space power of every retained term; its text and TeX renderers also
+print the untruncated formal identity, pairing, Fock-space identification,
+operator order, both hat conventions, and source.  It is intended to be
+inspectable before a target backend or an invariant is selected.
+
+The negative-split provider specializes that artifact to the inverse-Euler
+class of
+
+```text
+E = direct sum_i O(-a_i) over P^n,
+u_i = mu_i - a_i H,
+c(E) = product_i u_i^-1.
+```
+
+The first closed specialization is `L_0`.  After pullback to native twisted
+coordinates, where `q_tw=t-z`, it is
+
+```text
+B_0 = L_0^(P^n) + sum_r K_r(H) z^r,
+
+K_-1 = sum_i sum_(l=2)^n a_i^l H^l/(l mu_i^(l-1)),
+K_0  = 1/2 sum_i sum_(l=1)^n a_i^l H^l/mu_i^l,
+K_(2m-1) = B_(2m)/(2m) sum_i mu_i/u_i^(2m).
+```
+
+All raised and lowered tensors use the twisted pairing.  Positive modes add
+both connected genus-reduction terms and every labelled genus/degree/marking
+splitting.  The possible new `L_0` projective quantization cocycle is the
+trace of nilpotent multiplication and vanishes; the ordinary `P^n` anomaly
+remains.  The positive odd mode cutoff is not a global heuristic.  For one
+coefficient, with base virtual dimension `V` and external insertion degree
+`D_M`, vector terms require `r <= V-D_M`, and second-order terms require
+`r <= V-D_M+n`.  Construction refuses a requested expansion beyond the
+public mode cap before allocating it.
+
+This finite bound remains valid with symbolic fiber weights for a specific
+inverse-Euler reason; it is not the ordinary nonequivariant dimension-equality
+shortcut.  After the base-equivariant parameter tends to zero,
+`1/e(R pi_* E)` has an expansion
+`sum_(j>=0) mu^(-chi(E)-j) c_j`, with `c_j` of ordinary codimension `j`
+(and the corresponding multi-index expansion for a split bundle).  A
+correlator with insertion degree `D_M` can therefore be nonzero only when
+`D_M+j=V`, so in particular `D_M<=V`.  For a genus-reduction or splitting
+term, the sum of the boundary-stratum base virtual dimensions is `V+n-1`;
+the positive mode contributes total psi degree `r-1`.  This gives the stated
+second-order bound `r<=V-D_M+n`.  A different multiplicative class needs its
+own finiteness proof before this specialization strategy can be reused.
+
+The same provider owns evaluation.  It keeps each `mu_i` symbolic, evaluates
+stable degree-zero twisted correlators, and evaluates positive degree through
+the fiber-equivariant hypergeometric/Birkhoff/Givental backend.  Positive
+degree does not make the underlying pointed curve stable: genus-zero one- and
+two-point dependencies generated by QRR are reconstructed with the full
+descendant divisor equation, including cup-product correction branches.
+Unsupported or failed dependencies make the residual `Incomplete`.
+
+This is a fixed-parameter Virasoro operator: each `mu_i` is frozen in the
+coefficient field, and there is no `mu_i d/dmu_i` term.  An extended
+equivariantly homogeneous Euler operator would be a different convention.
+
+The public specialization artifact can evaluate those frozen parameters at
+an exact rational point without losing provenance.  In outline:
+
+```rust
+let evaluator = NegativeSplitFixedFiberQrrEvaluator::new(n, degrees, mu_values)?;
+let specialized = evaluator.specialize_constraint(&symbolic_constraint)?;
+let report = evaluate_constraint(&evaluator, specialized.constraint());
+```
+
+`SpecializedVirasoroConstraint` retains the theory fingerprint, operator,
+sector, time coefficient, conventions, and formula source verbatim, and
+separately records the named `mu_i` assignments.  Every declared parameter
+must be present; unknown names and coefficient poles fail closed.  The paired
+provider fixes the nonzero fiber weights before calibration but keeps
+`lambda_i=w_i lambda_0` symbolic through each complete graph sum, making the
+graph arithmetic univariate before the final `lambda_0 -> 0` limit.  This
+is evaluation at a point of the fiber-equivariant coefficient field, not the
+ordinary all-weights nonequivariant limit, so the equivariant dimension policy
+and the inverse-Euler upper-bound pruning remain in force.  Focused tests
+compare stable degree-zero and positive-degree values with the fully symbolic
+factored evaluator followed by the same exact `mu_i` substitution.
+
+For example, the complete symbolic operator and a coefficient equation can
+be rendered without evaluating any correlator:
+
+```bash
+cargo run --quiet -- virasoro formula --n 2 --local-twist -2 \
+  --k 0 --g 2 --d 1
+```
+
+Here the absence of `--insert` selects the unmarked (empty time-monomial)
+coefficient.  The resulting genus-two, degree-one equation contains the
+positive QRR modes `z^1`, `z^3`, and `z^5`; both its genus-reduction and its
+degree-splitting sector have live coefficients depending on `mu_0`.
+
+The exact residual check uses the same operator object and cutoff, then
+specializes both the equation and its backend to `mu_0=7`:
+
+```bash
+cargo run --quiet -- virasoro check --n 2 --local-twist -2 \
+  --k 0 --g 2 --d 1 --fiber-weights 7 --show-formula
+```
+
+`--fiber-weights` parses exact nonzero rationals, not floating-point
+approximations: a rank-one value may be `7` or `7/2`, while a rank-two twist
+could use `3/2,5`.  Formula generation remains symbolic; specialization is a
+separate, provenance-preserving step used to turn the human-readable artifact
+into an executable invariant test.
+
+The `mu_0=7` check is a scheduled acceptance test because its stable
+degree-zero and positive-degree genus-two graph sectors are intentionally
+expensive.  The acceptance registry runs it per case with a timeout and
+durable JSONL and Markdown reports.
 
 For inverse Euler classes the fiber-equivariant parameters must remain
 invertible while the conjugated equation is formed; a non-equivariant limit
 can be taken only after cancellation.  The twisted metric, degree-zero
 sector, quantization scalar, and specialization order are all part of the
-convention.  Until a backend supplies that QRR-conjugated operator and the
-required degree-zero twisted correlators, a negative-split/local request is
-reported as unsupported or incomplete, never checked with the compact
-operator.
+convention.  Setting `mu_i=0` term by term in the operator is not a valid
+Fock-space specialization.
+
+The current implementation boundary is deliberate: inverse-Euler `L_0` is
+specialized and evaluable; arbitrary multiplicative classes have the general
+symbolic QRR artifact but need theory/provider-owned characteristic data and
+degree-zero evaluators before they can become invariant tests.  Higher
+`L_m` operators require exact differential-operator conjugation, including
+the projective quantization cocycle, rather than reusing the closed `L_0`
+formula.  Those requests fail closed.

@@ -28,7 +28,27 @@ scripts/run-perf-frontiers.sh --baseline target/perf-frontiers/baseline.csv --ca
 
 # Broader frontier pass when a change looks promising.
 scripts/run-perf-frontiers.sh --baseline target/perf-frontiers/baseline.csv
+
+# Attribute the three representative algebra/contraction hotspots.  Parsed
+# phase events are written to profile_samples in latest.jsonl and latest.csv.
+scripts/run-hotspot-profile.sh --release --repeat 3
 ```
+
+The hotspot profile is dependency-light: it reuses the CLI and the existing
+`GW_PROFILE` instrumentation.  The `F_2` row requires both
+`bundle_bidegree_birkhoff` and `graphs`; the ordinary `P^3` row requires
+`graphs`.  A bounded `P^1`, inverse-Euler `O(-2)` row requires markers for the
+fixed-fiber QRR correlator, factored calibration, graph-kernel edges,
+lambda-line limit, and graph contraction.  It uses the exact specialization
+`mu=7` at `g=1`, `d=1`, with insertion `H`, keeping it suitable for performance
+runs rather than duplicating the slow genus-two acceptance holdout.  A
+successful row therefore certifies that it still reached the intended path
+rather than merely timing setup or a shortcut.  The JSONL preserves repeated
+per-ray and per-correlator events in order; do not replace them by a single sum
+when diagnosing parallel ray work.  Compare hotspot runs with other
+profile-enabled baselines: emitting hundreds of events adds stderr overhead,
+so their end-to-end times are not interchangeable with ordinary frontier
+runs.
 
 Useful environment defaults for the wrapper:
 
@@ -40,6 +60,7 @@ GW_PERF_REPEAT=1
 GW_PERF_GRAPH_CACHE_MODE=shared
 GW_PERF_FEATURES=
 GW_PERF_ALL_FEATURES=
+GW_PERF_CAPTURE_PROFILE=
 ```
 
 The passes below were run on 2026-07-06 with:
@@ -58,6 +79,16 @@ scripts/run-perf-frontiers.sh --suite extended --case formula_g4_m1 --timeout 90
 # New frontier probes after graph generation stopped dominating the sampled suite.
 GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-formula-g4m2-20260706 timeout 90s target/debug/gw-pn formula --g 4 --markings 2 --n 2 --d 2 --max-descendant 1 --no-glossary
 GWAI_GRAPH_CACHE_DIR=/tmp/gwai-frontier-rank3-bundle-d4-20260706 timeout 90s target/debug/gw-pn bundle --n 1 --twists 5,4,0 --g 0 --d 4 --insert 'H*xi^2' --insert H --insert H --weights-base 1,2 --weights-fiber 0,10,30
+```
+
+The timestamped July 6 artifacts predate the CLI's fail-closed normalization
+rule and include historical mixed-sign rank-three presentations.  The current
+reusable suite replaces those no-longer-runnable commands with normalized,
+supported `P(O+O+O(1))` probes; do not compare their timings as like-for-like
+baselines.  The current rank-three command shape is:
+
+```sh
+scripts/run-perf-frontiers.sh --suite extended --case rank3_bundle_g0_d4_fiber_points
 ```
 
 Raw local artifacts from these runs:
@@ -106,7 +137,7 @@ scripts/run-perf-frontiers.sh --release --features gmp-rational --graph-cache-mo
 | givental | `P^3`, `g=2`, `d=2`, `tau6(H^3)` | 0.141s | 0.060s | 2.34x |
 | product | `P^1 x P^1`, `g=2`, total `d=3`, `tau6(point)` | 0.233s | 0.095s | 2.44x |
 | bundle | `P(O+O(2))`, `g=1`, shifted `d=5`, three `tau1(point)` | 0.615s | 0.184s | 3.34x |
-| bundle | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3` | 0.556s | 0.113s | 4.94x |
+| bundle | historical `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3` | 0.556s | 0.113s | 4.94x |
 | twisted | local `P^2`, `O(-3)`, `g=2`, `d=3` | 0.131s | 0.048s | 2.72x |
 | twisted | `P^2`, `O(-1)`, factored equivariant, `g=0`, `d=1` | 0.009s | 0.007s | 1.20x |
 
@@ -146,7 +177,7 @@ system dependency is acceptable.
 | product | dimension | `P^1 x P^2`, `g=1`, total `d=2`, `tau3(H1*H2^2)` | 1.84s | 1.82s | ok | Color count matters but is not dominant yet. |
 | bundle | degree | `P(O+O(2))`, `g=0`, shifted `d=3`, three primaries | 1.07s | 1.06s | ok | Non-Fano positive-z baseline. |
 | bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=5`, three `tau1(point)` | 17.01s | 17.00s | ok | Still visible but below the one-minute frontier. |
-| bundle | twist rank | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3`, primary ruling | 22.25s | 22.09s | ok | Parallel bidegree Birkhoff moved this down, but bundle setup remains visible. |
+| bundle | twist rank | historical `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=3`, primary ruling | 22.25s | 22.09s | ok | Parallel bidegree Birkhoff moved this down, but bundle setup remains visible. |
 
 ## New Frontier Probes
 
@@ -167,7 +198,7 @@ system dependency is acceptable.
 | series | markings/psi | `P^2`, `g=1`, `d<=2`, `m<=5`, `psi<=3` | 90.02s | timeout | One extra marking crosses the cutoff. |
 | bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=7`, three `tau1(point)` | 46.50s | ok | Below frontier. |
 | bundle | genus/degree | `P(O+O(2))`, `g=1`, shifted `d=8`, three `tau1(point)` | 67.48s | ok | Clear F2 bundle frontier after bounded one-variable Birkhoff. |
-| bundle | twist rank | `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=4`, primary ruling | 54.17s | ok | Improved from 73.23s by bounded one-variable Birkhoff. |
+| bundle | twist rank | historical `P(O(2)+O(1)+O(-3))`, `g=0`, shifted `d=4`, primary ruling | 54.17s | ok | Improved from 73.23s by bounded one-variable Birkhoff. |
 
 ## Frontier Table
 

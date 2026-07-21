@@ -686,6 +686,28 @@ impl SparsePoly {
         }
     }
 
+    /// Splits a nonzero polynomial into a rational scalar and a canonical
+    /// monic polynomial.
+    ///
+    /// `SparsePoly` has a deterministic monomial order, so dividing by the
+    /// coefficient of its first term gives the same representative for every
+    /// nonzero rational multiple of a polynomial.  Factored rational
+    /// functions use this to canonicalize denominator factors without
+    /// expanding their product.
+    pub(crate) fn rational_scalar_and_monic(&self) -> Option<(Rational, Self)> {
+        let scalar = self.terms.values().next()?.clone();
+        debug_assert!(!scalar.is_zero());
+        let inverse = Rational::one() / scalar.clone();
+        let terms = self
+            .terms
+            .iter()
+            .map(|(monomial, coefficient)| {
+                (monomial.clone(), coefficient.clone() * inverse.clone())
+            })
+            .collect();
+        Some((scalar, Self { terms }))
+    }
+
     fn from_monomial_coeff(monomial: Monomial, coeff: Rational) -> Self {
         let mut out = Self::zero();
         out.add_term(monomial, coeff);
@@ -775,11 +797,18 @@ impl SparsePoly {
         Ok(out)
     }
 
-    fn substitute_lambda_line_preserving_variables(
+    /// Write this polynomial after `lambda_i = weights[i] * lambda_0` as a
+    /// polynomial in the single lambda-line parameter.  The map key is its
+    /// power and the value is the coefficient in all remaining variables.
+    ///
+    /// This is crate-visible so factored rational functions can take the
+    /// lambda-line limit one denominator factor at a time, without first
+    /// multiplying every factor into one expanded polynomial.
+    pub(crate) fn lambda_line_coefficients_preserving_variables(
         &self,
         weights: &[Rational],
-    ) -> Result<BTreeMap<i32, RatFun>, GwError> {
-        let mut out = BTreeMap::<i32, RatFun>::new();
+    ) -> Result<BTreeMap<i32, SparsePoly>, GwError> {
+        let mut out = BTreeMap::<i32, SparsePoly>::new();
         for (monomial, coeff) in &self.terms {
             let Some((degree, monomial_coeff, residual)) =
                 monomial.split_lambda_line_weighted_degree(weights)
@@ -790,16 +819,15 @@ impl SparsePoly {
             };
             let mut residual_poly = SparsePoly::zero();
             residual_poly.add_term(residual, coeff.clone() * monomial_coeff);
-            let term = RatFun {
-                num: residual_poly,
-                den: SparsePoly::one(),
-            };
+            if residual_poly.is_zero() {
+                continue;
+            }
             match out.entry(degree) {
                 Entry::Vacant(entry) => {
-                    entry.insert(term);
+                    entry.insert(residual_poly);
                 }
                 Entry::Occupied(mut entry) => {
-                    let next = <RatFun as Coeff>::add(entry.get(), &term);
+                    let next = entry.get() + &residual_poly;
                     if next.is_zero() {
                         entry.remove();
                     } else {
@@ -1108,10 +1136,32 @@ impl RatFun {
         }
         let num = self
             .num
-            .substitute_lambda_line_preserving_variables(weights)?;
+            .lambda_line_coefficients_preserving_variables(weights)?
+            .into_iter()
+            .map(|(degree, coefficient)| {
+                (
+                    degree,
+                    RatFun {
+                        num: coefficient,
+                        den: SparsePoly::one(),
+                    },
+                )
+            })
+            .collect();
         let den = self
             .den
-            .substitute_lambda_line_preserving_variables(weights)?;
+            .lambda_line_coefficients_preserving_variables(weights)?
+            .into_iter()
+            .map(|(degree, coefficient)| {
+                (
+                    degree,
+                    RatFun {
+                        num: coefficient,
+                        den: SparsePoly::one(),
+                    },
+                )
+            })
+            .collect();
         let coeffs = ratio_laurent_series_coeff(&num, &den, 0)?;
         if coeffs
             .iter()
